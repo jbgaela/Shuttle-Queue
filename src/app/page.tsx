@@ -617,7 +617,7 @@ export default function HomePage() {
   const queryClient = useQueryClient();
   useEffect(() => { let signedOut = false; try { signedOut = window.sessionStorage.getItem("shuttle-queue-offline-signed-out") === "1"; } catch { /* ignore storage access failures */ } if (!authUser && me.isError && !signedOut) void retainedProfile().then((profile) => { if (profile) setRetainedUser({ id: profile.accountId, username: profile.username, role: profile.role }); }); }, [authUser, me.isError]);
   const user = authUser ?? me.data?.user ?? retainedUser;
-  if (!user && me.isPending) return <main className="grid min-h-screen place-items-center text-sm text-[var(--muted)]">Loading Shuttle Queue…</main>;
+  if (!user && me.isPending && !me.isFetched) return <main className="grid min-h-screen place-items-center text-sm text-[var(--muted)]">Loading Shuttle Queue…</main>;
   if (!user) return <LoginScreen onLoggedIn={setAuthUser} />;
   return <OfflineBootstrap user={user} onLogout={async () => { const remove = window.confirm("Sign out now? Select OK to remove downloaded data from this browser, or Cancel to keep it for offline access."); if (remove) await clearAccountData(user.id).catch(() => undefined); try { window.sessionStorage.setItem("shuttle-queue-offline-signed-out", "1"); } catch { /* ignore storage access failures */ } try { await api.logout(); } catch { /* offline sign-out is local until reconnect */ } setAuthUser(null); setRetainedUser(null); queryClient.clear(); }} />;
 }

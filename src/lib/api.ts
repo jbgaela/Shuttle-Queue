@@ -1,6 +1,7 @@
 export type ApiEnvelope<T> = { data: T; requestId?: string; meta?: unknown };
 const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v1").replace(/\/$/, "");
 let csrfTokenCache: string | null = null;
+let csrfRefreshPromise: Promise<string | null> | null = null;
 
 function readCsrfToken() {
   if (csrfTokenCache) return csrfTokenCache;
@@ -15,6 +16,21 @@ function saveCsrfToken(value: string) {
   }
 }
 
+async function refreshCsrfToken() {
+  if (typeof window === "undefined") return null;
+  if (csrfRefreshPromise) return csrfRefreshPromise;
+  const refresh = (async () => {
+    const authResponse = await fetch(`${baseUrl}/auth/me`, { credentials: "include", cache: "no-store" });
+    const authPayload = await authResponse.json().catch(() => ({}));
+    const freshToken = authPayload?.data?.csrfToken;
+    if (!authResponse.ok || !freshToken) return null;
+    saveCsrfToken(freshToken);
+    return freshToken;
+  })();
+  csrfRefreshPromise = refresh;
+  try { return await refresh; } finally { if (csrfRefreshPromise === refresh) csrfRefreshPromise = null; }
+}
+
 export async function request<T>(path: string, init?: RequestInit, allowCsrfResync = true): Promise<T> {
   if (typeof window !== "undefined" && !path.startsWith("/auth/") && !path.startsWith("/sync/")) {
     const local = await import("./offline/repository");
@@ -24,11 +40,8 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   const response = await fetch(`${baseUrl}${path}`, { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}), ...(csrfToken ? { "x-csrf-token": csrfToken } : {}) } });
   const payload = await response.json().catch(() => ({}));
   if (response.status === 403 && payload?.error?.code === "CSRF_INVALID" && allowCsrfResync && typeof window !== "undefined") {
-    const authResponse = await fetch(`${baseUrl}/auth/me`, { credentials: "include" });
-    const authPayload = await authResponse.json().catch(() => ({}));
-    const freshToken = authPayload?.data?.csrfToken;
-    if (authResponse.ok && freshToken) {
-      saveCsrfToken(freshToken);
+    const freshToken = await refreshCsrfToken();
+    if (freshToken) {
       return request(path, init, false);
     }
   }
@@ -40,7 +53,7 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
 export const api = {
   me: () => request<{ user: { id: string; username: string; role: string } }>("/auth/me"),
   login: (username: string, password: string) => request<{ user: { id: string; username: string; role: string } }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
-  logout: () => request<void>("/auth/logout", { method: "POST" }).finally(() => { csrfTokenCache = null; if (typeof window !== "undefined") { try { window.sessionStorage.removeItem("bq-csrf-token"); } catch { /* ignore storage cleanup failures */ } } }),
+  logout: async () => { try { await refreshCsrfToken(); return await request<void>("/auth/logout", { method: "POST" }); } finally { csrfTokenCache = null; if (typeof window !== "undefined") { try { window.sessionStorage.removeItem("bq-csrf-token"); } catch { /* ignore storage cleanup failures */ } } } },
   sessions: () => request<SessionSummary[]>("/sessions"),
   createSession: (body: { name: string; sessionDate?: string }) => request<SessionSummary>("/sessions", { method: "POST", body: JSON.stringify(body) }),
   startSession: (id: string, version: number) => request<SessionSummary>(`/sessions/${id}/start`, { method: "POST", headers: { "if-match": String(version) }, body: "{}" }),
