@@ -26,9 +26,20 @@ const toSessionSummary = (snapshot: CloudSnapshotV1, session: CloudSnapshotV1["s
 const toSessionPlayer = (player: DomainSessionPlayer): SessionPlayer => ({ id: player.id, playerId: player.playerId, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel, skillWeight: player.skillWeight, status: player.status, matchesPlayed: player.matchesPlayed, wins: player.wins, losses: player.losses, ...(player.pointsFor !== undefined ? { pointsFor: player.pointsFor } : {}), ...(player.pointsAgainst !== undefined ? { pointsAgainst: player.pointsAgainst } : {}), ...(player.amountDueMinor !== undefined ? { amountDueMinor: player.amountDueMinor } : {}), ...(player.manualPriority !== undefined ? { manualPriority: player.manualPriority } : {}), currentMatchId: player.currentMatchId ?? null, ...(player.queueEnteredAt ? { queueEnteredAt: player.queueEnteredAt } : {}) });
 const toPayment = (payment: DomainPayment): Payment => ({ id: payment.id, sessionId: payment.sessionId, sessionPlayerId: payment.sessionPlayerId, kind: payment.kind as Payment["kind"], method: payment.method === "CASH" || payment.method === "EWALLET" || payment.method === "OTHER" ? payment.method : null, amountMinor: payment.amountMinor, reference: payment.reference ?? null, note: payment.note ?? null, occurredAt: payment.occurredAt, createdAt: payment.createdAt });
 function allocateEqualSplit(total: number, playerIds: string[]) { const base = playerIds.length ? Math.floor(total / playerIds.length) : 0; const remainder = playerIds.length ? total - base * playerIds.length : 0; return new Map(playerIds.map((playerId, index) => [playerId, base + (index < remainder ? 1 : 0)])); }
+function collectionTotalsByPlayer(payments: DomainPayment[]) {
+  const totals = new Map<string, { CASH: number; EWALLET: number; OTHER: number }>();
+  for (const payment of payments) {
+    if (payment.kind !== "COLLECTION" || (payment.method !== "CASH" && payment.method !== "EWALLET" && payment.method !== "OTHER")) continue;
+    const current = totals.get(payment.sessionPlayerId) ?? { CASH: 0, EWALLET: 0, OTHER: 0 };
+    current[payment.method] += payment.amountMinor;
+    totals.set(payment.sessionPlayerId, current);
+  }
+  return totals;
+}
 function feeSummary(snapshot: CloudSnapshotV1, sessionId: string): FeeSummary {
   const config = snapshot.feeConfigs.find((item) => item.sessionId === sessionId);
   const payments = snapshot.payments.filter((item) => item.sessionId === sessionId);
+  const collectionMethodTotals = collectionTotalsByPlayer(payments);
   const balances = new Map<string, { collected: number; refunded: number; waived: number }>();
   for (const payment of payments) {
     const balance = balances.get(payment.sessionPlayerId) ?? { collected: 0, refunded: 0, waived: 0 };
@@ -43,7 +54,7 @@ function feeSummary(snapshot: CloudSnapshotV1, sessionId: string): FeeSummary {
     const collectedMinor = balance.collected - balance.refunded;
     const outstandingMinor = Math.max(0, (player.amountDueMinor ?? 0) - collectedMinor - balance.waived);
     const status: FeePlayer["status"] = balance.waived >= (player.amountDueMinor ?? 0) && (player.amountDueMinor ?? 0) > 0 ? "WAIVED" : outstandingMinor === 0 && (player.amountDueMinor ?? 0) > 0 ? "PAID" : collectedMinor > 0 ? "PARTIAL" : "UNPAID";
-    return { sessionPlayerId: player.id, displayName: player.displayName, dueMinor: player.amountDueMinor ?? 0, collectedMinor, waivedMinor: balance.waived, outstandingMinor, status };
+    return { sessionPlayerId: player.id, displayName: player.displayName, dueMinor: player.amountDueMinor ?? 0, collectedMinor, waivedMinor: balance.waived, outstandingMinor, status, collectionByMethodMinor: collectionMethodTotals.get(player.id) ?? { CASH: 0, EWALLET: 0, OTHER: 0 } };
   });
   const expectedMinor = config?.mode === "EQUAL_SPLIT" ? config.expectedSessionCostMinor ?? 0 : players.reduce((sum, player) => sum + player.dueMinor, 0);
   return { config: (config as FeeSummary["config"]) ?? null, expectedMinor, collectedMinor: players.reduce((sum, player) => sum + player.collectedMinor, 0), outstandingMinor: players.reduce((sum, player) => sum + player.outstandingMinor, 0), paymentCount: payments.length, players };
