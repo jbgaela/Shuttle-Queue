@@ -27,8 +27,6 @@ function hydrateQueueFields<T>(value: T): T {
   if (typeof source.queuePlayerId === "string") result.sessionPlayerId = source.queuePlayerId;
   if (typeof source.queuePlayerCount === "number") result.sessionCount = source.queuePlayerCount;
   if (typeof source.expectedQueueCostMinor === "number") result.expectedSessionCostMinor = source.expectedQueueCostMinor;
-  if (Array.isArray(source.otherParticipantQueuePlayerIds)) result.otherParticipantSessionPlayerIds = source.otherParticipantQueuePlayerIds;
-  if (source.affectedSessionIds === undefined && (Array.isArray(source.affectedMatchIds) || Array.isArray(source.affectedPaymentIds))) result.affectedSessionIds = [];
   return result as T;
 }
 
@@ -134,9 +132,9 @@ export type AccountDeletionPreview = { accountId: string; playerCount: number; q
 export type WorkspaceSummary = { id: string; name: string; sessionDate: string; startedAt: string; status: string; endedAt?: string | null; lateArrivalCutoffAt?: string | null; version: number; playerCount?: number; courtCount?: number; scoring: { pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: number }; feeConfig?: FeeConfig | null };
 export type SessionSummary = WorkspaceSummary;
 export type Player = { id: string; displayName: string; gender: "MALE" | "FEMALE"; skillLevel: string; skillWeight: number; status: string; version?: number };
-export type PlayerDeletionBusyPlayer = { playerId: string; queuePlayerId: string; sessionPlayerId: string; displayName: string; status: string };
-export type PlayerDeletionPreview = { playerIds: string[]; playerNames: string[]; busyPlayers: PlayerDeletionBusyPlayer[]; affectedMatchIds: string[]; affectedPaymentIds: string[]; otherParticipantPlayerIds: string[]; otherParticipantQueuePlayerIds?: string[]; affectedSessionIds: string[]; otherParticipantSessionPlayerIds?: string[]; affectedMatchCount?: number; affectedPaymentCount?: number };
-export type PlayerDeletionResult = { deletedPlayerIds: string[]; affectedMatchCount: number; affectedPaymentCount: number; otherParticipantPlayerIds: string[]; affectedSessionIds: string[] };
+export type PlayerDeletionBusyPlayer = { playerId: string; queuePlayerId: string; displayName: string; status: string };
+export type PlayerDeletionPreview = { playerIds: string[]; playerNames: string[]; busyPlayers: PlayerDeletionBusyPlayer[]; affectedMatchIds: string[]; affectedPaymentIds: string[]; otherParticipantPlayerIds: string[]; otherParticipantQueuePlayerIds?: string[] };
+export type PlayerDeletionResult = { deletedPlayerIds: string[]; affectedMatchCount: number; affectedPaymentCount: number; otherParticipantPlayerIds: string[] };
 export type QueuePlayer = { id: string; playerId?: string; displayName: string; gender: string; skillLevel: string; skillWeight: number; status: string; matchesPlayed: number; wins: number; losses: number; pointsFor?: number; pointsAgainst?: number; amountDueMinor?: number; manualPriority?: number; queueEnteredAt?: string | null; currentMatchId?: string | null; latePenaltyState: "PENDING" | "SERVED" | "WAIVED" | null; latePenaltyAppliedAt?: string | null; version?: number };
 export type SessionPlayer = QueuePlayer;
 export type QueueState = { inactive: SessionPlayer[]; waiting: SessionPlayer[]; queued: SessionPlayer[]; playing: SessionPlayer[]; resting: SessionPlayer[]; serverTime: string; lateArrivalCutoffAt?: string | null };

@@ -65,6 +65,29 @@ test.describe("core queue workflows", () => {
     await expect(page.getByRole("heading", { name: "Run the current queue." })).toBeVisible();
   });
 
+  test("Players can be bulk-selected and deleted without crashing", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await openAuthenticatedApp(page);
+    await openTab(page, "Players", "Players and check-in.");
+
+    await page.getByLabel("Display name").fill("Bulk Workflow Player");
+    await page.getByRole("button", { name: "Create player", exact: true }).click();
+    await expect(page.getByText("Player created.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Select all available", exact: true }).click();
+    await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add selected to session", exact: true }).click();
+    await expect(page.getByText("Players added to the session.", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Delete Bulk Workflow Player", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("0 match(es)");
+    await dialog.getByRole("button", { name: "Delete permanently", exact: true }).click();
+    await expect(page.getByText("1 player deleted.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete Bulk Workflow Player", exact: true })).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+  });
+
   test("Super Admin uses Settings for administration and security", async ({ page }) => {
     await openAuthenticatedApp(page, superAdminUser);
     await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
