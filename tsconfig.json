@@ -27,6 +27,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@shuttle-queue/domain": [
+        "./packages/domain/src/index.ts"
       ]
     }
   },
@@ -37,7 +40,9 @@
     "src/**/*.tsx",
     ".next/dev/types/**/*.ts",
     ".next-build/types/**/*.ts",
-    ".next-build/dev/types/**/*.ts"
+    ".next-build/dev/types/**/*.ts",
+    ".next-ui-test/types/**/*.ts",
+    ".next-ui-test/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

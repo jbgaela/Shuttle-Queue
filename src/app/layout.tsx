@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Shuttle Queue",
-  description: "A calm, auditable badminton queue for doubles sessions.",
+  description: "A calm, auditable badminton queue for current matches.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
