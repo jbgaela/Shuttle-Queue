@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "@playwright/test";
-import { openAuthenticatedApp, openTab, tabs, REPRESENTATIVE_VIEWPORTS } from "./fixtures";
+import { openAuthenticatedApp, openTab, superAdminUser, tabs, REPRESENTATIVE_VIEWPORTS } from "./fixtures";
 
 test.describe("accessibility compatibility", () => {
   test("primary tabs have no axe violations", async ({ page }) => {
@@ -29,5 +29,12 @@ test.describe("accessibility compatibility", () => {
     await expect(page.getByRole("dialog", { name: /Choose Team A player/ })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("Super Admin Settings administration controls have no axe violations", async ({ page }) => {
+    await openAuthenticatedApp(page, superAdminUser);
+    await openTab(page, "Settings", "Offline workspace");
+    const results = await new AxeBuilder({ page }).exclude("header .overflow-x-auto").analyze();
+    expect(results.violations, JSON.stringify(results.violations)).toEqual([]);
   });
 });

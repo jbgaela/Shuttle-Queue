@@ -20,7 +20,7 @@ The frontend is a single Next.js App Router route (`/`). Authenticated Queue Mas
 | History | Completed match card, expandable score/team details, search, pagination controls |
 | Rankings | Ranking rows, expandable player history and statistics |
 | Fees | Allocation, payment recording, method filters, player summary, ledger |
-| Settings | Session overview, scoring, late-arrival configuration, reset/delete confirmation paths |
+| Settings | Session overview, scoring, late-arrival configuration, reset/delete confirmation paths, and role-gated Super Admin account/security controls |
 | Loading/empty/error/validation/disabled | Existing branch markup is exercised through the deterministic populated snapshot and focused interaction assertions; API failures and zero-record fixtures remain follow-up fixture variants |
 | Overlays | Manual picker, court management, confirmation/score dialog paths, Escape dismissal and focus-visible controls |
 | Offline/synchronization | Synthetic snapshot download through the same Dexie-backed offline repository used by production |

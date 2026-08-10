@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { mockCloudApi, openAuthenticatedApp, openTab } from "./fixtures";
+import { mockCloudApi, openAuthenticatedApp, openTab, superAdminUser } from "./fixtures";
 
 test.describe("core queue workflows", () => {
   test("queue master can operate courts, scoring, matchmaking, players, rankings, fees, settings, offline mode, and sign out", async ({ page, context }) => {
@@ -63,5 +63,33 @@ test.describe("core queue workflows", () => {
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.reload();
     await expect(page.getByRole("heading", { name: "Run the current queue." })).toBeVisible();
+  });
+
+  test("Super Admin uses Settings for administration and security", async ({ page }) => {
+    await openAuthenticatedApp(page, superAdminUser);
+    await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
+    await expect(page.getByText("Account administration", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Queue workspace", { exact: true })).toHaveCount(0);
+
+    await openTab(page, "Settings", "Offline workspace");
+    await expect(page.getByRole("heading", { name: "Shuttle Queue administration", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Change password", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Manage access.", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Create account", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+    await expect(page.locator("p.font-semibold").filter({ hasText: "synthetic.admin" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Change password", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Change password" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test("Queue Master Settings does not expose Super Admin controls", async ({ page }) => {
+    await openAuthenticatedApp(page);
+    await openTab(page, "Settings", "Offline workspace");
+    await expect(page.getByRole("heading", { name: "Shuttle Queue administration", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Manage access.", exact: true })).toHaveCount(0);
   });
 });

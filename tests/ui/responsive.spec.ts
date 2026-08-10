@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { assertResponsiveLayout, mockCloudApi, openAuthenticatedApp, openTab, tabs, VIEWPORTS } from "./fixtures";
+import { assertResponsiveLayout, mockCloudApi, openAuthenticatedApp, openTab, superAdminUser, tabs, VIEWPORTS } from "./fixtures";
 
 test.describe("responsive application surfaces", () => {
   test("all primary tabs stay usable across the supported viewport matrix", async ({ page }) => {
@@ -25,5 +25,15 @@ test.describe("responsive application surfaces", () => {
     await page.getByLabel("Password").fill("synthetic-password");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
+  });
+
+  test("Super Admin Settings remains usable on mobile and desktop", async ({ page }) => {
+    await openAuthenticatedApp(page, superAdminUser);
+    for (const viewport of [{ width: 320, height: 568 }, { width: 1440, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      await openTab(page, "Settings", "Offline workspace");
+      await expect(page.getByRole("heading", { name: "Shuttle Queue administration", exact: true })).toBeVisible();
+      await assertResponsiveLayout(page);
+    }
   });
 });

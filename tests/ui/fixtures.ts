@@ -226,31 +226,38 @@ export const snapshot = {
   careerStats: [],
 };
 
-const user = { id: "account-ui", username: "synthetic.queue", role: "QUEUE_MASTER" as const };
+type FixtureUser = { id: string; username: string; role: "SUPER_ADMIN" | "QUEUE_MASTER" };
+const user: FixtureUser = { id: "account-ui", username: "synthetic.queue", role: "QUEUE_MASTER" };
+export const superAdminUser: FixtureUser = { id: "account-admin-ui", username: "synthetic.admin", role: "SUPER_ADMIN" };
+const adminAccounts = [
+  { id: superAdminUser.id, username: superAdminUser.username, role: "SUPER_ADMIN" as const, status: "ACTIVE" as const, createdAt: now, updatedAt: now, lastLoginAt: now, passwordChangedAt: now, version: 1, playerCount: 12, queuePlayerCount: 12, sessionCount: 1, courtCount: 3, matchCount: 3 },
+  { id: user.id, username: user.username, role: "QUEUE_MASTER" as const, status: "ACTIVE" as const, createdAt: now, updatedAt: now, lastLoginAt: now, passwordChangedAt: now, version: 1, playerCount: 12, queuePlayerCount: 12, sessionCount: 1, courtCount: 3, matchCount: 3 },
+];
 
 async function json(route: Route, data: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ data }) });
 }
 
-export async function mockCloudApi(page: Page) {
+export async function mockCloudApi(page: Page, fixtureUser: FixtureUser = user) {
   await page.route("**/api/v2/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace(/^.*\/api\/v2/, "");
-    if (path === "/auth/me") return json(route, { user, csrfToken: "synthetic-csrf-token" });
+    if (path === "/auth/me") return json(route, { user: fixtureUser, csrfToken: "synthetic-csrf-token" });
     if (path === "/auth/logout") return json(route, null);
     if (path === "/sync/status") return json(route, { cloudRevision: 1, lastSyncedAt: now, lastDeviceId: "synthetic-device", schemaVersion: 2 });
     if (path === "/sync/snapshot") return json(route, { snapshot, checksum: "synthetic-checksum", cloudRevision: 1, schemaVersion: 2 });
-    if (path === "/auth/login") return json(route, { user, csrfToken: "synthetic-csrf-token" });
+    if (path === "/auth/login") return json(route, { user: fixtureUser, csrfToken: "synthetic-csrf-token" });
+    if (path === "/admin/accounts") return fixtureUser.role === "SUPER_ADMIN" ? json(route, adminAccounts) : json(route, { message: "Super Admin access required." }, 403);
     return json(route, { message: "Synthetic fixture does not implement this online endpoint." }, 404);
   });
 }
 
-export async function openAuthenticatedApp(page: Page) {
+export async function openAuthenticatedApp(page: Page, fixtureUser: FixtureUser = user) {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") pageErrors.push(`console: ${message.text()}`); });
   page.on("requestfailed", (request) => pageErrors.push(`${request.method()} ${request.url()} failed: ${request.failure()?.errorText ?? "unknown"}`));
-  await mockCloudApi(page);
+  await mockCloudApi(page, fixtureUser);
   await page.goto("/");
   try {
     await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
