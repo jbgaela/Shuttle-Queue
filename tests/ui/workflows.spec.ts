@@ -78,10 +78,37 @@ test.describe("core queue workflows", () => {
 
     await context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    let authMeRequestsAfterLogout = 0;
+    page.on("request", (request) => {
+      if (signedOut && request.url().includes("/api/v2/auth/me")) authMeRequestsAfterLogout += 1;
+    });
+    let releaseLogout!: () => void;
+    const logoutGate = new Promise<void>((resolve) => { releaseLogout = resolve; });
+    let logoutStarted!: () => void;
+    const logoutRequestStarted = new Promise<void>((resolve) => { logoutStarted = resolve; });
+    await page.route("**/api/v2/auth/logout", async (route) => { logoutStarted(); await logoutGate; await route.fallback(); });
     signedOut = true;
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Run the current queue." })).toBeVisible();
+    await logoutRequestStarted;
+    expect(authMeRequestsAfterLogout).toBe(0);
+    releaseLogout();
+    await expect(page.getByRole("heading", { name: "Run the current queue." })).toBeVisible();
     await page.reload();
+    await expect(page.getByRole("heading", { name: "Run the current queue." })).toBeVisible();
+    expect(authMeRequestsAfterLogout).toBe(0);
+
+    await page.getByLabel("Username").fill("synthetic.user");
+    await page.getByLabel("Password").fill("password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
+  });
+
+  test("retaining offline data still returns to the login screen on sign out", async ({ page }) => {
+    await openAuthenticatedApp(page);
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Run the current queue." })).toBeVisible();
   });
 

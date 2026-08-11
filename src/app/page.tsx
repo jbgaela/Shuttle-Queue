@@ -778,13 +778,42 @@ function QueueMasterShell({ user, onLogout }: { user: AuthUser; onLogout: () => 
 }
 
 export default function HomePage() {
+  type AuthPhase = "checking" | "ready" | "signedOut";
+  const [authPhase, setAuthPhase] = useState<AuthPhase>("checking");
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [retainedUser, setRetainedUser] = useState<AuthUser | null>(null);
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false, enabled: !authUser });
   const queryClient = useQueryClient();
-  useEffect(() => { let signedOut = false; try { signedOut = window.sessionStorage.getItem("shuttle-queue-offline-signed-out") === "1"; } catch { /* ignore storage access failures */ } if (!authUser && me.isError && !signedOut) void retainedProfile().then((profile) => { if (profile) setRetainedUser({ id: profile.accountId, username: profile.username, role: profile.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : "QUEUE_MASTER" }); }); }, [authUser, me.isError]);
-  const user = authUser ?? me.data?.user ?? retainedUser;
-  if (!user && me.isPending && !me.isFetched) return <LoadingState variant="fullPage" label="Loading Shuttle Queue" />;
-  if (!user) return <LoginScreen onLoggedIn={setAuthUser} />;
-  return <OfflineBootstrap user={user} onLogout={async () => { const remove = window.confirm("Sign out now? Select OK to remove downloaded data from this browser, or Cancel to keep it for offline access."); if (remove) await clearAccountData(user.id).catch(() => undefined); try { window.sessionStorage.setItem("shuttle-queue-offline-signed-out", "1"); } catch { /* ignore storage access failures */ } try { await api.logout(); } catch { /* offline sign-out is local until reconnect */ } setAuthUser(null); setRetainedUser(null); queryClient.clear(); }} />;
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      let signedOut = false;
+      try { signedOut = window.sessionStorage.getItem("shuttle-queue-offline-signed-out") === "1"; } catch { /* ignore storage access failures */ }
+      setAuthPhase(signedOut ? "signedOut" : "ready");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false, enabled: authPhase === "ready" && !authUser });
+  useEffect(() => {
+    if (authPhase !== "ready" || authUser || !me.isError) return;
+    let cancelled = false;
+    void retainedProfile().then((profile) => {
+      if (!cancelled && profile) setRetainedUser({ id: profile.accountId, username: profile.username, role: profile.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : "QUEUE_MASTER" });
+    });
+    return () => { cancelled = true; };
+  }, [authPhase, authUser, me.isError]);
+  const user = authPhase === "signedOut" ? null : authUser ?? me.data?.user ?? retainedUser;
+  const handleLogout = async () => {
+    const remove = window.confirm("Sign out now? Select OK to remove downloaded data from this browser, or Cancel to keep it for offline access.");
+    try { window.sessionStorage.setItem("shuttle-queue-offline-signed-out", "1"); } catch { /* ignore storage access failures */ }
+    setAuthPhase("signedOut");
+    setAuthUser(null);
+    setRetainedUser(null);
+    await queryClient.cancelQueries().catch(() => undefined);
+    if (remove && user) await clearAccountData(user.id).catch(() => undefined);
+    try { await api.logout(); } catch { /* offline sign-out is local until reconnect */ }
+    queryClient.clear();
+  };
+  if (authPhase === "checking") return <LoadingState variant="fullPage" label="Loading Shuttle Queue" />;
+  if (authPhase === "ready" && !user && me.isPending && !me.isFetched) return <LoadingState variant="fullPage" label="Loading Shuttle Queue" />;
+  if (!user) return <LoginScreen onLoggedIn={(nextUser) => { setAuthPhase("ready"); setAuthUser(nextUser); setRetainedUser(null); }} />;
+  return <OfflineBootstrap user={user} onLogout={handleLogout} />;
 }
