@@ -105,6 +105,26 @@ test.describe("core queue workflows", () => {
     await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
   });
 
+  test("manual matchup picker accepts playing and queued players for stacked reservations", async ({ page }) => {
+    await openAuthenticatedApp(page);
+    await openTab(page, "Queue", "Make the next match.");
+    await page.getByRole("button", { name: "Manual", exact: true }).click();
+    await page.getByRole("button", { name: "Add player", exact: true }).first().click();
+    const picker = page.getByRole("dialog", { name: /Choose Team A player/ });
+    await expect(picker.getByRole("button", { name: /Alex Rivera/ })).toContainText("Playing");
+    await expect(picker.getByRole("button", { name: /Emi Tan/ })).toContainText("Queued");
+    await picker.getByRole("button", { name: /Alex Rivera/ }).click();
+    await page.getByRole("button", { name: "Add player", exact: true }).last().click();
+    const teamBPicker = page.getByRole("dialog", { name: /Choose Team B player/ });
+    await teamBPicker.getByRole("button", { name: /Emi Tan/ }).click();
+    await page.getByLabel("Court for immediate start").selectOption("court-2");
+    await expect(page.getByRole("button", { name: "Start match", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Queue matchup", exact: true }).click();
+    await expect(page.getByText("Match queued.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add player", exact: true }).first().click();
+    await expect(page.getByRole("dialog", { name: /Choose Team A player/ }).getByRole("button", { name: /Alex Rivera/ })).toBeVisible();
+  });
+
   test("queue master can rename and safely delete courts", async ({ page }) => {
     await openAuthenticatedApp(page);
     await page.getByRole("button", { name: "Manage courts", exact: true }).click();
