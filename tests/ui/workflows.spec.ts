@@ -105,6 +105,29 @@ test.describe("core queue workflows", () => {
     await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
   });
 
+  test("queue master can rename and safely delete courts", async ({ page }) => {
+    await openAuthenticatedApp(page);
+    await page.getByRole("button", { name: "Manage courts", exact: true }).click();
+
+    await page.getByRole("button", { name: "Rename Court 2", exact: true }).last().click();
+    const renameDialog = page.getByRole("dialog", { name: "Rename court" });
+    await renameDialog.getByLabel("Court name").fill("Indoor Court 2");
+    await renameDialog.getByRole("button", { name: "Save name", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Indoor Court 2", exact: true })).toBeVisible();
+
+    await page.getByLabel("New court name").fill("Temporary Court");
+    await page.getByRole("button", { name: "Add court", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Temporary Court", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Delete Temporary Court", exact: true }).last().click();
+    await page.getByRole("button", { name: "Delete courts", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Temporary Court", exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Delete all closed \(1\)/ }).click();
+    await page.getByRole("button", { name: "Delete courts", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Court 3", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Court 1", exact: true })).toBeVisible();
+  });
+
   test("retaining offline data still returns to the login screen on sign out", async ({ page }) => {
     await openAuthenticatedApp(page);
     page.once("dialog", (dialog) => dialog.dismiss());
