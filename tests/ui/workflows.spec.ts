@@ -2,6 +2,26 @@ import { test, expect } from "@playwright/test";
 import { mockCloudApi, openAuthenticatedApp, openTab, superAdminUser } from "./fixtures";
 
 test.describe("core queue workflows", () => {
+  test("shows an accessible sign-in spinner while login is pending", async ({ page }) => {
+    await mockCloudApi(page);
+    await page.route("**/api/v2/auth/me", async (route) => { await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: { message: "Not signed in" } }) }); });
+    await page.goto("/");
+    const username = page.getByLabel("Username");
+    await expect(username).toBeVisible();
+
+    let releaseLogin!: () => void;
+    const loginGate = new Promise<void>((resolve) => { releaseLogin = resolve; });
+    await page.route("**/api/v2/auth/login", async (route) => { await loginGate; await route.fallback(); });
+    await username.fill("synthetic.user");
+    await page.getByLabel("Password").fill("password");
+    const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+    await signIn.click();
+    await expect(signIn).toBeDisabled();
+    await expect(signIn).toHaveAttribute("aria-busy", "true");
+    releaseLogin();
+    await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
+  });
+
   test("queue master can operate courts, scoring, matchmaking, players, rankings, fees, settings, offline mode, and sign out", async ({ page, context }) => {
     await openAuthenticatedApp(page);
     let signedOut = false;
