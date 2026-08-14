@@ -11,6 +11,7 @@ export type LocalSyncMeta = {
   pendingOperationId?: string;
   lastSyncAt?: string | null;
   lastError?: string | null;
+  syncAttention?: "manual";
 };
 
 export type LocalProfile = { accountId: string; username: string; role: string; updatedAt: string };
@@ -98,7 +99,7 @@ export async function updateLocalSnapshot<T>(accountId: string, update: (snapsho
     const prior = await offlineDb.meta.get(accountId);
     const localRevision = (prior?.localRevision ?? 0) + 1;
     await offlineDb.snapshots.put({ ...row, snapshot, updatedAt: new Date().toISOString() });
-    await offlineDb.meta.put({ accountId, deviceId: prior?.deviceId ?? getDeviceId(), localRevision, lastUploadedRevision: prior?.lastUploadedRevision ?? 0, baseCloudRevision: prior?.baseCloudRevision ?? 0, dirty: true, ...(prior?.pendingOperationId !== undefined ? { pendingOperationId: prior.pendingOperationId } : {}), ...(prior?.lastSyncAt !== undefined ? { lastSyncAt: prior.lastSyncAt } : {}), lastError: null });
+    await offlineDb.meta.put({ accountId, deviceId: prior?.deviceId ?? getDeviceId(), localRevision, lastUploadedRevision: prior?.lastUploadedRevision ?? 0, baseCloudRevision: prior?.baseCloudRevision ?? 0, dirty: true, ...(prior?.pendingOperationId !== undefined ? { pendingOperationId: prior.pendingOperationId } : {}), ...(prior?.lastSyncAt !== undefined ? { lastSyncAt: prior.lastSyncAt } : {}), ...(prior?.syncAttention !== undefined ? { syncAttention: prior.syncAttention } : {}), lastError: null });
   });
   notifyOfflineChange();
   return result;
@@ -106,6 +107,14 @@ export async function updateLocalSnapshot<T>(accountId: string, update: (snapsho
 
 export async function appendAudit(accountId: string, event: Omit<LocalAuditEvent, "id" | "accountId" | "createdAt">) {
   await offlineDb.audits.put({ ...event, id: randomId(), accountId, createdAt: new Date().toISOString() });
+}
+
+export async function markSyncAttention(accountId: string, attention: "manual" | null) {
+  const current = await offlineDb.meta.get(accountId);
+  if (!current) return;
+  const next = attention ? { ...current, syncAttention: attention } : (() => { const { syncAttention: _syncAttention, ...rest } = current; return rest; })();
+  await offlineDb.meta.put(next);
+  notifyOfflineChange();
 }
 
 export async function listPendingAudits(accountId: string) {
