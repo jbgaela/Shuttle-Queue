@@ -1,6 +1,7 @@
 export {
   applyPlayerDeletion,
   historyDurationSeconds,
+  normalizeText,
   previewPlayerDeletion,
   suggestMatch,
   validateScores,

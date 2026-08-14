@@ -54,7 +54,7 @@ export type MatchScoreRevision = { id: string; matchId: string; revisionNumber: 
 export type DomainMatch = { id: string; courtId?: string | null; courtIdSnapshot?: string | null; courtNameSnapshot?: string | null; status: MatchStatus; source: MatchSource; matchmakingMode?: MatchmakingMode | null; algorithmVersion?: string | null; suggestionKey?: string | null; suggestionExplanation?: unknown; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: 1 | 3; queuedAt: string; startedAt?: string | null; completedAt?: string | null; cancelledAt?: string | null; cancellationReason?: string | null; winnerTeam?: TeamSide | null; currentRevisionId?: string | null; version: number; participants: MatchParticipant[]; scoreRevisions: MatchScoreRevision[] };
 
 export type DomainCourt = { id: string; name: string; normalizedName: string; displayOrder: number; status: CourtStatus; currentMatchId?: string | null; closedAt?: string | null; version: number };
-export type DomainWorkspace = { startedAt: string; lateArrivalCutoffAt?: string | null; matchmakingAlgorithm: string; matchmakingRevision: number; version: number };
+export type DomainWorkspace = { startedAt: string; endedAt?: string | null; lateArrivalCutoffAt?: string | null; matchmakingAlgorithm: string; matchmakingRevision: number; version: number };
 export type DomainSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: 1 | 3; minimumRestMinutes: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
 export type DomainFeeConfig = { id: string; mode: string; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; participationRule: string; frozenAt?: string | null; version: number };
 export type DomainPayment = { id: string; queuePlayerId: string; kind: string; method?: string | null; amountMinor: number; reference?: string | null; note?: string | null; reversalOfPaymentId?: string | null; recordedById: string; occurredAt: string; createdAt: string };
@@ -197,8 +197,9 @@ export function validateScores(games: ScoreInput[], settings: ScoreSettings): Va
     if (game.teamAScore === game.teamBScore) throw new Error("A game cannot end in a tie.");
     const high = Math.max(game.teamAScore, game.teamBScore);
     const low = Math.min(game.teamAScore, game.teamBScore);
-    if (settings.scoreCap !== null && (high > settings.scoreCap || low > settings.scoreCap)) throw new Error("Scores cannot exceed the configured cap.");
-    const reachesCap = settings.scoreCap !== null && high === settings.scoreCap;
+    const maximum = settings.scoreCap ?? settings.pointsToWin;
+    if (high > maximum || low > maximum) throw new Error(`Scores cannot exceed ${maximum}.`);
+    const reachesCap = high === maximum;
     if (!(reachesCap ? low < high : high >= settings.pointsToWin && high - low >= settings.winBy)) throw new Error("The submitted score does not satisfy the configured rules.");
     const winnerTeam = game.teamAScore > game.teamBScore ? "A" : "B";
     validated.push({ ...game, winnerTeam });
