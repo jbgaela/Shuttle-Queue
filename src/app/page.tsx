@@ -829,7 +829,7 @@ function FeesView({ sessionId }: { sessionId: string }) {
   const payments = paymentsQuery.data ?? EMPTY_PAYMENTS;
   const currency = fee?.config?.currencyCode ?? "PHP";
   const checkedInIds = useMemo(() => new Set((sessionPlayersQuery.data ?? []).filter((player) => Boolean(player.checkedInAt)).map((player) => player.id)), [sessionPlayersQuery.data]);
-  const payablePlayers = useMemo(() => (fee?.players ?? []).filter((player) => checkedInIds.has(feePlayerId(player))), [fee, checkedInIds]);
+  const payablePlayers = useMemo(() => (fee?.players ?? []).filter((player) => checkedInIds.has(feePlayerId(player)) && player.outstandingMinor > 0), [fee, checkedInIds]);
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!fee) return;
