@@ -67,6 +67,40 @@ async function mutate<T>(accountId: string, action: string, update: (snapshot: C
 }
 async function addPlayers(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "PLAYERS_ADDED", (snapshot) => { const ids = [...new Set((Array.isArray(body.playerIds) ? body.playerIds : []).map(String))]; const result: DomainQueuePlayer[] = []; for (const playerId of ids) { const player = snapshot.players.find((item) => item.id === playerId && item.status === "ACTIVE"); if (!player || snapshot.queuePlayers.some((item) => item.playerId === playerId)) throw new Error("Every selected player must be active and not already in the current queue."); const created: DomainQueuePlayer = { id: id(), playerId, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel as DomainQueuePlayer["skillLevel"], skillWeight: player.skillWeight, status: "INACTIVE", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, amountDueMinor: 0, manualPriority: 0, queueEnteredAt: null, lastMatchEndedAt: null, currentMatchId: null, version: 1 }; snapshot.queuePlayers.push(created); result.push(created); } return result.map(playerView); }); }
 async function transition(accountId: string, queuePlayerId: string, status: DomainQueuePlayer["status"], action: string) { return mutate(accountId, action, (snapshot) => { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); const checkedInAt = player.checkedInAt ?? (status === "WAITING" ? now() : null); player.status = status; player.checkedInAt = checkedInAt; player.checkedOutAt = status === "CHECKED_OUT" ? now() : status === "WAITING" ? null : player.checkedOutAt ?? null; player.restStartedAt = status === "RESTING" ? now() : null; player.queueEnteredAt = status === "WAITING" ? now() : null; player.version += 1; return playerView(player); }); }
+async function bulkQueueAction(accountId: string, body: Record<string, unknown>) {
+  return mutate(accountId, "QUEUE_PLAYERS_BULK_ACTION", (snapshot) => {
+    const ids = Array.isArray(body.playerIds) ? body.playerIds.map(String) : [];
+    const action = String(body.action ?? "");
+    if (!ids.length || ids.length > 100) throw new Error("Select between one and 100 players.");
+    if (new Set(ids).size !== ids.length) throw new Error("Each player can only be selected once.");
+    const players = ids.map((queuePlayerId) => findQueuePlayer(snapshot, queuePlayerId));
+    if (players.some((player) => !player)) throw new Error("One or more selected players could not be found.");
+    const allowed = action === "CHECK_IN" ? ["INACTIVE", "CHECKED_OUT"] : action === "REST" ? ["WAITING"] : action === "CHECK_OUT" ? ["WAITING", "RESTING"] : [];
+    if (!allowed.length) throw new Error("The requested queue action is invalid.");
+    const invalid = players.filter((player): player is undefined | DomainQueuePlayer => !player || !allowed.includes(player.status)).filter((player): player is DomainQueuePlayer => Boolean(player));
+    if (invalid.length) throw new Error("One or more selected players are no longer eligible for this action.");
+    const changedAt = now();
+    for (const player of players as DomainQueuePlayer[]) {
+      if (action === "CHECK_IN") {
+        const late = Boolean(snapshot.workspace.lateArrivalCutoffAt && changedAt > snapshot.workspace.lateArrivalCutoffAt && !player.latePenaltyState);
+        player.status = "WAITING";
+        player.checkedInAt = player.checkedInAt ?? changedAt;
+        player.checkedOutAt = null;
+        player.queueEnteredAt = changedAt;
+        if (late) { player.latePenaltyState = "PENDING"; player.latePenaltyAppliedAt = changedAt; }
+      } else if (action === "REST") {
+        player.status = "RESTING";
+        player.restStartedAt = changedAt;
+      } else {
+        player.status = "CHECKED_OUT";
+        player.checkedOutAt = changedAt;
+        player.queueEnteredAt = null;
+      }
+      player.version += 1;
+    }
+    return players.map((player) => playerView(player!));
+  });
+}
 async function makeSuggestion(accountId: string, body: Record<string, unknown>) {
   const snapshot = await readSnapshot(accountId);
   if (!snapshot) throw new Error("Download this account before working offline.");
@@ -300,6 +334,7 @@ export async function handleRequest(accountId: string, path: string, init?: Requ
   if (route[0] === "players" && method === "GET") return snapshot.players.filter((player) => player.status === "ACTIVE") as Player[];
   if (route[0] === "queue" && route[1] === "players" && route.length === 2) return method === "GET" ? snapshot.queuePlayers.map(playerView) : addPlayers(accountId, body);
   if (route[0] === "queue" && route[1] === "players" && route[2]) { const queuePlayerId = route[2]!; if (route[3] === "history") return playerHistory(snapshot, queuePlayerId, path); if (route[3] === "late-penalty" && route[4] === "waive") return transition(accountId, queuePlayerId, "WAITING", "LATE_PENALTY_WAIVED"); const status = route[3] === "check-in" ? "WAITING" : route[3] === "rest" ? "RESTING" : route[3] === "resume" ? "WAITING" : route[3] === "check-out" ? "CHECKED_OUT" : null; if (status) return transition(accountId, queuePlayerId, status as DomainQueuePlayer["status"], `QUEUE_PLAYER_${status}`); }
+  if (route[0] === "queue" && route[1] === "players" && route[2] === "bulk-action" && method === "POST") return bulkQueueAction(accountId, body);
   if (route[0] === "queue" && route.length === 1) return queueState(snapshot);
   if (route[0] === "courts" && route.length === 1) return method === "GET" ? snapshot.courts.map(courtView) : mutate(accountId, "COURT_CREATED", (value) => { const name = String(body.name ?? "").trim(); if (!name) throw new Error("Court name is required."); if (value.courts.some((item) => item.normalizedName === name.toLowerCase())) throw new Error("The requested value is already in use."); const displayOrder = Math.max(-1, ...value.courts.map((item) => item.displayOrder)) + 1; const court = { id: id(), name, normalizedName: name.toLowerCase(), displayOrder, status: "AVAILABLE" as const, currentMatchId: null, closedAt: null, version: 1 }; value.courts.push(court); return courtView(court); });
   if (route[0] === "courts" && route[1] === "delete" && method === "POST") return mutate(accountId, "COURTS_DELETED", (value) => { const statuses = [...new Set((Array.isArray(body.statuses) ? body.statuses : []).map(String))].filter((status): status is "AVAILABLE" | "CLOSED" => status === "AVAILABLE" || status === "CLOSED"); if (!statuses.length) throw new Error("Choose at least one court status to delete."); const courts = value.courts.filter((court) => statuses.includes(court.status as "AVAILABLE" | "CLOSED") && !court.currentMatchId); const deletedCourtIds = courts.map((court) => court.id); let preservedHistoryMatchCount = 0; for (const court of courts) { const matches = value.matches.filter((match) => match.courtId === court.id); preservedHistoryMatchCount += matches.length; matches.forEach((match) => preserveCourtSnapshot(match, court)); } value.courts = value.courts.filter((court) => !deletedCourtIds.includes(court.id)); return { deletedCourtIds, deletedCount: deletedCourtIds.length, preservedHistoryMatchCount }; });

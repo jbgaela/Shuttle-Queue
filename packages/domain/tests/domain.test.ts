@@ -28,6 +28,30 @@ test("balanced suggestions cap player and team strength gaps", () => {
   assert.ok(suggestMatch(players([1, 1, 3, 3]), "OPEN", history));
 });
 
+test("balanced suggestions prioritize players skipped by the previous lineup", () => {
+  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const first = suggestMatch(players, "BALANCED", history);
+  assert.ok(first);
+  const firstIds = new Set([...first.teamA, ...first.teamB].map((player) => player.id));
+  const skippedIds = players.filter((player) => !firstIds.has(player.id)).map((player) => player.id);
+
+  const next = suggestMatch(players, "BALANCED", history, [first.key]);
+  assert.ok(next);
+  const nextIds = new Set([...next.teamA, ...next.teamB].map((player) => player.id));
+  assert.equal(skippedIds.every((id) => nextIds.has(id)), true);
+  assert.equal((next.explanation.fairness as { previouslySkippedCount: number }).previouslySkippedCount, skippedIds.length);
+});
+
+test("pending late penalties disable skipped-player priority for balanced suggestions", () => {
+  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0, latePenaltyState: id === "f" ? "PENDING" : null }));
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const result = suggestMatch(players, "BALANCED", history, ["a,b|c,d"]);
+  assert.ok(result);
+  assert.deepEqual([...result.teamA, ...result.teamB].map((player) => player.id).sort(), ["a", "b", "c", "d"]);
+  assert.equal((result.explanation.fairness as { previouslySkippedCount: number }).previouslySkippedCount, 0);
+});
+
 test("prefers lineups with fewer pending late penalties without blocking a valid match", () => {
   const players: MatchPlayer[] = ["a", "b", "c", "d", "e"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0, latePenaltyState: id === "e" ? "PENDING" : null }));
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };

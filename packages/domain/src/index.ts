@@ -228,6 +228,12 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   const eligible = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt);
   if (eligible.length < 4) return null;
   const excluded = new Set(excludedKeys);
+  const previousSuggestionPlayerIds = new Set(
+    mode === "BALANCED" && excludedKeys.length > 0 && !eligible.some((player) => player.latePenaltyState === "PENDING")
+      ? excludedKeys[excludedKeys.length - 1]!.split(/[|,]/).filter(Boolean)
+      : [],
+  );
+  const previouslySkippedPlayerIds = new Set(previousSuggestionPlayerIds.size > 0 ? eligible.filter((player) => !previousSuggestionPlayerIds.has(player.id)).map((player) => player.id) : []);
   const minimumGames = Math.min(...eligible.map((player) => player.gamesPlayed));
   const groups = combinations(eligible, 4).filter((group) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && (genders.size !== 2 || group.filter((player) => player.gender === "MALE").length !== 2)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; if (mode === "BALANCED" && Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) > MAX_BALANCED_STRENGTH_GAP) return false; return true; });
   const minimumPending = groups.length ? Math.min(...groups.map((group) => group.filter((player) => player.latePenaltyState === "PENDING").length)) : 0;
@@ -254,7 +260,8 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       const allPartners = partnerCount(history, teamA[0]!.id, teamA[1]!.id, false) + partnerCount(history, teamB[0]!.id, teamB[1]!.id, false);
       const partnerMix = Math.abs(teamA[0]!.skillWeight - teamA[1]!.skillWeight) + Math.abs(teamB[0]!.skillWeight - teamB[1]!.skillWeight);
       const lowestGames = group.filter((player) => player.gamesPlayed === candidateMinimumGames).length;
-      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), sorted.map((player) => player.id).join(","), Math.abs(teamATotal - teamBTotal), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, keyString];
+      const previouslySkippedCount = group.filter((player) => previouslySkippedPlayerIds.has(player.id)).length;
+      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -previouslySkippedCount, -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), sorted.map((player) => player.id).join(","), Math.abs(teamATotal - teamBTotal), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, keyString];
       const suggestion = {
         mode,
         teamA,
@@ -280,7 +287,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
           },
           partnerRotation: { recentRepeats: recentPartners, allTimeRepeats: allPartners, preservedTeamBalance: true },
           lateArrival: { minimumPending, selectedPending: group.filter((player) => player.latePenaltyState === "PENDING").length, preferenceApplied: minimumPending > 0 || group.some((player) => player.latePenaltyState === "PENDING") },
-          fairness: { minimumGames: candidateMinimumGames, minimumGamesCount: lowestGames, manualOverride: false },
+          fairness: { minimumGames: candidateMinimumGames, minimumGamesCount: lowestGames, manualOverride: false, previouslySkippedCount },
         },
       };
       if (!best || compare(key, best.key) < 0) best = { key, suggestion };
