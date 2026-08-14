@@ -16,6 +16,18 @@ test("suggests a deterministic eligible group", () => {
   assert.equal(new Set([...suggestion.teamA, ...suggestion.teamB].map((player) => player.id)).size, 4);
 });
 
+test("balanced suggestions cap player and team strength gaps", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const players = (weights: number[]): MatchPlayer[] => weights.map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  const valid = suggestMatch(players([2, 2, 3, 3]), "BALANCED", history);
+  assert.ok(valid);
+  assert.ok(valid.difference <= 1);
+  assert.ok(Math.max(...[...valid.teamA, ...valid.teamB].map((player) => player.skillWeight)) - Math.min(...[...valid.teamA, ...valid.teamB].map((player) => player.skillWeight)) <= 1);
+  assert.equal(suggestMatch(players([1, 1, 3, 3]), "BALANCED", history), null);
+  assert.equal(suggestMatch(players([1, 1, 5, 5]), "BALANCED", history), null);
+  assert.ok(suggestMatch(players([1, 1, 3, 3]), "OPEN", history));
+});
+
 test("prefers lineups with fewer pending late penalties without blocking a valid match", () => {
   const players: MatchPlayer[] = ["a", "b", "c", "d", "e"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0, latePenaltyState: id === "e" ? "PENDING" : null }));
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };

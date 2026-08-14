@@ -177,6 +177,7 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
 export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; status: QueuePlayerStatus; gamesPlayed: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
 export type MatchHistory = { partners: Map<string, Map<string, number>>; opponents: Map<string, Map<string, number>>; quartets: Map<string, number>; encounters?: Map<string, Map<string, number>>; recentPartners?: Map<string, Map<string, number>>; recentOpponents?: Map<string, Map<string, number>>; recentEncounters?: Map<string, Map<string, number>>; recentQuartets?: Map<string, number> };
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; explanation: Record<string, unknown> };
+const MAX_BALANCED_STRENGTH_GAP = 1;
 
 export function normalizeName(value: string) {
   return value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
@@ -228,7 +229,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   if (eligible.length < 4) return null;
   const excluded = new Set(excludedKeys);
   const minimumGames = Math.min(...eligible.map((player) => player.gamesPlayed));
-  const groups = combinations(eligible, 4).filter((group) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && (genders.size !== 2 || group.filter((player) => player.gender === "MALE").length !== 2)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; return true; });
+  const groups = combinations(eligible, 4).filter((group) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && (genders.size !== 2 || group.filter((player) => player.gender === "MALE").length !== 2)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; if (mode === "BALANCED" && Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) > MAX_BALANCED_STRENGTH_GAP) return false; return true; });
   const minimumPending = groups.length ? Math.min(...groups.map((group) => group.filter((player) => player.latePenaltyState === "PENDING").length)) : 0;
   const latePreferred = groups.filter((group) => group.filter((player) => player.latePenaltyState === "PENDING").length === minimumPending);
   const candidateMinimumGames = latePreferred.length ? Math.min(...latePreferred.flatMap((group) => group.map((player) => player.gamesPlayed))) : minimumGames;
@@ -246,6 +247,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       if (mode === "MIXED_DOUBLES" && (new Set(teamA.map((player) => player.gender)).size !== 2 || new Set(teamB.map((player) => player.gender)).size !== 2)) continue;
       const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
       const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
+      if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) > MAX_BALANCED_STRENGTH_GAP) continue;
       const keyString = `${teamA.map((player) => player.id).sort().join(",")}|${teamB.map((player) => player.id).sort().join(",")}`;
       if (excluded.has(keyString)) continue;
       const recentPartners = partnerCount(history, teamA[0]!.id, teamA[1]!.id, true) + partnerCount(history, teamB[0]!.id, teamB[1]!.id, true);
