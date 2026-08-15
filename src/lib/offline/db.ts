@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import type { CloudSnapshotV2 } from "./domain-compat";
 import { normalizeSnapshotForSync } from "./snapshot-normalization";
+import { operationIdForRevision } from "./sync-operation";
 
 export type LocalSyncMeta = {
   accountId: string;
@@ -10,6 +11,7 @@ export type LocalSyncMeta = {
   baseCloudRevision: number;
   dirty: boolean;
   pendingOperationId?: string;
+  pendingOperationRevision?: number;
   lastSyncAt?: string | null;
   lastError?: string | null;
   syncAttention?: "manual";
@@ -18,6 +20,13 @@ export type LocalSyncMeta = {
 export type LocalProfile = { accountId: string; username: string; role: string; updatedAt: string };
 export type LocalAuditEvent = { id: string; accountId: string; action: string; entityType: string; entityId: string; reason?: string; beforeJson?: unknown; afterJson?: unknown; createdAt: string };
 type SnapshotRow = { accountId: string; snapshot: CloudSnapshotV2; updatedAt: string };
+
+export type SnapshotUploadBatch = {
+  snapshot: CloudSnapshotV2;
+  localRevision: number;
+  operationId: string;
+  auditEvents: LocalAuditEvent[];
+};
 
 class OfflineDatabase extends Dexie {
   profiles!: Table<LocalProfile, string>;
@@ -102,14 +111,56 @@ export async function updateLocalSnapshot<T>(accountId: string, update: (snapsho
     const prior = await offlineDb.meta.get(accountId);
     const localRevision = (prior?.localRevision ?? 0) + 1;
     await offlineDb.snapshots.put({ ...row, snapshot, updatedAt: new Date().toISOString() });
-    await offlineDb.meta.put({ accountId, deviceId: prior?.deviceId ?? getDeviceId(), localRevision, lastUploadedRevision: prior?.lastUploadedRevision ?? 0, baseCloudRevision: prior?.baseCloudRevision ?? 0, dirty: true, ...(prior?.pendingOperationId !== undefined ? { pendingOperationId: prior.pendingOperationId } : {}), ...(prior?.lastSyncAt !== undefined ? { lastSyncAt: prior.lastSyncAt } : {}), ...(prior?.syncAttention !== undefined ? { syncAttention: prior.syncAttention } : {}), lastError: null });
+    await offlineDb.meta.put({ accountId, deviceId: prior?.deviceId ?? getDeviceId(), localRevision, lastUploadedRevision: prior?.lastUploadedRevision ?? 0, baseCloudRevision: prior?.baseCloudRevision ?? 0, dirty: true, pendingOperationId: randomId(), pendingOperationRevision: localRevision, ...(prior?.lastSyncAt !== undefined ? { lastSyncAt: prior.lastSyncAt } : {}), ...(prior?.syncAttention !== undefined ? { syncAttention: prior.syncAttention } : {}), lastError: null });
   });
   notifyOfflineChange();
   return result;
 }
 
+export async function prepareSnapshotUpload(accountId: string): Promise<SnapshotUploadBatch> {
+  return offlineDb.transaction("rw", offlineDb.snapshots, offlineDb.meta, offlineDb.audits, async () => {
+    const row = await offlineDb.snapshots.get(accountId);
+    const current = await offlineDb.meta.get(accountId);
+    if (!row || !current) throw new Error("Local data is missing.");
+    const operationId = operationIdForRevision(current.pendingOperationId, current.pendingOperationRevision, current.localRevision, randomId);
+    if (operationId !== current.pendingOperationId || current.pendingOperationRevision !== current.localRevision) {
+      await offlineDb.meta.put({ ...current, pendingOperationId: operationId, pendingOperationRevision: current.localRevision });
+    }
+    return { snapshot: normalizeSnapshotForSync(row.snapshot), localRevision: current.localRevision, operationId, auditEvents: await offlineDb.audits.where("accountId").equals(accountId).toArray() };
+  });
+}
+
+export async function completeSnapshotUpload(accountId: string, batch: SnapshotUploadBatch, cloudRevision: number) {
+  const sentAuditIds = batch.auditEvents.map((event) => event.id);
+  const now = new Date().toISOString();
+  let sameBatchResult = false;
+  await offlineDb.transaction("rw", offlineDb.snapshots, offlineDb.meta, offlineDb.audits, async () => {
+    const row = await offlineDb.snapshots.get(accountId);
+    const current = await offlineDb.meta.get(accountId);
+    if (!row || !current) return;
+    const sameBatch = current.localRevision === batch.localRevision && current.pendingOperationId === batch.operationId;
+    sameBatchResult = sameBatch;
+    if (sameBatch) {
+      await offlineDb.snapshots.put({ ...row, snapshot: normalizeSnapshotForSync(batch.snapshot), updatedAt: now });
+      const { pendingOperationId: _operationId, pendingOperationRevision: _operationRevision, ...cleanMeta } = current;
+      await offlineDb.meta.put({ ...cleanMeta, lastUploadedRevision: current.localRevision, baseCloudRevision: cloudRevision, dirty: false, lastSyncAt: now, lastError: null });
+    } else {
+      await offlineDb.meta.put({ ...current, lastUploadedRevision: batch.localRevision, baseCloudRevision: cloudRevision, dirty: true, lastSyncAt: now, lastError: null });
+    }
+    if (sentAuditIds.length) await offlineDb.audits.bulkDelete(sentAuditIds);
+  });
+  notifyOfflineChange();
+  return sameBatchResult;
+}
+
 export async function appendAudit(accountId: string, event: Omit<LocalAuditEvent, "id" | "accountId" | "createdAt">) {
-  await offlineDb.audits.put({ ...event, id: randomId(), accountId, createdAt: new Date().toISOString() });
+  await offlineDb.transaction("rw", offlineDb.audits, offlineDb.meta, async () => {
+    await offlineDb.audits.put({ ...event, id: randomId(), accountId, createdAt: new Date().toISOString() });
+    const current = await offlineDb.meta.get(accountId);
+    if (!current) return;
+    const localRevision = current.localRevision + 1;
+    await offlineDb.meta.put({ ...current, localRevision, pendingOperationId: randomId(), pendingOperationRevision: localRevision, dirty: true, lastError: null });
+  });
 }
 
 export async function markSyncAttention(accountId: string, attention: "manual" | null) {

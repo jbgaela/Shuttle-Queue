@@ -3,13 +3,15 @@ import { applyPlayerDeletion, historyDurationSeconds, normalizeText, suggestMatc
 import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, Suggestion, WorkspaceSummary } from "../api";
 import { request } from "../api";
 import { hasPlayerNameConflict } from "../player-names";
-import { appendAudit, clearAccountData, firstProfile, getDeviceId, getMeta, hasSnapshot, listPendingAudits, markSyncAttention, offlineDb, readSnapshot, replaceSnapshot, saveProfile, storageEstimate, updateLocalSnapshot } from "./db";
+import { appendAudit, clearAccountData, completeSnapshotUpload, firstProfile, getDeviceId, getMeta, hasSnapshot, markSyncAttention, offlineDb, prepareSnapshotUpload, readSnapshot, replaceSnapshot, saveProfile, storageEstimate, updateLocalSnapshot } from "./db";
 import { createSyncPreview, hasDestructiveSyncChanges, type SyncPreview } from "./sync-plan";
+import { singleFlightByKey } from "./sync-flight";
 import { datePartsForInstant, instantForLocalDateTime } from "../timezone";
 
 export type { SyncPreview } from "./sync-plan";
 
 const id = () => typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const uploadFlights = new Map<string, Promise<{ state: "uploaded"; cloudRevision: number }>>();
 const now = () => new Date().toISOString();
 const PLAYER_NAME_CONFLICT_MESSAGE = "A player with this name has already been created or is already in the current queue.";
 const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, INTERMEDIATE: 3, UPPER_INTERMEDIATE: 4, ADVANCED: 5 };
@@ -373,14 +375,18 @@ async function remoteSnapshot(): Promise<RemoteSnapshot> {
   return remote;
 }
 
-async function uploadLocalSnapshot(accountId: string, expectedCloudRevision: number) {
+async function uploadLocalSnapshotInternal(accountId: string, expectedCloudRevision: number) {
   const local = await getMeta(accountId);
-  const snapshot = await readSnapshot(accountId);
-  if (!local || !snapshot) throw new Error("Local data is missing.");
-  const uploaded = await request<{ cloudRevision: number }>("/sync/snapshot", { method: "PUT", body: JSON.stringify({ schemaVersion: 2, deviceId: local.deviceId, operationId: local.pendingOperationId ?? id(), baseCloudRevision: expectedCloudRevision, force: false, snapshot, auditEvents: await listPendingAudits(accountId) }) });
-  await replaceSnapshot(accountId, snapshot, uploaded.cloudRevision);
-  await markSyncAttention(accountId, null);
+  if (!local) throw new Error("Local data is missing.");
+  const batch = await prepareSnapshotUpload(accountId);
+  const uploaded = await request<{ cloudRevision: number; alreadyApplied?: boolean }>("/sync/snapshot", { method: "PUT", body: JSON.stringify({ schemaVersion: 2, deviceId: local.deviceId, operationId: batch.operationId, baseCloudRevision: expectedCloudRevision, force: false, snapshot: batch.snapshot, auditEvents: batch.auditEvents }) });
+  const completed = await completeSnapshotUpload(accountId, batch, uploaded.cloudRevision);
+  if (completed) await markSyncAttention(accountId, null);
   return { state: "uploaded" as const, cloudRevision: uploaded.cloudRevision };
+}
+
+async function uploadLocalSnapshot(accountId: string, expectedCloudRevision: number) {
+  return singleFlightByKey(uploadFlights, accountId, () => uploadLocalSnapshotInternal(accountId, expectedCloudRevision));
 }
 
 export async function syncAccount(accountId: string, trigger: SyncTrigger = "background"): Promise<SyncResult> {
