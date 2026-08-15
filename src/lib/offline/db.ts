@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
 import type { CloudSnapshotV2 } from "./domain-compat";
+import { normalizeSnapshotForSync } from "./snapshot-normalization";
 
 export type LocalSyncMeta = {
   accountId: string;
@@ -62,14 +63,16 @@ export async function hasSnapshot(accountId?: string) {
 }
 
 export async function readSnapshot(accountId: string) {
-  return (await offlineDb.snapshots.get(accountId))?.snapshot ?? null;
+  const snapshot = (await offlineDb.snapshots.get(accountId))?.snapshot;
+  return snapshot ? normalizeSnapshotForSync(snapshot) : null;
 }
 
 export async function replaceSnapshot(accountId: string, snapshot: CloudSnapshotV2, cloudRevision: number) {
   if (snapshot.schemaVersion !== 2) throw new Error("This offline snapshot is incompatible. Download the current queue online.");
+  const normalizedSnapshot = normalizeSnapshotForSync(snapshot);
   const now = new Date().toISOString();
   await offlineDb.transaction("rw", offlineDb.snapshots, offlineDb.meta, offlineDb.audits, async () => {
-    await offlineDb.snapshots.put({ accountId, snapshot, updatedAt: now });
+    await offlineDb.snapshots.put({ accountId, snapshot: normalizedSnapshot, updatedAt: now });
     await offlineDb.meta.put({ accountId, deviceId: getDeviceId(), localRevision: 0, lastUploadedRevision: cloudRevision, baseCloudRevision: cloudRevision, dirty: false, lastSyncAt: now, lastError: null });
     await offlineDb.audits.where("accountId").equals(accountId).delete();
   });
@@ -94,7 +97,7 @@ export async function updateLocalSnapshot<T>(accountId: string, update: (snapsho
   await offlineDb.transaction("rw", offlineDb.snapshots, offlineDb.meta, offlineDb.audits, async () => {
     const row = await offlineDb.snapshots.get(accountId);
     if (!row) throw new Error("Download this account before working offline.");
-    const snapshot = typeof structuredClone === "function" ? structuredClone(row.snapshot) : JSON.parse(JSON.stringify(row.snapshot)) as CloudSnapshotV2;
+    const snapshot = normalizeSnapshotForSync(typeof structuredClone === "function" ? structuredClone(row.snapshot) : JSON.parse(JSON.stringify(row.snapshot)) as CloudSnapshotV2);
     result = await update(snapshot);
     const prior = await offlineDb.meta.get(accountId);
     const localRevision = (prior?.localRevision ?? 0) + 1;
