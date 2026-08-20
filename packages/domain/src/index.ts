@@ -177,7 +177,9 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
 export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; status: QueuePlayerStatus; gamesPlayed: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
 export type MatchHistory = { partners: Map<string, Map<string, number>>; opponents: Map<string, Map<string, number>>; quartets: Map<string, number>; encounters?: Map<string, Map<string, number>>; recentPartners?: Map<string, Map<string, number>>; recentOpponents?: Map<string, Map<string, number>>; recentEncounters?: Map<string, Map<string, number>>; recentQuartets?: Map<string, number> };
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; explanation: Record<string, unknown> };
-const MAX_BALANCED_STRENGTH_GAP = 1;
+export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date };
+const DEFAULT_BALANCED_STRENGTH_GAP = 1;
+const MATCHMAKING_ALGORITHM = "v3-rest-strength";
 
 export function normalizeName(value: string) {
   return value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
@@ -214,35 +216,42 @@ export function validateScores(games: ScoreInput[], settings: ScoreSettings): Va
 
 const symmetricCount = (map: Map<string, Map<string, number>> | undefined, a: string, b: string) => Math.max(map?.get(a)?.get(b) ?? 0, map?.get(b)?.get(a) ?? 0);
 const pairCount = (history: MatchHistory, a: string, b: string, recent: boolean) => {
-  if (recent && history.recentEncounters) return symmetricCount(history.recentEncounters, a, b);
-  if (!recent && history.encounters) return symmetricCount(history.encounters, a, b);
+  const direct = recent ? history.recentEncounters : history.encounters;
+  const directCount = symmetricCount(direct, a, b);
+  if (directCount > 0) return directCount;
   return Math.max(symmetricCount(recent ? history.recentPartners : history.partners, a, b), symmetricCount(recent ? history.recentOpponents : history.opponents, a, b));
 };
 const partnerCount = (history: MatchHistory, a: string, b: string, recent: boolean) => symmetricCount(recent ? history.recentPartners : history.partners, a, b);
 const quartetKey = (players: MatchPlayer[]) => players.map((player) => player.id).sort().join(":");
-const combinations = <T,>(items: T[], size: number) => { const result: T[][] = []; const walk = (start: number, selected: T[]) => { if (selected.length === size) { result.push([...selected]); return; } for (let index = start; index <= items.length - (size - selected.length); index += 1) { selected.push(items[index]!); walk(index + 1, selected); selected.pop(); } }; walk(0, []); return result; };
+const forEachCombination = <T,>(items: T[], size: number, callback: (selected: T[]) => void) => { const walk = (start: number, selected: T[]) => { if (selected.length === size) { callback([...selected]); return; } for (let index = start; index <= items.length - (size - selected.length); index += 1) { selected.push(items[index]!); walk(index + 1, selected); selected.pop(); } }; walk(0, []); };
 const partitions = <T,>(players: T[]) => { const [a, b, c, d] = players; return [[[a, b], [c, d]], [[a, c], [b, d]], [[a, d], [b, c]]] as [T[], T[]][]; };
 const compare = (a: (number[] | number | string)[], b: (number[] | number | string)[]) => { for (let i = 0; i < a.length; i += 1) { const left = a[i]; const right = b[i]; if (Array.isArray(left) && Array.isArray(right)) { for (let j = 0; j < Math.max(left.length, right.length); j += 1) { const result = (left[j] ?? 0) - (right[j] ?? 0); if (result) return result; } } else if (typeof left === "string" && typeof right === "string") { const result = left.localeCompare(right); if (result) return result; } else if (typeof left === "number" && typeof right === "number" && left !== right) return left - right; } return 0; };
+const restReadyAt = (lastMatchEndedAt: string | null, minimumRestMinutes: number, now: number) => { if (!lastMatchEndedAt || minimumRestMinutes <= 0) return now; return new Date(lastMatchEndedAt).getTime() + minimumRestMinutes * 60_000; };
 
-export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, history: MatchHistory, excludedKeys: string[] = []): Suggestion | null {
-  const eligible = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt);
+export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, history: MatchHistory, excludedKeys: string[] = [], options: MatchmakingOptions = {}): Suggestion | null {
+  const now = options.now ? new Date(options.now).getTime() : Date.now();
+  const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
+  const strengthGap = mode === "BALANCED" ? options.strengthGap ?? DEFAULT_BALANCED_STRENGTH_GAP : undefined;
+  const eligible = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
   if (eligible.length < 4) return null;
   const excluded = new Set(excludedKeys);
   const previousSuggestionPlayerIds = new Set(
-    mode === "BALANCED" && excludedKeys.length > 0 && !eligible.some((player) => player.latePenaltyState === "PENDING")
+    excludedKeys.length > 0 && !eligible.some((player) => player.latePenaltyState === "PENDING")
       ? excludedKeys[excludedKeys.length - 1]!.split(/[|,]/).filter(Boolean)
       : [],
   );
   const previouslySkippedPlayerIds = new Set(previousSuggestionPlayerIds.size > 0 ? eligible.filter((player) => !previousSuggestionPlayerIds.has(player.id)).map((player) => player.id) : []);
-  const minimumGames = Math.min(...eligible.map((player) => player.gamesPlayed));
-  const groups = combinations(eligible, 4).filter((group) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && (genders.size !== 2 || group.filter((player) => player.gender === "MALE").length !== 2)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; if (mode === "BALANCED" && Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) > MAX_BALANCED_STRENGTH_GAP) return false; return true; });
-  const minimumPending = groups.length ? Math.min(...groups.map((group) => group.filter((player) => player.latePenaltyState === "PENDING").length)) : 0;
-  const latePreferred = groups.filter((group) => group.filter((player) => player.latePenaltyState === "PENDING").length === minimumPending);
-  const candidateMinimumGames = latePreferred.length ? Math.min(...latePreferred.flatMap((group) => group.map((player) => player.gamesPlayed))) : minimumGames;
-  const fair = latePreferred.filter((group) => Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1);
-  const candidates = fair.length ? fair : latePreferred;
+  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && (genders.size !== 2 || group.filter((player) => player.gender === "MALE").length !== 2)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) <= strengthGap!; };
+  let minimumPending = Number.POSITIVE_INFINITY;
+  forEachCombination(eligible, 4, (group) => { if (!validGroup(group)) return; minimumPending = Math.min(minimumPending, group.filter((player) => player.latePenaltyState === "PENDING").length); });
+  if (!Number.isFinite(minimumPending)) return null;
+  let candidateMinimumGames = Number.POSITIVE_INFINITY;
+  forEachCombination(eligible, 4, (group) => { if (!validGroup(group) || group.filter((player) => player.latePenaltyState === "PENDING").length !== minimumPending) return; candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed)); });
+  let fairExists = false;
+  forEachCombination(eligible, 4, (group) => { if (validGroup(group) && group.filter((player) => player.latePenaltyState === "PENDING").length === minimumPending && Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1) fairExists = true; });
   let best: { key: (number[] | number | string)[]; suggestion: Suggestion } | null = null;
-  for (const group of candidates) {
+  forEachCombination(eligible, 4, (group) => {
+    if (!validGroup(group) || group.filter((player) => player.latePenaltyState === "PENDING").length !== minimumPending || (fairExists && Math.max(...group.map((player) => player.gamesPlayed)) > candidateMinimumGames + 1)) return;
     const sorted = [...group].sort((a, b) => a.id.localeCompare(b.id));
     const skillSpread = Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight));
     const recentPairValues = group.flatMap((player, i) => group.slice(i + 1).map((other) => pairCount(history, player.id, other.id, true)));
@@ -253,7 +262,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       if (mode === "MIXED_DOUBLES" && (new Set(teamA.map((player) => player.gender)).size !== 2 || new Set(teamB.map((player) => player.gender)).size !== 2)) continue;
       const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
       const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
-      if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) > MAX_BALANCED_STRENGTH_GAP) continue;
+      if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) > strengthGap!) continue;
       const keyString = `${teamA.map((player) => player.id).sort().join(",")}|${teamB.map((player) => player.id).sort().join(",")}`;
       if (excluded.has(keyString)) continue;
       const recentPartners = partnerCount(history, teamA[0]!.id, teamA[1]!.id, true) + partnerCount(history, teamB[0]!.id, teamB[1]!.id, true);
@@ -261,7 +270,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       const partnerMix = Math.abs(teamA[0]!.skillWeight - teamA[1]!.skillWeight) + Math.abs(teamB[0]!.skillWeight - teamB[1]!.skillWeight);
       const lowestGames = group.filter((player) => player.gamesPlayed === candidateMinimumGames).length;
       const previouslySkippedCount = group.filter((player) => previouslySkippedPlayerIds.has(player.id)).length;
-      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -previouslySkippedCount, -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), sorted.map((player) => player.id).join(","), Math.abs(teamATotal - teamBTotal), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, keyString];
+      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, -previouslySkippedCount, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), sorted.map((player) => player.id).join(","), Math.abs(teamATotal - teamBTotal), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, keyString];
       const suggestion = {
         mode,
         teamA,
@@ -271,8 +280,10 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
         difference: Math.abs(teamATotal - teamBTotal),
         key: keyString,
         explanation: {
-          algorithmVersion: "v2-rotation",
+          algorithmVersion: MATCHMAKING_ALGORITHM,
           mode,
+          strengthGap: strengthGap ?? null,
+          rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() },
           teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: Math.abs(teamATotal - teamBTotal) },
           skillDiversity: { groupSpread: skillSpread, partnerMix },
           repeatPenalties: {
@@ -292,8 +303,9 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       };
       if (!best || compare(key, best.key) < 0) best = { key, suggestion };
     }
-  }
-  return best?.suggestion ?? null;
+  });
+  const selected = best as { suggestion: Suggestion } | null;
+  return selected?.suggestion ?? null;
 }
 
 export function queueBuckets(players: DomainQueuePlayer[], now = Date.now()) {
