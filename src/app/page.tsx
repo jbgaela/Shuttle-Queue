@@ -137,24 +137,25 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
 }
 
 function OfflineBootstrap({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  const queryClient = useQueryClient();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       await saveProfile({ accountId: user.id, username: user.username, role: user.role, updatedAt: new Date().toISOString() });
-      try { await syncAccount(user.id); } catch (reason) { if (!(await hasSnapshot(user.id))) { if (!cancelled) setError(errorMessage(reason)); return; } }
+      try { await syncAccount(user.id); queryClient.invalidateQueries(); } catch (reason) { if (!(await hasSnapshot(user.id))) { if (!cancelled) setError(errorMessage(reason)); return; } }
       if (!cancelled) setReady(true);
     })();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, queryClient]);
   useEffect(() => {
-    const attempt = () => { if (navigator.onLine) void syncAccount(user.id).catch(() => undefined); };
+    const attempt = () => { if (navigator.onLine) void syncAccount(user.id).then(() => queryClient.invalidateQueries()).catch(() => undefined); };
     const onVisible = () => { if (document.visibilityState === "visible") attempt(); };
     window.addEventListener("online", attempt); document.addEventListener("visibilitychange", onVisible);
     const timer = window.setInterval(attempt, 60_000);
     return () => { window.removeEventListener("online", attempt); document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
-  }, [user.id]);
+  }, [user.id, queryClient]);
   if (error) return <main className="grid min-h-screen place-items-center px-5"><Card className="max-w-md p-6"><h1 className="display text-3xl">Download required</h1><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Sign in once while online to download this account for offline use.</p><p role="alert" className="mt-4 rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{error}</p><Button className="mt-5 w-full" onClick={() => window.location.reload()}>Try again</Button></Card></main>;
   if (!ready) return <LoadingState variant="fullPage" label="Preparing your offline workspace" />;
   return <AppShell user={user} onLogout={onLogout} />;
@@ -744,6 +745,7 @@ function PlayersView({ sessionId }: { sessionId: string }) {
 }
 
 function OfflineSyncPanel({ accountId: providedAccountId }: { accountId: string | undefined }) {
+  const queryClient = useQueryClient();
   const [accountId, setAccountId] = useState(providedAccountId ?? "");
   const [meta, setMeta] = useState<Awaited<ReturnType<typeof getMeta>>>(undefined);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
@@ -754,13 +756,13 @@ function OfflineSyncPanel({ accountId: providedAccountId }: { accountId: string 
   const [preview, setPreview] = useState<SyncPreview | null>(null);
   const refresh = useCallback(async () => { if (!accountId) return; setMeta(await getMeta(accountId)); setStorage(await storageEstimate()); }, [accountId]);
   useEffect(() => { void (async () => { const profile = providedAccountId ? null : await retainedProfile(); if (profile) setAccountId(profile.accountId); })(); const onStatus = () => { setOnline(navigator.onLine); void refresh(); }; window.addEventListener("online", onStatus); window.addEventListener("offline", onStatus); window.addEventListener("shuttle-queue-offline-change", onStatus); return () => { window.removeEventListener("online", onStatus); window.removeEventListener("offline", onStatus); window.removeEventListener("shuttle-queue-offline-change", onStatus); }; }, [providedAccountId, refresh]);
-  const runSync = async () => { if (!accountId) return; setBusy(true); setError(null); try { const result = await syncAccount(accountId, "manual"); if (result.state === "confirmation-required") { setPreview(result.preview); setConfirm("replace"); } else toast.success(result.state === "uploaded" ? "Local workspace uploaded." : result.state === "downloaded" ? "Downloaded the cloud copy." : "Local copy is up to date."); await refresh(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); } };
-  const replaceCloud = async () => { if (!accountId || !preview) return; setBusy(true); setError(null); try { const result = await confirmLocalReplacement(accountId, preview.cloudRevision); setConfirm(null); setPreview(null); toast.success(`Local workspace uploaded at cloud revision ${result.cloudRevision}.`); await refresh(); } catch (reason) { setError(errorMessage(reason)); await refresh(); } finally { setBusy(false); } };
+  const runSync = async () => { if (!accountId) return; setBusy(true); setError(null); try { const result = await syncAccount(accountId, "manual"); await queryClient.invalidateQueries(); toast.success(result.state === "uploaded" ? "Changes merged across devices." : result.state === "downloaded" ? "Downloaded the cloud copy." : "All devices are up to date."); await refresh(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); } };
+  const replaceCloud = async () => { if (!accountId || !preview) return; setBusy(true); setError(null); try { const result = await confirmLocalReplacement(accountId, preview.cloudRevision); setConfirm(null); setPreview(null); toast.success(`Changes merged at cloud revision ${result.cloudRevision}.`); await refresh(); } catch (reason) { setError(errorMessage(reason)); await refresh(); } finally { setBusy(false); } };
   const download = async () => { if (!accountId) return; setBusy(true); setError(null); try { await downloadFromCloud(accountId, false); toast.success("Downloaded the cloud copy."); await refresh(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); } };
   const remove = async () => { if (!accountId) return; setBusy(true); try { await clearAccountData(accountId); setConfirm(null); window.location.reload(); } catch (reason) { setError(errorMessage(reason)); setBusy(false); } };
   const used = storage?.usage ? `${Math.round(storage.usage / 1024 / 1024)} MB` : "—"; const quota = storage?.quota ? `${Math.round(storage.quota / 1024 / 1024)} MB` : "—";
-  const statusLabel = meta?.syncAttention ? "Needs manual sync" : meta?.dirty ? "Pending changes" : "Up to date";
-  const previewBody = preview ? [preview.cloudChanged ? "A newer cloud revision exists and will be replaced." : "", preview.removed.playerNames.length ? `Players removed from cloud: ${preview.removed.playerNames.join(", ")}.` : "", preview.removed.queuePlayers ? `${preview.removed.queuePlayers} queue entries will be removed.` : "", preview.removed.courts ? `${preview.removed.courts} courts will be removed.` : "", preview.removed.matches ? `${preview.removed.matches} matches will be removed.` : "", preview.removed.payments ? `${preview.removed.payments} payments will be removed.` : "", preview.removed.feeConfig ? "The cloud fee configuration will be removed." : "", "The local workspace will become the cloud copy."].filter(Boolean).join(" ") : "This device's local workspace will replace the cloud workspace.";
+  const statusLabel = busy ? "Merging changes" : meta?.dirty ? "Pending changes" : "Up to date";
+  const previewBody = "The server will merge this device's changes with newer cloud transactions. No payment, score, or player record will be discarded.";
   return <Card><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Device storage</p><h3 className="display mt-1 text-3xl">Offline workspace</h3></div><Badge tone={online ? "teal" : "orange"}>{online ? "Online" : "Offline"}</Badge></div><p className="mt-3 text-sm leading-6 text-[var(--muted)]">All current queue operations are stored on this device first. Anyone with access to this browser profile can open the downloaded account.</p><div className="mt-5 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-[#f7faf8] p-3"><p className="text-xs text-[var(--muted)]">Local status</p><p className="mt-1 font-semibold">{statusLabel}</p></div><div className="rounded-2xl bg-[#f7faf8] p-3"><p className="text-xs text-[var(--muted)]">Cloud revision</p><p className="mt-1 font-semibold">{meta?.baseCloudRevision ?? "—"}</p></div><div className="rounded-2xl bg-[#f7faf8] p-3"><p className="text-xs text-[var(--muted)]">Storage</p><p className="mt-1 font-semibold">{used} / {quota}</p></div></div>{meta?.syncAttention && <p className="mt-3 text-xs text-[#8d4824]">Review the local changes before they replace newer cloud data.</p>}{meta?.lastSyncAt && <p className="mt-3 text-xs text-[var(--muted)]">Last sync {new Date(meta.lastSyncAt).toLocaleString()}</p>}{error && <p role="alert" className="mt-4 rounded-2xl bg-[#fff0e4] px-3 py-2 text-sm text-[#8d4824]">{error}</p>}<div className="mt-5 flex flex-col gap-2 sm:flex-row"><Button disabled={!online || busy} onClick={() => void runSync()}><RefreshCw size={15} /> {busy ? "Syncing…" : "Sync now"}</Button><Button variant="quiet" disabled={!online || busy} onClick={() => meta?.dirty ? setConfirm("download") : void download()}>Download from cloud</Button><Button variant="quiet" disabled={busy} onClick={() => setConfirm("remove")}>Remove downloaded data</Button></div>{confirm === "replace" && <DestructiveConfirmDialog title="Replace cloud data?" body={previewBody} confirmLabel="Replace cloud" pending={busy} onConfirm={() => void replaceCloud()} onClose={() => { if (!busy) { setConfirm(null); setPreview(null); } }} />}{confirm === "download" && <DestructiveConfirmDialog title="Download and discard local changes?" body="This device has pending work. Downloading now will permanently discard those local changes. You can sync this device first, or cancel." confirmLabel="Discard and download" secondaryLabel="Sync this device first" pending={busy} onSecondary={() => { setConfirm(null); void runSync(); }} onConfirm={() => { setConfirm(null); setBusy(true); void downloadFromCloud(accountId, true).then(() => refresh()).catch((reason) => setError(errorMessage(reason))).finally(() => setBusy(false)); }} onClose={() => setConfirm(null)} />}{confirm === "remove" && <DestructiveConfirmDialog title="Remove downloaded data?" body="This deletes this account’s offline copy and any pending work from this browser. The installed app remains, and the cloud account is unchanged." confirmLabel="Remove local data" pending={busy} onConfirm={() => void remove()} onClose={() => setConfirm(null)} />}</Card>;
 }
 

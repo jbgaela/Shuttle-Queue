@@ -61,7 +61,7 @@ export type DomainPayment = { id: string; queuePlayerId: string; kind: string; m
 export type DomainAudit = { id: string; action: string; entityType: string; entityId: string; reason?: string | null; beforeJson?: unknown; afterJson?: unknown; requestId: string; createdAt: string };
 
 export type CloudSnapshotV2 = {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   queueMasterId: string;
   settings: DomainSettings | null;
   workspace: DomainWorkspace;
@@ -73,6 +73,9 @@ export type CloudSnapshotV2 = {
   payments: DomainPayment[];
   audits: DomainAudit[];
 };
+
+export type { CloudSnapshotV3, SyncClock, SyncMetadata, SyncRecordMetadata } from "./sync.js";
+export { emptySyncMetadata, mergeSyncMetadata, mergeSyncSnapshots, seedSyncMetadata, stampSnapshotChanges } from "./sync.js";
 
 export type PlayerDeletionBusyPlayer = {
   playerId: string;

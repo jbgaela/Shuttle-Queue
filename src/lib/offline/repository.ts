@@ -1,14 +1,13 @@
-import type { CloudSnapshotV2, DomainMatch, DomainPlayer, DomainQueuePlayer, MatchHistory, MatchPlayer, ScoreSettings } from "./domain-compat";
+import type { CloudSnapshotV2, DomainMatch, DomainPlayer, DomainQueuePlayer, MatchHistory, MatchPlayer, ScoreSettings, SyncMetadata } from "./domain-compat";
 import { applyPlayerDeletion, historyDurationSeconds, normalizeText, suggestMatch, validateScores } from "./domain-compat";
 import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, Suggestion, WorkspaceSummary } from "../api";
 import { request } from "../api";
 import { hasPlayerNameConflict } from "../player-names";
 import { appendAudit, clearAccountData, completeSnapshotUpload, firstProfile, getDeviceId, getMeta, hasSnapshot, markSyncAttention, offlineDb, prepareSnapshotUpload, readSnapshot, replaceSnapshot, saveProfile, storageEstimate, updateLocalSnapshot } from "./db";
-import { createSyncPreview, hasDestructiveSyncChanges, type SyncPreview } from "./sync-plan";
 import { singleFlightByKey } from "./sync-flight";
+import type { SyncPreview } from "./sync-plan";
 import { datePartsForInstant, instantForLocalDateTime } from "../timezone";
 
-export type { SyncPreview } from "./sync-plan";
 
 const id = () => typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const uploadFlights = new Map<string, Promise<{ state: "uploaded"; cloudRevision: number }>>();
@@ -410,15 +409,16 @@ export async function hasLocalSnapshot() { return hasSnapshot(); }
 export async function retainedProfile() { return firstProfile(); }
 export async function currentAccountId() { let preferred: string | null = null; try { preferred = window.localStorage.getItem("shuttle-queue-current-account"); } catch { /* ignore */ } if (preferred && await hasSnapshot(preferred)) return preferred; const row = (await offlineDb.snapshots.toArray())[0]; if (!row) throw new Error("Download this account before working offline."); return row.accountId; }
 export type SyncTrigger = "background" | "manual";
+export type { SyncPreview } from "./sync-plan";
 export type SyncResult =
   | { state: "downloaded" | "clean" | "uploaded"; cloudRevision: number }
-  | { state: "confirmation-required" | "manual-required"; preview: SyncPreview };
+  | { state: "confirmation-required" | "manual-required"; preview: never };
 
-type RemoteSnapshot = { snapshot: CloudSnapshotV2; cloudRevision: number };
+type RemoteSnapshot = { snapshot: CloudSnapshotV2; cloudRevision: number; metadata?: SyncMetadata };
 
 async function remoteSnapshot(): Promise<RemoteSnapshot> {
   const remote = await request<RemoteSnapshot>("/sync/snapshot");
-  if (remote.snapshot.schemaVersion !== 2) throw new Error("This offline snapshot is incompatible. Download the current queue online.");
+  if (remote.snapshot.schemaVersion !== 2 && remote.snapshot.schemaVersion !== 3) throw new Error("This offline snapshot is incompatible. Download the current queue online.");
   return remote;
 }
 
@@ -426,8 +426,9 @@ async function uploadLocalSnapshotInternal(accountId: string, expectedCloudRevis
   const local = await getMeta(accountId);
   if (!local) throw new Error("Local data is missing.");
   const batch = await prepareSnapshotUpload(accountId);
-  const uploaded = await request<{ cloudRevision: number; alreadyApplied?: boolean }>("/sync/snapshot", { method: "PUT", body: JSON.stringify({ schemaVersion: 2, deviceId: local.deviceId, operationId: batch.operationId, baseCloudRevision: expectedCloudRevision, force: false, snapshot: batch.snapshot, auditEvents: batch.auditEvents }) });
-  const completed = await completeSnapshotUpload(accountId, batch, uploaded.cloudRevision);
+  const uploaded = await request<{ cloudRevision: number; alreadyApplied?: boolean; snapshot?: CloudSnapshotV2; metadata?: SyncMetadata }>("/sync/snapshot", { method: "PUT", body: JSON.stringify({ schemaVersion: 3, deviceId: local.deviceId, operationId: batch.operationId, baseCloudRevision: expectedCloudRevision, force: false, snapshot: batch.snapshot, metadata: batch.metadata, auditEvents: batch.auditEvents }) });
+  const completedBatch = { ...batch, ...(uploaded.snapshot ? { snapshot: uploaded.snapshot } : {}), ...(uploaded.metadata ? { metadata: uploaded.metadata } : {}) };
+  const completed = await completeSnapshotUpload(accountId, completedBatch, uploaded.cloudRevision);
   if (completed) await markSyncAttention(accountId, null);
   return { state: "uploaded" as const, cloudRevision: uploaded.cloudRevision };
 }
@@ -440,23 +441,16 @@ export async function syncAccount(accountId: string, trigger: SyncTrigger = "bac
   const local = await getMeta(accountId);
   if (!local || !(await hasSnapshot(accountId))) {
     const remote = await remoteSnapshot();
-    await replaceSnapshot(accountId, remote.snapshot, remote.cloudRevision);
+    await replaceSnapshot(accountId, remote.snapshot, remote.cloudRevision, remote.metadata);
     return { state: "downloaded", cloudRevision: remote.cloudRevision };
   }
   const remote = await remoteSnapshot();
   if (!local.dirty) {
     if (remote.cloudRevision > local.baseCloudRevision) {
-      await replaceSnapshot(accountId, remote.snapshot, remote.cloudRevision);
+      await replaceSnapshot(accountId, remote.snapshot, remote.cloudRevision, remote.metadata);
       return { state: "downloaded", cloudRevision: remote.cloudRevision };
     }
     return { state: "clean", cloudRevision: remote.cloudRevision };
-  }
-  const cloudChanged = local.baseCloudRevision !== remote.cloudRevision;
-  const preview = createSyncPreview((await readSnapshot(accountId))!, remote.snapshot, remote.cloudRevision, cloudChanged);
-  const destructive = hasDestructiveSyncChanges(preview);
-  if (cloudChanged || destructive) {
-    await markSyncAttention(accountId, "manual");
-    return { state: trigger === "manual" ? "confirmation-required" : "manual-required", preview };
   }
   return uploadLocalSnapshot(accountId, remote.cloudRevision);
 }
@@ -465,5 +459,5 @@ export async function confirmLocalReplacement(accountId: string, confirmedCloudR
   return uploadLocalSnapshot(accountId, confirmedCloudRevision);
 }
 
-export async function downloadFromCloud(accountId: string, discard = false) { const meta = await getMeta(accountId); if (meta?.dirty && !discard) throw new Error("Pending local changes must be synced or discarded first."); const remote = await remoteSnapshot(); await replaceSnapshot(accountId, remote.snapshot, remote.cloudRevision); return { state: "downloaded" as const, cloudRevision: remote.cloudRevision }; }
+export async function downloadFromCloud(accountId: string, discard = false) { const meta = await getMeta(accountId); if (meta?.dirty && !discard) throw new Error("Pending local changes must be synced or discarded first."); const remote = await remoteSnapshot(); await replaceSnapshot(accountId, remote.snapshot, remote.cloudRevision, remote.metadata); return { state: "downloaded" as const, cloudRevision: remote.cloudRevision }; }
 export { clearAccountData, getMeta, hasSnapshot, saveProfile, storageEstimate };

@@ -4,11 +4,16 @@ export {
   normalizeText,
   previewPlayerDeletion,
   suggestMatch,
+  emptySyncMetadata,
+  mergeSyncSnapshots,
+  seedSyncMetadata,
+  stampSnapshotChanges,
   validateScores,
 } from "@shuttle-queue/domain";
 
 export type {
   CloudSnapshotV2,
+  CloudSnapshotV3,
   DomainAudit,
   DomainCourt,
   DomainFeeConfig,
@@ -25,4 +30,5 @@ export type {
   MatchScoreRevision,
   QueuePlayerStatus,
   ScoreSettings,
+  SyncMetadata,
 } from "@shuttle-queue/domain";

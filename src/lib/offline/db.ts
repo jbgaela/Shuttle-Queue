@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
-import type { CloudSnapshotV2 } from "./domain-compat";
+import type { CloudSnapshotV2, SyncMetadata } from "./domain-compat";
+import { seedSyncMetadata, stampSnapshotChanges } from "./domain-compat";
 import { normalizeSnapshotForSync } from "./snapshot-normalization";
 import { operationIdForRevision } from "./sync-operation";
 
@@ -19,10 +20,11 @@ export type LocalSyncMeta = {
 
 export type LocalProfile = { accountId: string; username: string; role: string; updatedAt: string };
 export type LocalAuditEvent = { id: string; accountId: string; action: string; entityType: string; entityId: string; reason?: string; beforeJson?: unknown; afterJson?: unknown; createdAt: string };
-type SnapshotRow = { accountId: string; snapshot: CloudSnapshotV2; updatedAt: string };
+type SnapshotRow = { accountId: string; snapshot: CloudSnapshotV2; metadata?: SyncMetadata; updatedAt: string };
 
 export type SnapshotUploadBatch = {
   snapshot: CloudSnapshotV2;
+  metadata: SyncMetadata;
   localRevision: number;
   operationId: string;
   auditEvents: LocalAuditEvent[];
@@ -40,6 +42,7 @@ class OfflineDatabase extends Dexie {
     this.version(2).stores({ profiles: "accountId,updatedAt", meta: "accountId,dirty,baseCloudRevision", snapshots: "accountId,updatedAt", audits: "id,accountId,createdAt" }).upgrade(async (transaction) => {
       await Promise.all([transaction.table("meta").clear(), transaction.table("snapshots").clear(), transaction.table("audits").clear()]);
     });
+    this.version(3).stores({ profiles: "accountId,updatedAt", meta: "accountId,dirty,baseCloudRevision", snapshots: "accountId,updatedAt", audits: "id,accountId,createdAt" });
   }
 }
 
@@ -76,12 +79,12 @@ export async function readSnapshot(accountId: string) {
   return snapshot ? normalizeSnapshotForSync(snapshot) : null;
 }
 
-export async function replaceSnapshot(accountId: string, snapshot: CloudSnapshotV2, cloudRevision: number) {
-  if (snapshot.schemaVersion !== 2) throw new Error("This offline snapshot is incompatible. Download the current queue online.");
+export async function replaceSnapshot(accountId: string, snapshot: CloudSnapshotV2, cloudRevision: number, metadata?: SyncMetadata) {
+  if (snapshot.schemaVersion !== 2 && snapshot.schemaVersion !== 3) throw new Error("This offline snapshot is incompatible. Download the current queue online.");
   const normalizedSnapshot = normalizeSnapshotForSync(snapshot);
   const now = new Date().toISOString();
   await offlineDb.transaction("rw", offlineDb.snapshots, offlineDb.meta, offlineDb.audits, async () => {
-    await offlineDb.snapshots.put({ accountId, snapshot: normalizedSnapshot, updatedAt: now });
+    await offlineDb.snapshots.put({ accountId, snapshot: normalizedSnapshot, metadata: metadata ?? seedSyncMetadata(normalizedSnapshot, getDeviceId(), now), updatedAt: now });
     await offlineDb.meta.put({ accountId, deviceId: getDeviceId(), localRevision: 0, lastUploadedRevision: cloudRevision, baseCloudRevision: cloudRevision, dirty: false, lastSyncAt: now, lastError: null });
     await offlineDb.audits.where("accountId").equals(accountId).delete();
   });
@@ -106,11 +109,13 @@ export async function updateLocalSnapshot<T>(accountId: string, update: (snapsho
   await offlineDb.transaction("rw", offlineDb.snapshots, offlineDb.meta, offlineDb.audits, async () => {
     const row = await offlineDb.snapshots.get(accountId);
     if (!row) throw new Error("Download this account before working offline.");
-    const snapshot = normalizeSnapshotForSync(typeof structuredClone === "function" ? structuredClone(row.snapshot) : JSON.parse(JSON.stringify(row.snapshot)) as CloudSnapshotV2);
-    result = await update(snapshot);
     const prior = await offlineDb.meta.get(accountId);
+    const snapshot = normalizeSnapshotForSync(typeof structuredClone === "function" ? structuredClone(row.snapshot) : JSON.parse(JSON.stringify(row.snapshot)) as CloudSnapshotV2);
+    const metadata = row.metadata ?? seedSyncMetadata(snapshot, prior?.deviceId ?? getDeviceId(), row.updatedAt);
+    result = await update(snapshot);
+    const nextMetadata = stampSnapshotChanges(row.snapshot, snapshot, metadata, prior?.deviceId ?? getDeviceId(), new Date().toISOString(), (prior?.localRevision ?? 0) + 1);
     const localRevision = (prior?.localRevision ?? 0) + 1;
-    await offlineDb.snapshots.put({ ...row, snapshot, updatedAt: new Date().toISOString() });
+    await offlineDb.snapshots.put({ ...row, snapshot, metadata: nextMetadata, updatedAt: new Date().toISOString() });
     await offlineDb.meta.put({ accountId, deviceId: prior?.deviceId ?? getDeviceId(), localRevision, lastUploadedRevision: prior?.lastUploadedRevision ?? 0, baseCloudRevision: prior?.baseCloudRevision ?? 0, dirty: true, pendingOperationId: randomId(), pendingOperationRevision: localRevision, ...(prior?.lastSyncAt !== undefined ? { lastSyncAt: prior.lastSyncAt } : {}), ...(prior?.syncAttention !== undefined ? { syncAttention: prior.syncAttention } : {}), lastError: null });
   });
   notifyOfflineChange();
@@ -126,7 +131,7 @@ export async function prepareSnapshotUpload(accountId: string): Promise<Snapshot
     if (operationId !== current.pendingOperationId || current.pendingOperationRevision !== current.localRevision) {
       await offlineDb.meta.put({ ...current, pendingOperationId: operationId, pendingOperationRevision: current.localRevision });
     }
-    return { snapshot: normalizeSnapshotForSync(row.snapshot), localRevision: current.localRevision, operationId, auditEvents: await offlineDb.audits.where("accountId").equals(accountId).toArray() };
+    return { snapshot: { ...normalizeSnapshotForSync(row.snapshot), schemaVersion: 3 as const }, metadata: row.metadata ?? seedSyncMetadata(row.snapshot, current.deviceId, row.updatedAt), localRevision: current.localRevision, operationId, auditEvents: await offlineDb.audits.where("accountId").equals(accountId).toArray() };
   });
 }
 
@@ -141,7 +146,7 @@ export async function completeSnapshotUpload(accountId: string, batch: SnapshotU
     const sameBatch = current.localRevision === batch.localRevision && current.pendingOperationId === batch.operationId;
     sameBatchResult = sameBatch;
     if (sameBatch) {
-      await offlineDb.snapshots.put({ ...row, snapshot: normalizeSnapshotForSync(batch.snapshot), updatedAt: now });
+      await offlineDb.snapshots.put({ ...row, snapshot: normalizeSnapshotForSync(batch.snapshot), metadata: batch.metadata, updatedAt: now });
       const { pendingOperationId: _operationId, pendingOperationRevision: _operationRevision, ...cleanMeta } = current;
       await offlineDb.meta.put({ ...cleanMeta, lastUploadedRevision: current.localRevision, baseCloudRevision: cloudRevision, dirty: false, lastSyncAt: now, lastError: null });
     } else {
