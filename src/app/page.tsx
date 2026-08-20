@@ -661,6 +661,7 @@ function EditPlayerDialog({ player, pending, error, onConfirm, onClose }: { play
 
 function PlayersView({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
+  const [directorySearch, setDirectorySearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [deleteMode, setDeleteMode] = useState(false);
   const [deleteSelected, setDeleteSelected] = useState<string[]>([]);
@@ -676,14 +677,15 @@ function PlayersView({ sessionId }: { sessionId: string }) {
   const edit = useMutation({ mutationFn: (input: { player: Player; body: { displayName: string; gender: "MALE" | "FEMALE"; skillLevel: string } }) => api.updatePlayer(input.player, input.body), onSuccess: (updated) => { queryClient.setQueryData<Player[]>(["players"], (current = []) => current.map((player) => player.id === updated.id ? updated : player).sort((a, b) => a.displayName.localeCompare(b.displayName))); queryClient.invalidateQueries({ queryKey: ["workspace"] }); queryClient.invalidateQueries({ queryKey: ["sessions"] }); for (const key of ["sessionPlayers", "queue", "matches", "history", "playerHistory", "rankings", "fees"]) queryClient.invalidateQueries({ queryKey: [key, sessionId] }); queryClient.invalidateQueries({ queryKey: ["rankings", "career"] }); setEditPlayer(null); toast.success("Player updated."); }, onError: (reason) => toast.error(errorMessage(reason)) });
   const preview = useMutation({ mutationFn: (playerIds: string[]) => api.playerDeletionPreview(playerIds), onSuccess: setDeletePreview });
   const remove = useMutation({ mutationFn: (playerIds: string[]) => api.deletePlayers(playerIds), onSuccess: (result) => { setDeleteSelected([]); setDeletePreview(null); setDeleteMode(false); setSelected([]); queryClient.invalidateQueries({ queryKey: ["players"] }); queryClient.invalidateQueries({ queryKey: ["workspace"] }); queryClient.invalidateQueries({ queryKey: ["sessions"] }); for (const key of ["sessionPlayers", "queue", "courts", "matches", "history", "playerHistory", "rankings", "fees", "payments"]) queryClient.invalidateQueries({ queryKey: [key, sessionId] }); queryClient.invalidateQueries({ queryKey: ["rankings", "career"] }); toast.success(`${result.deletedPlayerIds.length} player${result.deletedPlayerIds.length === 1 ? "" : "s"} deleted.`); } });
-  const players = playersQuery.data ?? EMPTY_PLAYERS;
+  const allPlayers = playersQuery.data ?? EMPTY_PLAYERS;
+  const players = useMemo(() => { const needle = directorySearch.trim().toLowerCase(); return needle ? allPlayers.filter((player) => `${player.displayName} ${player.gender} ${player.skillLevel}`.toLowerCase().includes(needle)) : allPlayers; }, [allPlayers, directorySearch]);
   const sessionPlayers = useMemo(() => sessionPlayersQuery.data ?? [], [sessionPlayersQuery.data]);
   const addedIds = useMemo(() => new Set(sessionPlayers.map((player) => player.playerId).filter((id): id is string => Boolean(id))), [sessionPlayers]);
   const availablePlayerIds = useMemo(() => players.filter((player) => !addedIds.has(player.id)).map((player) => player.id), [players, addedIds]);
   const selectedLimitExceeded = selected.length > MAX_PLAYER_ADD_BATCH;
   const bulkAvailableIds = availablePlayerIds.slice(0, MAX_PLAYER_ADD_BATCH);
   const allAvailableSelected = bulkAvailableIds.length > 0 && bulkAvailableIds.every((id) => selected.includes(id));
-  const toggleSelectAllAvailable = () => setSelected(allAvailableSelected ? (current) => current.filter((id) => !bulkAvailableIds.includes(id)) : bulkAvailableIds);
+  const toggleSelectAllAvailable = () => setSelected((current) => allAvailableSelected ? current.filter((id) => !bulkAvailableIds.includes(id)) : [...new Set([...current, ...bulkAvailableIds])]);
   const allVisibleSelected = players.length > 0 && players.every((player) => deleteSelected.includes(player.id));
   const toggleDeleteVisible = () => setDeleteSelected((current) => allVisibleSelected ? current.filter((id) => !players.some((player) => player.id === id)) : [...new Set([...current, ...players.map((player) => player.id)])]);
   const selectAllAvailable = toggleSelectAllAvailable;
@@ -702,9 +704,36 @@ function PlayersView({ sessionId }: { sessionId: string }) {
     const visible = buttons.find((button) => button.textContent?.includes("Select all visible") || button.textContent?.includes("Unselect all visible"));
     update(visible, allVisibleSelected, allVisibleSelected ? "Unselect all visible" : "Select all visible");
   }, [allAvailableSelected, allVisibleSelected, availablePlayerIds.length]);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const heading = [...document.querySelectorAll("h3")].find((element) => element.textContent === "Player directory");
+    const card = heading?.closest("section");
+    if (!card) return;
+    const existingLabel = card.querySelector<HTMLLabelElement>("[data-player-directory-search]");
+    let field = existingLabel?.querySelector<HTMLInputElement>("input") ?? null;
+    let insertedLabel: HTMLLabelElement | null = null;
+    if (!field) {
+      const label = document.createElement("label");
+      label.dataset.playerDirectorySearch = "true";
+      label.className = "relative mt-4 block";
+      label.textContent = "Search player directory";
+      field = document.createElement("input");
+      field.type = "search";
+      field.className = "focus-ring mt-1 w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]";
+      field.placeholder = "Search by player name, gender, or skill";
+      field.setAttribute("aria-label", "Search player directory");
+      field.addEventListener("input", () => setDirectorySearch(field?.value ?? ""));
+      label.appendChild(field);
+      const header = card.querySelector("h3")?.parentElement?.parentElement;
+      header?.insertAdjacentElement("afterend", label);
+      insertedLabel = label;
+    }
+    field.value = directorySearch;
+    return () => { insertedLabel?.remove(); };
+  }, [directorySearch]);
   const rosterReady = sessionPlayersQuery.isSuccess;
   if (playersQuery.isPending || sessionPlayersQuery.isPending) return <LoadingState label="Loading players" />;
-  const hasDuplicateName = (displayName: string, excludedPlayerId?: string) => hasPlayerNameConflict(players, sessionPlayers, displayName, excludedPlayerId);
+  const hasDuplicateName = (displayName: string, excludedPlayerId?: string) => hasPlayerNameConflict(allPlayers, sessionPlayers, displayName, excludedPlayerId);
   const submitCreate = () => { if (hasDuplicateName(name)) { toast.error(PLAYER_NAME_CONFLICT_MESSAGE); return; } create.reset(); create.mutate(); };
   const submitEdit = (body: { displayName: string; gender: "MALE" | "FEMALE"; skillLevel: string }) => { if (!editPlayer) return; if (hasDuplicateName(body.displayName, editPlayer.id)) { toast.error(PLAYER_NAME_CONFLICT_MESSAGE); return; } edit.reset(); edit.mutate({ player: editPlayer, body }); };
   const requestDelete = (playerIds: string[]) => { if (!playerIds.length) return; setDeleteSelected(playerIds); preview.mutate(playerIds); };
