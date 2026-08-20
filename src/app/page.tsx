@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -422,22 +422,13 @@ function ManualPlayerPicker({ team, players, selectedIds, onSelect, onClose }: {
   return <div className="fixed inset-0 z-50 grid items-end bg-[#102a2d]/45 p-0 sm:items-center sm:p-5"><div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="stacked-manual-picker-title" className="max-h-[85vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl outline-none sm:mx-auto sm:max-w-lg sm:rounded-3xl"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-[var(--teal)]">Manual matchup</p><h2 id="stacked-manual-picker-title" className="display mt-1 text-3xl">Choose Team {team} player</h2></div><Button variant="quiet" className="px-3" aria-label="Close player picker" onClick={onClose}><X size={18} /></Button></div><label className="mt-5 block text-sm font-semibold">Search queued players<Input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name, status, gender, or skill" /></label><div className="mt-4 space-y-2">{eligible.length === 0 ? <EmptyState icon={UsersRound} title="No eligible players" body="Waiting, playing, and queued players can be added once per lineup." /> : eligible.map((player) => { const statusText = player.status === "PLAYING" ? "Playing now · queue for later" : player.status === "QUEUED" ? "Already queued · can be added again" : `${waitMinutes(player)} waiting`; return <button type="button" key={player.id} className="focus-ring flex w-full items-center gap-3 rounded-2xl border border-[var(--line)] p-3 text-left hover:border-[var(--teal)]" onClick={() => onSelect(player)}><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{player.displayName}</span><span className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><StatusBadge status={player.status} /><span>{player.gender === "MALE" ? "Male" : "Female"} · {pretty(player.skillLevel)} · {player.matchesPlayed} games · {statusText}</span></span></span><Plus size={17} className="shrink-0 text-[var(--teal)]" /></button>; })}</div></div></div>;
 }
 
-function StrengthGapSelect({ value, onChange }: { value: 1 | 2 | 3; onChange: (value: 1 | 2 | 3) => void }) {
-  return <label className="mt-3 block text-sm font-semibold">Balanced strength gap<Select value={String(value)} onChange={(event) => onChange(Number(event.target.value) as 1 | 2 | 3)}><option value="1">Balanced (+1 strength)</option><option value="2">Balanced (+2 strength)</option><option value="3">Balanced (+3 strength)</option></Select></label>;
-}
-
-const STRENGTH_GAP_STORAGE_KEY = "shuttle-queue-strength-gap";
-function useStrengthGapPreference(): [1 | 2 | 3, (value: 1 | 2 | 3) => void] {
-  const [value, setValue] = useState<1 | 2 | 3>(1);
-  useEffect(() => { const update = () => { const stored = Number(window.localStorage.getItem(STRENGTH_GAP_STORAGE_KEY)); if (stored === 1 || stored === 2 || stored === 3) setValue(stored); }; update(); window.addEventListener("shuttle-queue-strength-gap", update); return () => window.removeEventListener("shuttle-queue-strength-gap", update); }, []);
-  const update = (next: 1 | 2 | 3) => { setValue(next); try { window.localStorage.setItem(STRENGTH_GAP_STORAGE_KEY, String(next)); window.dispatchEvent(new Event("shuttle-queue-strength-gap")); } catch { /* private browsing may deny storage access */ } };
-  return [value, update];
-}
+function suggestionApiMode(mode: string) { return mode.startsWith("BALANCED") ? "BALANCED" : mode; }
+function suggestionStrengthGap(mode: string): 1 | 2 | 3 | undefined { return mode === "BALANCED" || mode === "BALANCED_1" ? 1 : mode === "BALANCED_2" ? 2 : mode === "BALANCED_3" ? 3 : undefined; }
 
 function LegacyMatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: string; queue: QueueState; courts: Court[]; onChanged: () => void }) {
   const [panelMode, setPanelMode] = useState<"suggested" | "manual">("suggested");
-  const [mode, setMode] = useState("BALANCED");
-  const [strengthGap, setStrengthGap] = useStrengthGapPreference();
+  const [mode, setMode] = useState("BALANCED_1");
+  const strengthGap = suggestionStrengthGap(mode) ?? 1;
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [courtId, setCourtId] = useState("");
   const [manualTeamA, setManualTeamA] = useState<string[]>([]);
@@ -450,7 +441,7 @@ function LegacyMatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessio
   const cycleScope = `${mode}|${strengthGap}|${waitingFingerprint}`;
   const excludedSuggestionKeys = suggestionCycle.scope === cycleScope ? suggestionCycle.keys : [];
   const visibleSuggestion = suggestion && suggestionScope === cycleScope ? suggestion : null;
-  const suggest = useMutation({ mutationFn: () => api.suggestions(sessionId, mode, mode === "BALANCED" ? strengthGap : undefined, excludedSuggestionKeys), onSuccess: (result) => { const nextSuggestion = result.suggestion; if (nextSuggestion) { setSuggestion(nextSuggestion); setSuggestionScope(cycleScope); setSuggestionCycle((current) => { const keys = result.cycleRestarted || current.scope !== cycleScope ? [] : current.keys; return { scope: cycleScope, keys: [...new Set([...keys, nextSuggestion.key])].slice(-50) }; }); setCourtId(""); } else toast.message(result.noMatch?.message ?? "No valid group is available yet."); }, onError: (error) => toast.error(errorMessage(error)) });
+  const suggest = useMutation({ mutationFn: () => api.suggestions(sessionId, suggestionApiMode(mode), suggestionStrengthGap(mode), excludedSuggestionKeys), onSuccess: (result) => { const nextSuggestion = result.suggestion; if (nextSuggestion) { setSuggestion(nextSuggestion); setSuggestionScope(cycleScope); setSuggestionCycle((current) => { const keys = result.cycleRestarted || current.scope !== cycleScope ? [] : current.keys; return { scope: cycleScope, keys: [...new Set([...keys, nextSuggestion.key])].slice(-50) }; }); setCourtId(""); } else toast.message(result.noMatch?.message ?? "No valid group is available yet."); }, onError: (error) => toast.error(errorMessage(error)) });
   const startSuggestion = useMutation({ mutationFn: () => { if (!visibleSuggestion || !courtId) throw new Error("Select an available court first."); return api.startSuggestedMatch(sessionId, { teamA: visibleSuggestion.teamA.map((player) => player.id), teamB: visibleSuggestion.teamB.map((player) => player.id), courtId, suggestionToken: visibleSuggestion.token }); }, onSuccess: () => { setSuggestion(null); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setCourtId(""); onChanged(); toast.success("Match started."); } });
   const selectedIds = useMemo(() => new Set([...manualTeamA, ...manualTeamB]), [manualTeamA, manualTeamB]);
   const manualReady = manualTeamA.length > 0 && manualTeamA.length === manualTeamB.length && [1, 2].includes(manualTeamA.length);
@@ -469,6 +460,18 @@ function LegacyMatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessio
 type SuggestionTeam = "A" | "B";
 type SuggestionDraft = { teamA: string[]; teamB: string[] };
 type SuggestionPickerTarget = { team: SuggestionTeam; slot: number };
+type MatchmakerPersistedState = {
+  mode: string;
+  strengthGap: 1 | 2 | 3;
+  suggestion: Suggestion | null;
+  draft: SuggestionDraft | null;
+  editing: boolean;
+  courtId: string;
+  suggestionScope: string;
+  suggestionCycle: { scope: string; keys: string[] };
+};
+const EMPTY_MATCHMAKER_STATE: MatchmakerPersistedState = { mode: "BALANCED_1", strengthGap: 1, suggestion: null, draft: null, editing: false, courtId: "", suggestionScope: "", suggestionCycle: { scope: "", keys: [] } };
+const MatchmakerPersistenceContext = createContext<{ state: MatchmakerPersistedState; onPersist: (state: MatchmakerPersistedState) => void; clear: () => void; version: number }>({ state: EMPTY_MATCHMAKER_STATE, onPersist: () => undefined, clear: () => undefined, version: 0 });
 
 function strengthValue(player: Pick<SessionPlayer, "skillWeight" | "skillLevel">) {
   return player.skillWeight ?? Math.max(0, SKILLS.indexOf(player.skillLevel) + 1);
@@ -528,19 +531,21 @@ function SuggestedPlayerPicker({
 }
 
 function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: string; queue: QueueState; courts: Court[]; onChanged: () => void }) {
+  const { state: persisted, onPersist, version: persistenceVersion } = useContext(MatchmakerPersistenceContext);
   const [panelMode, setPanelMode] = useState<"suggested" | "manual">("suggested");
-  const [mode, setMode] = useState("BALANCED");
-  const [strengthGap, setStrengthGap] = useStrengthGapPreference();
-  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
-  const [draft, setDraft] = useState<SuggestionDraft | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [courtId, setCourtIdRaw] = useState("");
+  const [mode, setMode] = useState(persisted.mode);
+  const strengthGap = suggestionStrengthGap(mode) ?? persisted.strengthGap;
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(persisted.suggestion);
+  const [draft, setDraft] = useState<SuggestionDraft | null>(persisted.draft);
+  const [editing, setEditing] = useState(persisted.editing);
+  const [courtId, setCourtIdRaw] = useState(persisted.courtId);
   const [manualTeamA, setManualTeamA] = useState<string[]>([]);
   const [manualTeamB, setManualTeamB] = useState<string[]>([]);
   const [pickerTarget, setPickerTarget] = useState<SuggestionPickerTarget | null>(null);
-  const [suggestionScope, setSuggestionScope] = useState("");
-  const [suggestionCycle, setSuggestionCycle] = useState<{ scope: string; keys: string[] }>({ scope: "", keys: [] });
+  const [suggestionScope, setSuggestionScope] = useState(persisted.suggestionScope);
+  const [suggestionCycle, setSuggestionCycle] = useState<{ scope: string; keys: string[] }>(persisted.suggestionCycle);
   const [clock, setClock] = useState(() => Date.now());
+  const previousPersistenceVersion = useRef(persistenceVersion);
   const manualPlayers = useMemo(() => [...queue.waiting, ...queue.playing, ...queue.queued, ...queue.resting], [queue.waiting, queue.playing, queue.queued, queue.resting]);
   const waitingFingerprint = useMemo(() => `${queue.lateArrivalCutoffAt ?? ""}|${queue.waiting.map((player) => `${player.id}:${player.matchesPlayed}:${player.queueEnteredAt ?? ""}:${player.lastMatchEndedAt ?? ""}:${player.restEligibleAt ?? ""}:${player.latePenaltyState ?? ""}`).sort().join("|")}`, [queue.lateArrivalCutoffAt, queue.waiting]);
   const cycleScope = `${mode}|${strengthGap}|${waitingFingerprint}`;
@@ -561,11 +566,17 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   const teamTotal = (ids: string[]) => teamPlayers(ids).reduce((total, player) => total + strengthValue(player), 0);
   const originalDraft: SuggestionDraft | null = suggestion ? { teamA: suggestion.teamA.map((player) => player.id), teamB: suggestion.teamB.map((player) => player.id) } : null;
   useEffect(() => {
+    if (previousPersistenceVersion.current === persistenceVersion) return;
+    previousPersistenceVersion.current = persistenceVersion;
+    setMode("BALANCED_1"); setSuggestion(null); setDraft(null); setEditing(false); setCourtIdRaw(""); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] });
+  }, [persistenceVersion]);
+  useEffect(() => { onPersist({ mode, strengthGap, suggestion, draft, editing, courtId, suggestionScope, suggestionCycle }); }, [courtId, draft, editing, mode, onPersist, suggestion, suggestionCycle, suggestionScope, strengthGap]);
+  useEffect(() => {
     if (!suggestion) return;
     const interval = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [suggestion]);
-  const suggest = useMutation({ mutationFn: () => api.suggestions(sessionId, mode, mode === "BALANCED" ? strengthGap : undefined, excludedSuggestionKeys), onSuccess: (result) => { if (!result.suggestion) { toast.message(result.noMatch?.message ?? "No valid group is available yet."); return; } const nextSuggestion = result.suggestion; setSuggestion(nextSuggestion); setDraft({ teamA: nextSuggestion.teamA.map((player) => player.id), teamB: nextSuggestion.teamB.map((player) => player.id) }); setSuggestionScope(cycleScope); setEditing(false); setPickerTarget(null); setCourtIdRaw(availableCourts[0]?.id ?? ""); setSuggestionCycle((current) => { const keys = result.cycleRestarted || current.scope !== cycleScope ? [] : current.keys; return { scope: cycleScope, keys: [...new Set([...keys, nextSuggestion.key])].slice(-50) }; }); }, onError: (error) => toast.error(errorMessage(error)) });
+  const suggest = useMutation({ mutationFn: () => api.suggestions(sessionId, suggestionApiMode(mode), suggestionStrengthGap(mode), excludedSuggestionKeys), onSuccess: (result) => { if (!result.suggestion) { toast.message(result.noMatch?.message ?? "No valid group is available yet."); return; } const nextSuggestion = result.suggestion; setSuggestion(nextSuggestion); setDraft({ teamA: nextSuggestion.teamA.map((player) => player.id), teamB: nextSuggestion.teamB.map((player) => player.id) }); setSuggestionScope(cycleScope); setEditing(false); setPickerTarget(null); setCourtIdRaw(availableCourts[0]?.id ?? ""); setSuggestionCycle((current) => { const keys = result.cycleRestarted || current.scope !== cycleScope ? [] : current.keys; return { scope: cycleScope, keys: [...new Set([...keys, nextSuggestion.key])].slice(-50) }; }); }, onError: (error) => toast.error(errorMessage(error)) });
   const createSuggested = useMutation({ mutationFn: ({ startNow }: { startNow: boolean }) => { if (!suggestion || !draft || !draftReady) throw new Error("Every selected player must still be waiting."); if (expired) throw new Error("This suggestion expired. Generate a new suggestion or continue in Manual mode."); if (startNow && !courtId) throw new Error("Select an available court first."); return api.createSuggestedMatch(sessionId, { teamA: draft.teamA, teamB: draft.teamB, suggestionToken: suggestion.token, suggestionAdjusted: isAdjusted, ...(startNow ? { courtId } : {}) }); }, onSuccess: (_match, variables) => { setSuggestion(null); setDraft(null); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setEditing(false); setPickerTarget(null); setCourtId(""); onChanged(); toast.success(variables.startNow ? "Match started." : "Match queued."); } });
   const [manualPickerTeam, setManualPickerTeam] = useState<SuggestionTeam | null>(null);
   const selectedManualIds = useMemo(() => new Set([...manualTeamA, ...manualTeamB]), [manualTeamA, manualTeamB]);
@@ -751,11 +762,6 @@ function MinimumRestSettingsCard() {
   return <Card><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Player recovery</p><h3 className="display mt-1 text-3xl">Minimum rest time.</h3></div><Badge tone={Number(current) > 0 ? "teal" : "gray"}>{Number(current) > 0 ? `${current} min` : "No delay"}</Badge></div><p className="mt-3 text-sm leading-6 text-[var(--muted)]">Players become eligible exactly after this many minutes from the end of their last match. Queued matchups may wait, but an immediate start is blocked until everyone is ready.</p><div className="mt-4 flex max-w-sm items-end gap-3"><label className="block flex-1 text-sm font-semibold">Rest minutes<Input type="number" min={0} max={60} step={1} value={current} onChange={(event) => setValue(event.target.value)} /></label><Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button></div>{save.isError && <p role="alert" className="mt-3 text-xs text-[#8d4824]">{errorMessage(save.error)}</p>}</Card>;
 }
 
-function MatchmakingStrengthCard() {
-  const [strengthGap, setStrengthGap] = useStrengthGapPreference();
-  return <Card><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Match variety</p><h3 className="display mt-1 text-3xl">Balanced strength options.</h3><p className="mt-3 text-sm leading-6 text-[var(--muted)]">Choose the default tolerance used by Balanced suggestions. The selected gap limits both the individual skill spread and the difference between team totals.</p><StrengthGapSelect value={strengthGap} onChange={setStrengthGap} /></Card>;
-}
-
 function SessionSettingsControls({ session, sessionId, accountId, onReset, onDeleted }: { session: SessionSummary; sessionId: string; accountId?: string; onReset: (session: SessionSummary) => void; onDeleted: () => void }) {
   const queryClient = useQueryClient();
   const [confirmAction, setConfirmAction] = useState<"reset" | "delete" | null>(null);
@@ -802,7 +808,7 @@ function SuperAdminSettings({ user }: { user: AuthUser }) {
 }
 
 function SettingsView(props: { session: SessionSummary; sessionId: string; user: AuthUser; onReset: (session: SessionSummary) => void; onDeleted: () => void }) {
-  return <div className="space-y-5"><h2 className="sr-only">Offline settings</h2><OfflineSyncPanel accountId={props.user.id} /><AccountSecuritySettings />{props.user.role === "SUPER_ADMIN" && <SuperAdminSettings user={props.user} />}<MatchmakingStrengthCard /><MinimumRestSettingsCard /><LateArrivalSettingsCard session={props.session} sessionId={props.sessionId} /><EndSessionControl session={props.session} /><QueueSettingsControls session={props.session} onReset={props.onReset} /></div>;
+  return <div className="space-y-5"><h2 className="sr-only">Offline settings</h2><OfflineSyncPanel accountId={props.user.id} /><AccountSecuritySettings />{props.user.role === "SUPER_ADMIN" && <SuperAdminSettings user={props.user} />}<MinimumRestSettingsCard /><LateArrivalSettingsCard session={props.session} sessionId={props.sessionId} /><EndSessionControl session={props.session} /><QueueSettingsControls session={props.session} onReset={props.onReset} /></div>;
 }
 
 function formatHistoryDuration(seconds: number | null) {
@@ -929,10 +935,18 @@ function QueueWorkspaceShell({ user, onLogout }: { user: AuthUser; onLogout: () 
 
 function QueueWorkspaceShellV2({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const queryClient = useQueryClient();
+  const { clear: clearMatchmaker } = useContext(MatchmakerPersistenceContext);
   const [tab, setTab] = useState<Tab>("live");
   const workspaceQuery = useQuery({ queryKey: ["workspace"], queryFn: api.workspace });
   const active = workspaceQuery.data;
   const workspaceId = "workspace";
+  const previousWorkspaceKey = useRef<string | null>(null);
+  useEffect(() => {
+    const workspaceKey = active?.startedAt ?? null;
+    if (!workspaceKey) return;
+    if (previousWorkspaceKey.current && previousWorkspaceKey.current !== workspaceKey) clearMatchmaker();
+    previousWorkspaceKey.current = workspaceKey;
+  }, [active?.startedAt, clearMatchmaker]);
   if (workspaceQuery.isPending) return <LoadingState variant="fullPage" label="Loading your queue" />;
   if (!active) return <main className="grid min-h-screen place-items-center text-sm text-[#8d4824]">The current queue could not be loaded.</main>;
   const refreshQueueData = () => { queryClient.invalidateQueries({ queryKey: ["workspace"] }); for (const key of ["sessionPlayers", "queue", "courts", "matches", "history", "playerHistory", "rankings", "fees", "payments"]) queryClient.invalidateQueries({ queryKey: [key, workspaceId] }); };
@@ -943,8 +957,15 @@ function SuperAdminShell({ user, onLogout }: { user: AuthUser; onLogout: () => v
   return <QueueWorkspaceShellV2 user={user} onLogout={onLogout} />;
 }
 
+function MatchmakerPersistenceProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<MatchmakerPersistedState>(EMPTY_MATCHMAKER_STATE);
+  const [version, setVersion] = useState(0);
+  const clear = useCallback(() => { setState(EMPTY_MATCHMAKER_STATE); setVersion((current) => current + 1); }, []);
+  return <MatchmakerPersistenceContext.Provider value={{ state, onPersist: setState, clear, version }}>{children}</MatchmakerPersistenceContext.Provider>;
+}
+
 function AppShell({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
-  return user.role === "SUPER_ADMIN" ? <SuperAdminShell user={user} onLogout={onLogout} /> : <QueueMasterShell user={user} onLogout={onLogout} />;
+  return <MatchmakerPersistenceProvider>{user.role === "SUPER_ADMIN" ? <SuperAdminShell user={user} onLogout={onLogout} /> : <QueueMasterShell user={user} onLogout={onLogout} />}</MatchmakerPersistenceProvider>;
 }
 
 function QueueMasterShell({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {

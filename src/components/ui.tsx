@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Children, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes } from "react";
+import { Children, isValidElement, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactElement, type SelectHTMLAttributes } from "react";
 import { LoaderCircle, Zap } from "lucide-react";
 
 type SpinnerSize = "sm" | "md" | "lg";
@@ -29,4 +29,16 @@ export function Button({ className, variant = "primary", loading = false, disabl
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) { return <section className={cn("min-w-0 rounded-3xl border border-[var(--line)] bg-white p-5 shadow-[0_10px_30px_rgba(16,42,45,0.05)]", className)} {...props} />; }
 export function Badge({ children, tone = "teal" }: { children: React.ReactNode; tone?: "teal" | "orange" | "gray" }) { return <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold", tone === "teal" && "bg-[#d8f1eb] text-[var(--teal-dark)]", tone === "orange" && "bg-[#fff0e4] text-[#a85b2b]", tone === "gray" && "bg-[#edf2f0] text-[var(--muted)]")}>{children}</span>; }
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <input className="focus-ring w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]" {...props} />; }
-export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) { return <select className="focus-ring w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]" {...props} />; }
+export function Select({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  const isMatchmakerMode = Children.toArray(children).some((child) => isValidElement(child) && (child as ReactElement<{ value?: string }>).props.value === "BALANCED");
+  const modeOptions = isMatchmakerMode ? [
+    <option value="BALANCED_1" key="BALANCED_1">Balanced (+1 strength)</option>,
+    <option value="BALANCED_2" key="BALANCED_2">Balanced (+2 strength)</option>,
+    <option value="BALANCED_3" key="BALANCED_3">Balanced (+3 strength)</option>,
+    <option value="MIXED_DOUBLES" key="MIXED_DOUBLES">Mixed doubles</option>,
+    <option value="SAME_GENDER" key="SAME_GENDER">Same gender</option>,
+    <option value="SAME_SKILL" key="SAME_SKILL">Same skill</option>,
+    <option value="OPEN" key="OPEN">Open</option>,
+  ] : children;
+  return <select className="focus-ring w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]" {...props}>{modeOptions}</select>;
+}
