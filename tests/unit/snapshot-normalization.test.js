@@ -36,3 +36,11 @@ test("preserves populated queue-player values", () => {
 
   assert.deepEqual(normalized.queuePlayers[0], player);
 });
+
+test("defaults the account grace duration for older snapshots", () => {
+  const original = { ...incompleteSnapshot([]), settings: { id: "settings", pointsToWin: 31, winBy: 1, scoreCap: null, bestOf: 1, minimumRestMinutes: 0, defaultFeeMode: "FIXED_PER_PLAYER", defaultFixedFeeMinor: null, currencyCode: "PHP", timeZone: "Asia/Manila", defaultLateArrivalCutoffTime: null, version: 1 } };
+  const normalized = normalizeSnapshotForSync(original);
+
+  assert.equal(original.settings.lateArrivalGraceMinutes, undefined);
+  assert.equal(normalized.settings.lateArrivalGraceMinutes, 10);
+});

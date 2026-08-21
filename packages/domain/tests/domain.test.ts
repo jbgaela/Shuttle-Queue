@@ -63,6 +63,16 @@ test("prefers lineups with fewer pending late penalties without blocking a valid
   assert.equal([...required.teamA, ...required.teamB].some((player) => player.id === "e"), true);
 });
 
+test("games-played fairness outranks pending late preference", () => {
+  const players: MatchPlayer[] = ["a", "b", "c", "d"].map((id) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 1, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  players.push({ ...players[0]!, id: "e", gamesPlayed: 0, latePenaltyState: "PENDING" });
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const result = suggestMatch(players, "OPEN", history);
+  assert.ok(result);
+  assert.equal([...result.teamA, ...result.teamB].some((player) => player.id === "e"), true);
+  assert.equal((result.explanation.fairness as { minimumGames: number }).minimumGames, 0);
+});
+
 test("previews and applies an account-wide player deletion cascade", () => {
   const snapshot: CloudSnapshotV2 = {
     schemaVersion: 2,

@@ -7,6 +7,7 @@ import type { CloudSnapshotV2 } from "./domain-compat";
 export function normalizeSnapshotForSync(snapshot: CloudSnapshotV2): CloudSnapshotV2 {
   return {
     ...snapshot,
+    settings: snapshot.settings ? { ...snapshot.settings, lateArrivalGraceMinutes: snapshot.settings.lateArrivalGraceMinutes ?? 10 } : null,
     queuePlayers: snapshot.queuePlayers.map((player) => ({
       ...player,
       queueEnteredAt: player.queueEnteredAt === undefined ? null : player.queueEnteredAt,

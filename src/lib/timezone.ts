@@ -50,3 +50,7 @@ export function datePartsForInstant(value: Date, timeZone: string) {
   const result = parts(value, timeZone);
   return `${result.year}-${result.month}-${result.day}`;
 }
+
+export function inclusiveMinuteInstantForLocalDateTime(value: string, timeZone: string) {
+  return new Date(Date.parse(instantForLocalDateTime(value, timeZone)) + 59_999).toISOString();
+}

@@ -6,13 +6,14 @@ import { hasPlayerNameConflict } from "../player-names";
 import { appendAudit, clearAccountData, completeSnapshotUpload, firstProfile, getDeviceId, getMeta, hasSnapshot, markSyncAttention, offlineDb, prepareSnapshotUpload, readSnapshot, replaceSnapshot, saveProfile, storageEstimate, updateLocalSnapshot } from "./db";
 import { singleFlightByKey } from "./sync-flight";
 import type { SyncPreview } from "./sync-plan";
-import { datePartsForInstant, instantForLocalDateTime } from "../timezone";
+import { datePartsForInstant, inclusiveMinuteInstantForLocalDateTime } from "../timezone";
 
 
 const id = () => typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const uploadFlights = new Map<string, Promise<{ state: "uploaded"; cloudRevision: number }>>();
 const now = () => new Date().toISOString();
 const PLAYER_NAME_CONFLICT_MESSAGE = "A player with this name has already been created or is already in the current queue.";
+const DEFAULT_LATE_ARRIVAL_GRACE_MINUTES = 10;
 const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, INTERMEDIATE: 3, UPPER_INTERMEDIATE: 4, ADVANCED: 5 };
 const parseBody = (init?: RequestInit) => { try { return init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}; } catch { return {}; } };
 const parts = (path: string) => path.split("?")[0]!.split("/").filter(Boolean);
@@ -37,10 +38,15 @@ function reconcileOfflinePlayers(snapshot: CloudSnapshotV2, queuePlayerIds: stri
     player.version += 1;
   }
 }
+function serveOfflineLatePenalties(snapshot: CloudSnapshotV2, queuePlayerIds: string[]) {
+  const ids = new Set(queuePlayerIds);
+  for (const player of snapshot.queuePlayers) if (ids.has(player.id) && player.latePenaltyState === "PENDING") { player.latePenaltyState = "SERVED"; player.version += 1; }
+}
 const captureCourtSnapshot = (match: DomainMatch, court: CloudSnapshotV2["courts"][number]) => { match.courtIdSnapshot = court.id; match.courtNameSnapshot = court.name; match.suggestionExplanation = { ...(typeof match.suggestionExplanation === "object" && match.suggestionExplanation ? match.suggestionExplanation as Record<string, unknown> : {}), __courtSnapshot: { id: court.id, name: court.name } }; };
 const preserveCourtSnapshot = (match: DomainMatch, court: CloudSnapshotV2["courts"][number]) => { captureCourtSnapshot(match, court); match.courtId = null; };
 const settings = (snapshot: CloudSnapshotV2): ScoreSettings => ({ pointsToWin: snapshot.settings?.pointsToWin ?? 21, winBy: snapshot.settings?.winBy ?? 2, scoreCap: snapshot.settings?.scoreCap ?? null, bestOf: (snapshot.settings?.bestOf ?? 1) as 1 | 3 });
 const minimumRestMinutes = (snapshot: CloudSnapshotV2) => snapshot.settings?.minimumRestMinutes ?? 0;
+const lateArrivalGraceMinutes = (snapshot: CloudSnapshotV2) => snapshot.settings?.lateArrivalGraceMinutes ?? DEFAULT_LATE_ARRIVAL_GRACE_MINUTES;
 const restEligibleAt = (player: DomainQueuePlayer, snapshot: CloudSnapshotV2, reference = Date.now()) => {
   const ended = player.lastMatchEndedAt ? Date.parse(player.lastMatchEndedAt) : NaN;
   return !Number.isFinite(ended) || minimumRestMinutes(snapshot) <= 0 ? new Date(reference).toISOString() : new Date(ended + minimumRestMinutes(snapshot) * 60_000).toISOString();
@@ -76,7 +82,7 @@ async function mutate<T>(accountId: string, action: string, update: (snapshot: C
   return result;
 }
 async function addPlayers(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "PLAYERS_ADDED", (snapshot) => { const ids = [...new Set((Array.isArray(body.playerIds) ? body.playerIds : []).map(String))]; const result: DomainQueuePlayer[] = []; for (const playerId of ids) { const player = snapshot.players.find((item) => item.id === playerId && item.status === "ACTIVE"); if (!player || snapshot.queuePlayers.some((item) => item.playerId === playerId)) throw new Error("Every selected player must be active and not already in the current queue."); const created: DomainQueuePlayer = { id: id(), playerId, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel as DomainQueuePlayer["skillLevel"], skillWeight: player.skillWeight, status: "INACTIVE", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, amountDueMinor: 0, manualPriority: 0, priorityReason: null, latePenaltyState: null, latePenaltyAppliedAt: null, queueEnteredAt: null, lastMatchEndedAt: null, currentMatchId: null, checkedInAt: null, checkedOutAt: null, restStartedAt: null, version: 1 }; snapshot.queuePlayers.push(created); result.push(created); } return result.map((player) => playerView(player, snapshot)); }); }
-async function transition(accountId: string, queuePlayerId: string, status: DomainQueuePlayer["status"], action: string) { return mutate(accountId, action, (snapshot) => { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); if (action === "LATE_PENALTY_WAIVED") { player.latePenaltyState = "WAIVED"; player.version += 1; return playerView(player); } const changedAt = now(); if (action === "QUEUE_PLAYER_CHECK_IN") { const late = Boolean(snapshot.workspace.lateArrivalCutoffAt && Date.parse(changedAt) > Date.parse(snapshot.workspace.lateArrivalCutoffAt) && !player.latePenaltyState); player.status = "WAITING"; player.checkedInAt = player.checkedInAt ?? changedAt; player.checkedOutAt = null; player.queueEnteredAt = changedAt; if (late) { player.latePenaltyState = "PENDING"; player.latePenaltyAppliedAt = changedAt; } } else { player.status = status; player.checkedInAt = player.checkedInAt ?? (status === "WAITING" ? changedAt : null); player.checkedOutAt = status === "CHECKED_OUT" ? changedAt : status === "WAITING" ? null : player.checkedOutAt ?? null; player.restStartedAt = status === "RESTING" ? changedAt : null; player.queueEnteredAt = status === "WAITING" ? changedAt : null; } player.version += 1; return playerView(player); }); }
+async function transition(accountId: string, queuePlayerId: string, status: DomainQueuePlayer["status"], action: string) { return mutate(accountId, action, (snapshot) => { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); if (action === "LATE_PENALTY_WAIVED") { player.latePenaltyState = "WAIVED"; player.version += 1; return playerView(player); } const changedAt = now(); if (action === "QUEUE_PLAYER_CHECK_IN") { const late = Boolean(!player.checkedInAt && snapshot.workspace.lateArrivalCutoffAt && Date.parse(changedAt) > Date.parse(snapshot.workspace.lateArrivalCutoffAt) && !player.latePenaltyState); player.status = "WAITING"; player.checkedInAt = player.checkedInAt ?? changedAt; player.checkedOutAt = null; player.queueEnteredAt = changedAt; if (late) { player.latePenaltyState = "PENDING"; player.latePenaltyAppliedAt = changedAt; } } else { player.status = status; player.checkedInAt = player.checkedInAt ?? (status === "WAITING" ? changedAt : null); player.checkedOutAt = status === "CHECKED_OUT" ? changedAt : status === "WAITING" ? null : player.checkedOutAt ?? null; player.restStartedAt = status === "RESTING" ? changedAt : null; player.queueEnteredAt = status === "WAITING" ? changedAt : null; } player.version += 1; return playerView(player); }); }
 async function bulkQueueAction(accountId: string, body: Record<string, unknown>) {
   return mutate(accountId, "QUEUE_PLAYERS_BULK_ACTION", (snapshot) => {
     const ids = Array.isArray(body.playerIds) ? body.playerIds.map(String) : [];
@@ -92,7 +98,7 @@ async function bulkQueueAction(accountId: string, body: Record<string, unknown>)
     const changedAt = now();
     for (const player of players as DomainQueuePlayer[]) {
       if (action === "CHECK_IN") {
-        const late = Boolean(snapshot.workspace.lateArrivalCutoffAt && Date.parse(changedAt) > Date.parse(snapshot.workspace.lateArrivalCutoffAt) && !player.latePenaltyState);
+        const late = Boolean(!player.checkedInAt && snapshot.workspace.lateArrivalCutoffAt && Date.parse(changedAt) > Date.parse(snapshot.workspace.lateArrivalCutoffAt) && !player.latePenaltyState);
         player.status = "WAITING";
         player.checkedInAt = player.checkedInAt ?? changedAt;
         player.checkedOutAt = null;
@@ -156,7 +162,7 @@ async function makeSuggestion(accountId: string, body: Record<string, unknown>) 
   const result: Suggestion = { token: `local:${id()}`, expiresAt: Date.now() + 300000, key: suggestion.key, difference: suggestion.difference, teamATotal: suggestion.teamATotal, teamBTotal: suggestion.teamBTotal, lateArrivalCutoffAt: snapshot.workspace.lateArrivalCutoffAt ?? null, teamA: suggestion.teamA.map(convert), teamB: suggestion.teamB.map(convert), explanation: suggestion.explanation as Suggestion["explanation"] };
   return { suggestion: result, cycleRestarted };
 }
-async function createMatchLegacy(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "MATCH_CREATED", (snapshot) => { const teamA = Array.isArray(body.teamA) ? body.teamA.map(String) : []; const teamB = Array.isArray(body.teamB) ? body.teamB.map(String) : []; if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set([...teamA, ...teamB]).size !== teamA.length + teamB.length) throw new Error("Choose one player per team for singles or two per team for doubles."); const court = body.courtId ? findCourt(snapshot, String(body.courtId)) : undefined; if (body.courtId && (!court || court.status !== "AVAILABLE" || court.currentMatchId)) throw new Error("The selected court is not available."); const match: DomainMatch = { id: id(), courtId: court?.id ?? null, courtIdSnapshot: court?.id ?? null, courtNameSnapshot: court?.name ?? null, status: court ? "IN_PROGRESS" : "QUEUED", source: body.suggestionToken ? "AUTOMATIC" : "MANUAL", matchmakingMode: null, algorithmVersion: body.suggestionToken ? "v2-rotation" : null, suggestionKey: typeof body.suggestionToken === "string" ? body.suggestionToken : null, suggestionExplanation: null, pointsToWin: settings(snapshot).pointsToWin, winBy: settings(snapshot).winBy, scoreCap: settings(snapshot).scoreCap, bestOf: settings(snapshot).bestOf, queuedAt: now(), startedAt: court ? now() : null, completedAt: null, cancelledAt: null, cancellationReason: null, winnerTeam: null, currentRevisionId: null, version: 1, participants: [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))], scoreRevisions: [] }; match.participants.forEach((participant) => { participant.matchId = match.id; const player = findQueuePlayer(snapshot, participant.queuePlayerId); if (player) { player.status = court ? "PLAYING" : "QUEUED"; player.currentMatchId = match.id; player.queueEnteredAt = null; player.version += 1; } }); if (court) { court.status = "OCCUPIED"; court.currentMatchId = match.id; court.version += 1; } snapshot.matches.push(match); snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; return matchView(snapshot, match); }); }
+async function createMatchLegacy(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "MATCH_CREATED", (snapshot) => { const teamA = Array.isArray(body.teamA) ? body.teamA.map(String) : []; const teamB = Array.isArray(body.teamB) ? body.teamB.map(String) : []; if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set([...teamA, ...teamB]).size !== teamA.length + teamB.length) throw new Error("Choose one player per team for singles or two per team for doubles."); const court = body.courtId ? findCourt(snapshot, String(body.courtId)) : undefined; if (body.courtId && (!court || court.status !== "AVAILABLE" || court.currentMatchId)) throw new Error("The selected court is not available."); const match: DomainMatch = { id: id(), courtId: court?.id ?? null, courtIdSnapshot: court?.id ?? null, courtNameSnapshot: court?.name ?? null, status: court ? "IN_PROGRESS" : "QUEUED", source: body.suggestionToken ? "AUTOMATIC" : "MANUAL", matchmakingMode: null, algorithmVersion: body.suggestionToken ? "v2-rotation" : null, suggestionKey: typeof body.suggestionToken === "string" ? body.suggestionToken : null, suggestionExplanation: null, pointsToWin: settings(snapshot).pointsToWin, winBy: settings(snapshot).winBy, scoreCap: settings(snapshot).scoreCap, bestOf: settings(snapshot).bestOf, queuedAt: now(), startedAt: court ? now() : null, completedAt: null, cancelledAt: null, cancellationReason: null, winnerTeam: null, currentRevisionId: null, version: 1, participants: [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))], scoreRevisions: [] }; match.participants.forEach((participant) => { participant.matchId = match.id; const player = findQueuePlayer(snapshot, participant.queuePlayerId); if (player) { player.status = court ? "PLAYING" : "QUEUED"; player.currentMatchId = match.id; player.queueEnteredAt = null; player.version += 1; } }); if (court) { court.status = "OCCUPIED"; court.currentMatchId = match.id; court.version += 1; serveOfflineLatePenalties(snapshot, match.participants.map((participant) => participant.queuePlayerId)); } snapshot.matches.push(match); snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; return matchView(snapshot, match); }); }
 async function finishMatchLegacy(accountId: string, matchId: string, games: Array<{ teamAScore: number; teamBScore: number }>) { return mutate(accountId, "MATCH_COMPLETED", (snapshot) => { const match = snapshot.matches.find((item) => item.id === matchId); if (!match || match.status !== "IN_PROGRESS") throw new Error("Only playing matches can be completed."); const validated = validateScores(games, { pointsToWin: match.pointsToWin, winBy: match.winBy, scoreCap: match.scoreCap, bestOf: match.bestOf }); const aWins = validated.filter((game) => game.winnerTeam === "A").length; const winnerTeam: "A" | "B" = aWins > validated.length / 2 ? "A" : "B"; const revisionId = id(); const completedAt = now(); match.status = "COMPLETED"; match.completedAt = completedAt; match.winnerTeam = winnerTeam; match.currentRevisionId = revisionId; match.scoreRevisions.push({ id: revisionId, matchId, revisionNumber: 1, winnerTeam, reason: null, supersedesRevisionId: null, createdAt: now(), games: validated.map((game, index) => ({ id: id(), scoreRevisionId: revisionId, gameNumber: index + 1, teamAScore: game.teamAScore, teamBScore: game.teamBScore, winnerTeam: game.winnerTeam })) }); const court = findCourt(snapshot, match.courtId ?? undefined); if (court?.currentMatchId === match.id) { court.currentMatchId = null; court.status = court.status === "CLOSED" ? "CLOSED" : "AVAILABLE"; court.version += 1; } match.participants.forEach((participant) => { const player = findQueuePlayer(snapshot, participant.queuePlayerId); if (!player) return; const won = participant.team === winnerTeam; player.status = "WAITING"; player.currentMatchId = null; player.queueEnteredAt = now(); player.matchesPlayed += 1; player.wins += won ? 1 : 0; player.losses += won ? 0 : 1; player.lastMatchEndedAt = completedAt; player.version += 1; }); return matchView(snapshot, match); }); }
 
 async function createMatchStacked(accountId: string, body: Record<string, unknown>) {
@@ -184,6 +190,7 @@ async function createMatchStacked(accountId: string, body: Record<string, unknow
     snapshot.matches.push(match);
     if (court) { court.status = "OCCUPIED"; court.currentMatchId = match.id; court.version += 1; }
     reconcileOfflinePlayers(snapshot, ids, createdAt);
+    if (court) serveOfflineLatePenalties(snapshot, ids);
     snapshot.workspace.matchmakingRevision += 1;
     snapshot.workspace.version += 1;
     return matchView(snapshot, match);
@@ -243,6 +250,7 @@ async function startMatchStacked(accountId: string, matchId: string, courtId: st
     court.currentMatchId = match.id;
     court.version += 1;
     reconcileOfflinePlayers(snapshot, ids, startedAt);
+    serveOfflineLatePenalties(snapshot, ids);
     return matchView(snapshot, match);
   });
 }
@@ -338,12 +346,40 @@ export async function handleRequest(accountId: string, path: string, init?: Requ
   if (route[0] === "workspace" && route.length === 1) return method === "GET" ? workspaceView(snapshot) : freshQueue(accountId);
   if (route[0] === "workspace" && route[1] === "start-fresh") return freshQueue(accountId);
   if (route[0] === "workspace" && route[1] === "end") return endQueue(accountId);
-  if (route[0] === "workspace" && route[1] === "late-arrival-policy") return mutate(accountId, "LATE_ARRIVAL_POLICY_UPDATED", (value) => { const mode = String(body.mode); const timeZone = value.settings?.timeZone ?? "Asia/Manila"; let cutoff: string | null = null; try { cutoff = mode === "DISABLED" ? null : mode === "SET_NOW" ? now() : mode === "SET_CUSTOM" ? instantForLocalDateTime(String(body.localDateTime ?? ""), timeZone) : value.settings?.defaultLateArrivalCutoffTime ? instantForLocalDateTime(`${datePartsForInstant(new Date(), timeZone)}T${value.settings.defaultLateArrivalCutoffTime}`, timeZone) : null; } catch { throw new Error("The cutoff time is invalid for the account timezone."); } value.workspace.lateArrivalCutoffAt = cutoff; const cutoffMs = cutoff ? Date.parse(cutoff) : null; for (const player of value.queuePlayers) { if (player.latePenaltyState !== "PENDING") continue; if (mode === "DISABLED" || (cutoffMs !== null && player.latePenaltyAppliedAt && Date.parse(player.latePenaltyAppliedAt) <= cutoffMs)) { player.latePenaltyState = null; player.latePenaltyAppliedAt = null; player.version += 1; } } value.workspace.version += 1; return workspaceView(value); });
+  if (route[0] === "workspace" && route[1] === "late-arrival-policy") return mutate(accountId, "LATE_ARRIVAL_POLICY_UPDATED", (value) => {
+    const mode = String(body.mode);
+    const timeZone = value.settings?.timeZone ?? "Asia/Manila";
+    let cutoff: string | null = null;
+    try {
+      cutoff = mode === "DISABLED"
+        ? null
+        : mode === "SET_NOW"
+          ? now()
+          : mode === "START_GRACE"
+            ? new Date(Date.now() + lateArrivalGraceMinutes(value) * 60_000).toISOString()
+            : mode === "SET_CUSTOM"
+              ? inclusiveMinuteInstantForLocalDateTime(String(body.localDateTime ?? ""), timeZone)
+              : value.settings?.defaultLateArrivalCutoffTime
+                ? inclusiveMinuteInstantForLocalDateTime(`${datePartsForInstant(new Date(), timeZone)}T${value.settings.defaultLateArrivalCutoffTime}`, timeZone)
+                : null;
+    } catch { throw new Error("The cutoff time is invalid for the account timezone."); }
+    value.workspace.lateArrivalCutoffAt = cutoff;
+    const cutoffMs = cutoff ? Date.parse(cutoff) : null;
+    let reclassifiedPlayerCount = 0;
+    for (const player of value.queuePlayers) {
+      if (player.latePenaltyState !== "PENDING") continue;
+      const firstCheckIn = player.checkedInAt ? Date.parse(player.checkedInAt) : player.latePenaltyAppliedAt ? Date.parse(player.latePenaltyAppliedAt) : NaN;
+      if (mode === "DISABLED" || (cutoffMs !== null && Number.isFinite(firstCheckIn) && firstCheckIn <= cutoffMs)) { player.latePenaltyState = null; player.latePenaltyAppliedAt = null; player.version += 1; reclassifiedPlayerCount += 1; }
+    }
+    value.workspace.version += 1;
+    return { ...workspaceView(value), reclassifiedPlayerCount };
+  });
   if (route[0] === "settings" && route.length === 1) {
     if (method === "GET") return snapshot.settings;
     return mutate(accountId, "SETTINGS_UPDATED", (value) => {
       if (!value.settings) throw new Error("Settings are not available offline.");
       if (body.minimumRestMinutes !== undefined) { const minutes = Number(body.minimumRestMinutes); if (!Number.isInteger(minutes) || minutes < 0 || minutes > 60) throw new Error("Minimum rest must be a whole number from 0 to 60 minutes."); value.settings.minimumRestMinutes = minutes; }
+      if (body.lateArrivalGraceMinutes !== undefined) { const minutes = Number(body.lateArrivalGraceMinutes); if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) throw new Error("Late-arrival grace must be a whole number from 1 to 60 minutes."); value.settings.lateArrivalGraceMinutes = minutes; }
       value.settings.version += 1;
       return value.settings;
     });

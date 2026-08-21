@@ -55,7 +55,7 @@ export type DomainMatch = { id: string; courtId?: string | null; courtIdSnapshot
 
 export type DomainCourt = { id: string; name: string; normalizedName: string; displayOrder: number; status: CourtStatus; currentMatchId?: string | null; closedAt?: string | null; version: number };
 export type DomainWorkspace = { startedAt: string; endedAt?: string | null; lateArrivalCutoffAt?: string | null; matchmakingAlgorithm: string; matchmakingRevision: number; version: number };
-export type DomainSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: 1 | 3; minimumRestMinutes: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
+export type DomainSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: 1 | 3; minimumRestMinutes: number; lateArrivalGraceMinutes?: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
 export type DomainFeeConfig = { id: string; mode: string; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; participationRule: string; frozenAt?: string | null; version: number };
 export type DomainPayment = { id: string; queuePlayerId: string; kind: string; method?: string | null; amountMinor: number; reference?: string | null; note?: string | null; reversalOfPaymentId?: string | null; recordedById: string; occurredAt: string; createdAt: string };
 export type DomainAudit = { id: string; action: string; entityType: string; entityId: string; reason?: string | null; beforeJson?: unknown; afterJson?: unknown; requestId: string; createdAt: string };
@@ -245,16 +245,17 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   );
   const previouslySkippedPlayerIds = new Set(previousSuggestionPlayerIds.size > 0 ? eligible.filter((player) => !previousSuggestionPlayerIds.has(player.id)).map((player) => player.id) : []);
   const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && (genders.size !== 2 || group.filter((player) => player.gender === "MALE").length !== 2)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) <= strengthGap!; };
-  let minimumPending = Number.POSITIVE_INFINITY;
-  forEachCombination(eligible, 4, (group) => { if (!validGroup(group)) return; minimumPending = Math.min(minimumPending, group.filter((player) => player.latePenaltyState === "PENDING").length); });
-  if (!Number.isFinite(minimumPending)) return null;
   let candidateMinimumGames = Number.POSITIVE_INFINITY;
-  forEachCombination(eligible, 4, (group) => { if (!validGroup(group) || group.filter((player) => player.latePenaltyState === "PENDING").length !== minimumPending) return; candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed)); });
+  forEachCombination(eligible, 4, (group) => { if (!validGroup(group)) return; candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed)); });
+  if (!Number.isFinite(candidateMinimumGames)) return null;
   let fairExists = false;
-  forEachCombination(eligible, 4, (group) => { if (validGroup(group) && group.filter((player) => player.latePenaltyState === "PENDING").length === minimumPending && Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1) fairExists = true; });
+  forEachCombination(eligible, 4, (group) => { if (validGroup(group) && Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1) fairExists = true; });
+  const hasManualOverride = (() => { let found = false; forEachCombination(eligible, 4, (group) => { if (validGroup(group) && (!fairExists || Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1) && group.some((player) => (player.manualPriority ?? 0) > 0)) found = true; }); return found; })();
+  let minimumPending = Number.POSITIVE_INFINITY;
+  forEachCombination(eligible, 4, (group) => { if (validGroup(group) && (!fairExists || Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1)) minimumPending = Math.min(minimumPending, group.filter((player) => player.latePenaltyState === "PENDING").length); });
   let best: { key: (number[] | number | string)[]; suggestion: Suggestion } | null = null;
   forEachCombination(eligible, 4, (group) => {
-    if (!validGroup(group) || group.filter((player) => player.latePenaltyState === "PENDING").length !== minimumPending || (fairExists && Math.max(...group.map((player) => player.gamesPlayed)) > candidateMinimumGames + 1)) return;
+    if (!validGroup(group) || (!hasManualOverride && fairExists && Math.max(...group.map((player) => player.gamesPlayed)) > candidateMinimumGames + 1)) return;
     const sorted = [...group].sort((a, b) => a.id.localeCompare(b.id));
     const skillSpread = Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight));
     const recentPairValues = group.flatMap((player, i) => group.slice(i + 1).map((other) => pairCount(history, player.id, other.id, true)));
@@ -273,7 +274,8 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       const partnerMix = Math.abs(teamA[0]!.skillWeight - teamA[1]!.skillWeight) + Math.abs(teamB[0]!.skillWeight - teamB[1]!.skillWeight);
       const lowestGames = group.filter((player) => player.gamesPlayed === candidateMinimumGames).length;
       const previouslySkippedCount = group.filter((player) => previouslySkippedPlayerIds.has(player.id)).length;
-      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, -previouslySkippedCount, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), sorted.map((player) => player.id).join(","), Math.abs(teamATotal - teamBTotal), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, keyString];
+      const pendingCount = group.filter((player) => player.latePenaltyState === "PENDING").length;
+      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, pendingCount, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, -previouslySkippedCount, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), sorted.map((player) => player.id).join(","), Math.abs(teamATotal - teamBTotal), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, keyString];
       const suggestion = {
         mode,
         teamA,
@@ -301,7 +303,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
           },
           partnerRotation: { recentRepeats: recentPartners, allTimeRepeats: allPartners, preservedTeamBalance: true },
           lateArrival: { minimumPending, selectedPending: group.filter((player) => player.latePenaltyState === "PENDING").length, preferenceApplied: minimumPending > 0 || group.some((player) => player.latePenaltyState === "PENDING") },
-          fairness: { minimumGames: candidateMinimumGames, minimumGamesCount: lowestGames, manualOverride: false, previouslySkippedCount },
+          fairness: { minimumGames: candidateMinimumGames, minimumGamesCount: lowestGames, manualOverride: hasManualOverride, previouslySkippedCount },
         },
       };
       if (!best || compare(key, best.key) < 0) best = { key, suggestion };
