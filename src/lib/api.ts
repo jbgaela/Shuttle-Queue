@@ -2,6 +2,19 @@ export type ApiEnvelope<T> = { data: T; requestId?: string; meta?: unknown };
 const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v2").replace(/\/$/, "");
 let csrfTokenCache: string | null = null;
 let csrfRefreshPromise: Promise<string | null> | null = null;
+let publicSharingActive = typeof window !== "undefined" && (() => { try { return window.localStorage.getItem("bq-public-sharing-active") === "1"; } catch { return false; } })();
+
+export function setPublicSharingActive(value: boolean) {
+  publicSharingActive = value;
+  if (typeof window !== "undefined") { try { window.localStorage.setItem("bq-public-sharing-active", value ? "1" : "0"); } catch { /* storage may be unavailable */ } }
+}
+
+async function syncBeforePublicSessionFinalization() {
+  if (!publicSharingActive) return;
+  if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("Connect to the internet and sync before ending or resetting a shared queue.");
+  const local = await import("./offline/repository");
+  await local.syncAccount(await local.currentAccountId(), "manual");
+}
 
 function readCsrfToken() {
   if (csrfTokenCache) return csrfTokenCache;
@@ -46,7 +59,7 @@ async function refreshCsrfToken() {
 }
 
 export async function request<T>(path: string, init?: RequestInit, allowCsrfResync = true): Promise<T> {
-  if (typeof window !== "undefined" && !path.startsWith("/auth/") && !path.startsWith("/sync/") && !path.startsWith("/admin/")) {
+  if (typeof window !== "undefined" && !path.startsWith("/auth/") && !path.startsWith("/sync/") && !path.startsWith("/admin/") && !path.startsWith("/workspace/public-rankings")) {
     const local = await import("./offline/repository");
     if (await local.hasLocalSnapshot()) return local.handleRequest(await local.currentAccountId(), path, init) as Promise<T>;
   }
@@ -65,6 +78,13 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   return (path.startsWith("/sync/") ? data : hydrateQueueFields(data));
 }
 
+async function publicRequest<T>(token: string): Promise<T> {
+  const response = await fetch(`${baseUrl}/public/rankings/${encodeURIComponent(token)}`, { credentials: "omit", cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error?.message ?? "These public rankings are no longer available.");
+  return (payload as ApiEnvelope<T>).data;
+}
+
 export const api = {
   me: () => request<{ user: { id: string; username: string; role: AccountRole } }>("/auth/me"),
   settings: () => request<AccountSettings>("/settings"),
@@ -79,8 +99,8 @@ export const api = {
   deleteAccount: (id: string, confirmationUsername: string, currentPassword: string, version: number) => request<void>(`/admin/accounts/${id}`, { method: "DELETE", headers: { "if-match": String(version) }, body: JSON.stringify({ confirmationUsername, currentPassword }) }),
   logout: async () => { try { if (typeof navigator !== "undefined" && !navigator.onLine) return; return await request<void>("/auth/logout", { method: "POST" }); } finally { csrfTokenCache = null; if (typeof window !== "undefined") { try { window.sessionStorage.removeItem("bq-csrf-token"); } catch { /* ignore storage cleanup failures */ } } } },
   workspace: async () => { const value = await request<WorkspaceSummary>("/workspace"); return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ACTIVE" }; },
-  endQueue: async (version: number) => { const value = await request<WorkspaceSummary>("/workspace/end", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }); return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ENDED" }; },
-  startFreshQueue: async (version: number) => { const value = await request<WorkspaceSummary>("/workspace/start-fresh", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }); return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ACTIVE" }; },
+  endQueue: async (version: number) => { await syncBeforePublicSessionFinalization(); const value = await request<WorkspaceSummary>("/workspace/end", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }); if (publicSharingActive && typeof navigator !== "undefined" && navigator.onLine) { const local = await import("./offline/repository"); void local.syncAccount(await local.currentAccountId(), "background").catch(() => undefined); } return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ENDED" }; },
+  startFreshQueue: async (version: number) => { await syncBeforePublicSessionFinalization(); const value = await request<WorkspaceSummary>("/workspace/start-fresh", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }); if (publicSharingActive && typeof navigator !== "undefined" && navigator.onLine) { const local = await import("./offline/repository"); void local.syncAccount(await local.currentAccountId(), "background").catch(() => undefined); } return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ACTIVE" }; },
   sessions: async () => [await api.workspace()],
   createSession: (_body: { name: string; sessionDate?: string }) => api.workspace(),
   startSession: (_id: string, version: number) => api.workspace(),
@@ -121,6 +141,10 @@ export const api = {
   history: (_workspaceId: string, page = 1, pageSize = 15, search = "") => request<HistoryResponse>(`/history?${new URLSearchParams({ page: String(page), pageSize: String(pageSize), ...(search ? { search } : {}) }).toString()}`),
   playerHistory: (_workspaceId: string, queuePlayerId: string, page = 1, pageSize = 15) => request<PlayerHistoryResponse>(`/queue/players/${queuePlayerId}/history?page=${page}&pageSize=${pageSize}`),
   rankings: (_workspaceId: string) => request<Ranking[]>("/rankings"),
+  publicRankingPublications: () => request<PublicRankingPublicationResponse>("/workspace/public-rankings"),
+  publishPublicRankings: (version: number) => request<PublicRankingPublication>("/workspace/public-rankings/publish", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }),
+  revokePublicRankings: (publication: PublicRankingPublication) => request<PublicRankingPublication>(`/workspace/public-rankings/${publication.id}/revoke`, { method: "POST", headers: { "if-match": String(publication.version) }, body: "{}" }),
+  publicRankings: (token: string) => publicRequest<PublicRankingPayload>(token),
   fees: (_workspaceId: string) => request<FeeSummary>("/fees"),
   updateFeeConfig: (_workspaceId: string, body: { mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null }) => request<{ config: FeeConfig; summary: FeeSummary }>("/fees/config", { method: "PUT", body: JSON.stringify({ ...body, expectedQueueCostMinor: body.expectedQueueCostMinor ?? body.expectedSessionCostMinor }) }),
   payments: (_workspaceId: string) => request<Payment[]>("/payments"),
@@ -158,6 +182,10 @@ export type PlayerHistoryStats = { matchesPlayed: number; wins: number; losses: 
 export type PlayerHistoryResponse = { player: { queuePlayerId: string; sessionPlayerId: string; playerId: string; displayName: string; gender: string; skillLevel: string }; stats: PlayerHistoryStats; items: HistoryMatch[]; pagination: HistoryPagination };
 export type CareerRanking = { rank: number; player: string; playerId: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
 export type Ranking = { rank: number; queuePlayerId: string; sessionPlayerId: string; player: string; playerId: string; gender: string; skillLevel: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
+export type PublicRankingRow = { rank: number; player: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
+export type PublicRankingPayload = { sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL"; serverTime: string; lastUpdatedAt: string; rankings: PublicRankingRow[] };
+export type PublicRankingPublication = { id: string; sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL" | "REVOKED"; publishedAt: string; finalizedAt?: string | null; revokedAt?: string | null; version: number; token?: string };
+export type PublicRankingPublicationResponse = { current: PublicRankingPublication | null; archives: PublicRankingPublication[] };
 export type FeeConfig = { id: string; mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null; participationRule: string; frozenAt?: string | null; version: number };
 export type PaymentMethod = "CASH" | "EWALLET" | "OTHER";
 export type FeePlayer = { queuePlayerId: string; sessionPlayerId: string; displayName: string; dueMinor: number; collectedMinor: number; waivedMinor: number; outstandingMinor: number; status: "WAIVED" | "PAID" | "PARTIAL" | "UNPAID"; collectionByMethodMinor: Record<PaymentMethod, number> };

@@ -12,7 +12,9 @@ import {
   ChevronDown,
   CircleDot,
   Clock3,
+  Copy,
   Download,
+  ExternalLink,
   Filter,
   History as HistoryIcon,
   KeyRound,
@@ -24,6 +26,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Share2,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
@@ -35,9 +38,9 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api, type AccountRole, type AccountSummary, type Court, type FeeSummary, type HistoryMatch, type Match, type Payment, type PaymentMethod, type Player, type PlayerDeletionPreview, type PlayerHistoryResponse, type QueuePlayer, type QueueState, type Ranking, type SessionPlayer, type SessionSummary, type Suggestion } from "@/lib/api";
+import { api, setPublicSharingActive, type AccountRole, type AccountSummary, type Court, type FeeSummary, type HistoryMatch, type Match, type Payment, type PaymentMethod, type Player, type PlayerDeletionPreview, type PlayerHistoryResponse, type PublicRankingPublication, type QueuePlayer, type QueueState, type Ranking, type SessionPlayer, type SessionSummary, type Suggestion } from "@/lib/api";
 import { Badge, Button as UiButton, Card, Input, LoadingState, Select } from "@/components/ui";
-import { clearAccountData, confirmLocalReplacement, downloadFromCloud, getMeta, hasSnapshot, retainedProfile, saveProfile, storageEstimate, syncAccount, type SyncPreview } from "@/lib/offline/repository";
+import { clearAccountData, confirmLocalReplacement, currentAccountId, downloadFromCloud, getMeta, hasSnapshot, retainedProfile, saveProfile, storageEstimate, syncAccount, type SyncPreview } from "@/lib/offline/repository";
 import { hasPlayerNameConflict } from "@/lib/player-names";
 import { saveRankingsToDevice } from "@/lib/rankings-image";
 import { currentClockForTimezone, dateTimeInputForTimezone } from "@/lib/timezone";
@@ -157,6 +160,26 @@ function OfflineBootstrap({ user, onLogout }: { user: AuthUser; onLogout: () => 
     window.addEventListener("online", attempt); document.addEventListener("visibilitychange", onVisible);
     const timer = window.setInterval(attempt, 60_000);
     return () => { window.removeEventListener("online", attempt); document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
+  }, [user.id, queryClient]);
+  useEffect(() => {
+    let shared = false;
+    let cancelled = false;
+    const publishSync = async () => {
+      if (!navigator.onLine) return;
+      try {
+        const publications = await api.publicRankingPublications();
+        shared = Boolean(publications.current);
+        setPublicSharingActive(shared);
+        if (shared) await syncAccount(user.id, "background");
+      } catch { /* the normal sync/status panel reports connectivity problems */ }
+      if (!cancelled && shared) queryClient.invalidateQueries();
+    };
+    let timer: number | undefined;
+    const schedule = () => { if (!cancelled) timer = window.setTimeout(async () => { await publishSync(); schedule(); }, shared ? 8_000 : 30_000); };
+    const onSharing = () => { void publishSync().then(schedule); };
+    void publishSync().then(schedule);
+    window.addEventListener("shuttle-queue-public-sharing", onSharing);
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); window.removeEventListener("shuttle-queue-public-sharing", onSharing); };
   }, [user.id, queryClient]);
   if (error) return <main className="grid min-h-screen place-items-center px-5"><Card className="max-w-md p-6"><h1 className="display text-3xl">Download required</h1><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Sign in once while online to download this account for offline use.</p><p role="alert" className="mt-4 rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{error}</p><Button className="mt-5 w-full" onClick={() => window.location.reload()}>Try again</Button></Card></main>;
   if (!ready) return <LoadingState variant="fullPage" label="Preparing your offline workspace" />;
@@ -945,11 +968,45 @@ function PlayerHistoryDetails({ sessionId, ranking }: { sessionId: string; ranki
   return <div className="border-t border-[var(--line)] bg-[#fbfdfb] p-4"><div className="flex flex-wrap items-center gap-2"><Badge tone="teal">{data.player.gender === "MALE" ? "Male" : "Female"}</Badge><Badge tone="gray">{pretty(data.player.skillLevel)}</Badge></div><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4"><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Matches</p><p className="mt-1 font-semibold">{stats.matchesPlayed}</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Record</p><p className="mt-1 font-semibold">{stats.wins}W / {stats.losses}L</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Win rate</p><p className="mt-1 font-semibold">{(stats.winRateBasisPoints / 100).toFixed(0)}%</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Points</p><p className="mt-1 font-semibold">{stats.pointsFor}–{stats.pointsAgainst}</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Differential</p><p className="mt-1 font-semibold">{stats.pointDifferential > 0 ? "+" : ""}{stats.pointDifferential}</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Avg duration</p><p className="mt-1 font-semibold">{formatHistoryDuration(stats.averageDurationSeconds)}</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Top partner</p><p className="mt-1 truncate font-semibold">{stats.mostPlayedPartner ? `${stats.mostPlayedPartner.displayName} (${stats.mostPlayedPartner.count})` : "—"}</p></div><div className="rounded-xl bg-white p-3"><p className="text-xs text-[var(--muted)]">Top opponent</p><p className="mt-1 truncate font-semibold">{stats.mostPlayedOpponent ? `${stats.mostPlayedOpponent.displayName} (${stats.mostPlayedOpponent.count})` : "—"}</p></div></div><div className="mt-4 overflow-hidden rounded-2xl border border-[var(--line)] bg-white">{data.items.length ? data.items.map((match) => <HistoryMatchCard key={match.id} match={match} selectedPlayerId={playerId} />) : <p className="p-4 text-sm text-[var(--muted)]">No completed games for this player yet.</p>}{data.pagination.total > 0 && <PaginationControls pagination={data.pagination} onPage={setPage} />}</div></div>;
 }
 
-function RankingsView({ sessionId }: { sessionId: string }) {
+function LegacyRankingsView({ sessionId }: { sessionId: string }) {
   const rankingsQuery = useQuery({ queryKey: ["rankings", sessionId], queryFn: () => api.rankings(sessionId) }); const rankings = rankingsQuery.data ?? []; const [expandedId, setExpandedId] = useState<string | null>(null); const [saving, setSaving] = useState(false);
   if (rankingsQuery.isPending) return <LoadingState label="Loading rankings" />;
   const save = async () => { if (!rankings.length || saving) return; setSaving(true); try { await saveRankingsToDevice(rankings); toast.success("Rankings saved to your device."); } catch (reason) { toast.error(errorMessage(reason)); } finally { setSaving(false); } };
   return <div className="space-y-5"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-[var(--muted)]">Current queue rankings</p><h2 className="display text-4xl">Results that stay useful.</h2></div><Button variant="quiet" className="self-start px-3 sm:self-auto" disabled={!rankings.length || saving || rankingsQuery.isError} loading={saving} onClick={() => void save()}><Download size={16} /> {saving ? "Saving…" : "Save to device"}</Button></div><Card className="overflow-hidden p-0">{rankingsQuery.isPending ? <div className="p-6 text-sm text-[var(--muted)]">Loading rankings…</div> : rankingsQuery.isError ? <p role="alert" className="p-4 text-sm text-[#8d4824]">{errorMessage(rankingsQuery.error)}</p> : rankings.length === 0 ? <div className="p-4"><EmptyState icon={Trophy} title="No results yet" body="Finish a match and the leaderboard will appear here." /></div> : <div>{rankings.map((row) => { const rankingId = row.queuePlayerId ?? row.sessionPlayerId; return <div key={rankingId} className="border-b border-[var(--line)] last:border-0"><button type="button" className="focus-ring flex w-full items-center gap-4 px-4 py-4 text-left" aria-expanded={expandedId === rankingId} onClick={() => setExpandedId((current) => current === rankingId ? null : rankingId)}><span className="grid size-9 place-items-center rounded-full bg-[#edf8f4] text-sm font-bold text-[var(--teal)]">{row.rank}</span><div className="min-w-0 flex-1"><p className="truncate font-semibold">{row.player}</p><p className="text-xs text-[var(--muted)]">{row.gender === "MALE" ? "Male" : "Female"} · {pretty(row.skillLevel)} · {row.matchesPlayed} games · {row.wins}W / {row.losses}L</p></div><div className="text-right"><p className="font-semibold">{(row.winRateBasisPoints / 100).toFixed(0)}%</p><p className="text-xs text-[var(--muted)]">win rate</p></div><ChevronDown size={18} className={`shrink-0 text-[var(--muted)] transition ${expandedId === rankingId ? "rotate-180" : ""}`} /></button>{expandedId === rankingId && <PlayerHistoryDetails sessionId={sessionId} ranking={row} />}</div>; })}</div>}</Card></div>;
+}
+
+function publicRankingUrl(publication: PublicRankingPublication) {
+  if (!publication.token || typeof window === "undefined") return "";
+  return `${window.location.origin}/rankings/shared/${publication.token}`;
+}
+
+function publicRankingDate(value?: string | null) {
+  return value ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "—";
+}
+
+function RankingsSharingControls({ session }: { session: SessionSummary }) {
+  const queryClient = useQueryClient();
+  const publicationsQuery = useQuery({ queryKey: ["publicRankingPublications"], queryFn: api.publicRankingPublications, retry: false, refetchInterval: 30_000 });
+  useEffect(() => { if (publicationsQuery.isSuccess) setPublicSharingActive(Boolean(publicationsQuery.data?.current)); }, [publicationsQuery.data, publicationsQuery.isSuccess]);
+  const publish = useMutation({ mutationFn: async () => { await syncAccount(await currentAccountId(), "manual"); return api.publishPublicRankings(session.version); }, onSuccess: () => { setPublicSharingActive(true); window.dispatchEvent(new Event("shuttle-queue-public-sharing")); queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] }); queryClient.invalidateQueries({ queryKey: ["workspace"] }); toast.success("Public rankings link is ready."); } });
+  const revoke = useMutation({ mutationFn: (publication: PublicRankingPublication) => api.revokePublicRankings(publication), onSuccess: () => { setPublicSharingActive(false); window.dispatchEvent(new Event("shuttle-queue-public-sharing")); queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] }); toast.success("Public rankings link revoked."); } });
+  const current = publicationsQuery.data?.current ?? null;
+  const archives = publicationsQuery.data?.archives ?? [];
+  const copy = async (publication: PublicRankingPublication) => { const url = publicRankingUrl(publication); if (!url) return; try { await navigator.clipboard.writeText(url); toast.success("Public rankings link copied."); } catch { toast.error("Copy failed. Open the link and copy it from the address bar."); } };
+  const share = async (publication: PublicRankingPublication) => { const url = publicRankingUrl(publication); if (!url) return; if (navigator.share) { try { await navigator.share({ title: "Shuttle Queue rankings", text: "View the live queue rankings.", url }); } catch { /* cancelled share */ } } else await copy(publication); };
+  return <Card className="border-[#b9e2d6] bg-[#f7fcfa]"><div className="flex items-start gap-3"><div className="grid size-10 shrink-0 place-items-center rounded-2xl bg-[#dff4eb] text-[var(--teal)]"><Share2 size={19} /></div><div className="min-w-0 flex-1"><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Public rankings</p><h3 className="display mt-1 text-3xl">Let players follow along.</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">Publish a read-only link for this queue. It shows names and ranking stats only, updates about every 8 seconds, and works without a sign-in.</p>{publicationsQuery.isError && <p className="mt-3 text-xs text-[#8d4824]">Public sharing controls require an internet connection.</p>}{current?.token && <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white p-3"><p className="text-xs font-semibold text-[var(--muted)]">{current.state === "FINAL" ? "Final public link" : "Live public link"}</p><p className="mt-1 truncate text-sm font-mono text-[var(--ink)]">{publicRankingUrl(current)}</p><div className="mt-3 flex flex-wrap gap-2"><Button variant="quiet" className="px-3 py-1.5 text-xs" onClick={() => void copy(current)}><Copy size={14} /> Copy link</Button><Button variant="quiet" className="px-3 py-1.5 text-xs" onClick={() => void share(current)}><Share2 size={14} /> Share</Button><a className="focus-ring inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-[var(--teal)] hover:bg-[#edf8f4]" href={publicRankingUrl(current)} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open</a><Button variant="danger" className="px-3 py-1.5 text-xs" loading={revoke.isPending} onClick={() => { if (window.confirm("Revoke this public rankings link? Anyone using the old link will lose access.")) revoke.mutate(current); }}>Revoke</Button></div></div>}{!current && <Button className="mt-4" loading={publish.isPending} onClick={() => publish.mutate()}><Share2 size={15} /> Publish this session</Button>}{publish.isError && <p role="alert" className="mt-3 text-sm text-[#8d4824]">{errorMessage(publish.error)}</p>}{revoke.isError && <p role="alert" className="mt-3 text-sm text-[#8d4824]">{errorMessage(revoke.error)}</p>}</div></div>{archives.length > 0 && <div className="mt-5 border-t border-[#d5ebe3] pt-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Past shared sessions</p><div className="mt-3 space-y-2">{archives.map((publication) => <div key={publication.id} className="flex flex-col justify-between gap-2 rounded-2xl border border-[var(--line)] bg-white p-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">{publication.state === "FINAL" ? "Final standings" : "Live standings"}</p><p className="text-xs text-[var(--muted)]">Started {publicRankingDate(publication.sessionStartedAt)}{publication.finalizedAt ? ` · finalized ${publicRankingDate(publication.finalizedAt)}` : ""}</p></div><div className="flex flex-wrap gap-2"><Button variant="quiet" className="px-3 py-1.5 text-xs" onClick={() => void copy(publication)}><Copy size={14} /> Copy</Button><a className="focus-ring inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-[var(--teal)] hover:bg-[#edf8f4]" href={publicRankingUrl(publication)} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open</a><Button variant="danger" className="px-3 py-1.5 text-xs" loading={revoke.isPending && revoke.variables?.id === publication.id} onClick={() => { if (window.confirm("Revoke this archived public link?")) revoke.mutate(publication); }}>Revoke</Button></div></div>)}</div></div>}</Card>;
+}
+
+function RankingsView({ sessionId, session }: { sessionId: string; session?: SessionSummary }) {
+  const workspaceQuery = useQuery({ queryKey: ["workspace", sessionId], queryFn: api.workspace, enabled: !session });
+  const sessionForSharing = session ?? workspaceQuery.data;
+  const rankingsQuery = useQuery({ queryKey: ["rankings", sessionId], queryFn: () => api.rankings(sessionId), refetchInterval: useRefreshInterval(sessionForSharing?.status === "ACTIVE") });
+  const rankings = rankingsQuery.data ?? [];
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  if (rankingsQuery.isPending) return <LoadingState label="Loading rankings" />;
+  const save = async () => { if (!rankings.length || saving) return; setSaving(true); try { await saveRankingsToDevice(rankings); toast.success("Rankings saved to your device."); } catch (reason) { toast.error(errorMessage(reason)); } finally { setSaving(false); } };
+  return <div className="space-y-5"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-[var(--muted)]">Current queue rankings</p><h2 className="display text-4xl">Results that stay useful.</h2></div><Button variant="quiet" className="self-start px-3 sm:self-auto" disabled={!rankings.length || saving || rankingsQuery.isError} loading={saving} onClick={() => void save()}><Download size={16} /> {saving ? "Saving…" : "Save to device"}</Button></div>{sessionForSharing && <RankingsSharingControls session={sessionForSharing} />}<Card className="overflow-hidden p-0">{rankingsQuery.isPending ? <div className="p-6 text-sm text-[var(--muted)]">Loading rankings…</div> : rankingsQuery.isError ? <p role="alert" className="p-4 text-sm text-[#8d4824]">{errorMessage(rankingsQuery.error)}</p> : rankings.length === 0 ? <div className="p-4"><EmptyState icon={Trophy} title="No results yet" body="Finish a match and the leaderboard will appear here." /></div> : <div>{rankings.map((row) => { const rankingId = row.queuePlayerId ?? row.sessionPlayerId; return <div key={rankingId} className="border-b border-[var(--line)] last:border-0"><button type="button" className="focus-ring flex w-full items-center gap-4 px-4 py-4 text-left" aria-expanded={expandedId === rankingId} onClick={() => setExpandedId((current) => current === rankingId ? null : rankingId)}><span className="grid size-9 place-items-center rounded-full bg-[#edf8f4] text-sm font-bold text-[var(--teal)]">{row.rank}</span><div className="min-w-0 flex-1"><p className="truncate font-semibold">{row.player}</p><p className="text-xs text-[var(--muted)]">{row.gender === "MALE" ? "Male" : "Female"} · {pretty(row.skillLevel)} · {row.matchesPlayed} games · {row.wins}W / {row.losses}L</p></div><div className="text-right"><p className="font-semibold">{(row.winRateBasisPoints / 100).toFixed(0)}%</p><p className="text-xs text-[var(--muted)]">win rate</p></div><ChevronDown size={18} className={`shrink-0 text-[var(--muted)] transition ${expandedId === rankingId ? "rotate-180" : ""}`} /></button>{expandedId === rankingId && <PlayerHistoryDetails sessionId={sessionId} ranking={row} />}</div>; })}</div>}</Card></div>;
 }
 
 function SessionSwitcher({ sessions, active, onChange, onCreate }: { sessions: SessionSummary[]; active: SessionSummary | undefined; onChange: (id: string) => void; onCreate: () => void }) {

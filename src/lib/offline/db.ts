@@ -184,7 +184,7 @@ export async function clearAccountData(accountId: string) {
   await offlineDb.transaction("rw", offlineDb.profiles, offlineDb.meta, offlineDb.snapshots, offlineDb.audits, async () => {
     await Promise.all([offlineDb.profiles.delete(accountId), offlineDb.meta.delete(accountId), offlineDb.snapshots.delete(accountId), offlineDb.audits.where("accountId").equals(accountId).delete()]);
   });
-  try { if (window.localStorage.getItem("shuttle-queue-current-account") === accountId) window.localStorage.removeItem("shuttle-queue-current-account"); } catch { /* ignore storage access failures */ }
+  try { if (window.localStorage.getItem("shuttle-queue-current-account") === accountId) { window.localStorage.removeItem("shuttle-queue-current-account"); window.localStorage.removeItem("bq-public-sharing-active"); } } catch { /* ignore storage access failures */ }
   notifyOfflineChange();
 }
 
