@@ -88,7 +88,9 @@ function mergeFields<T extends Record<string, unknown>>(local: T, remote: T, loc
 
 function mergeMatch(local: DomainMatch, remote: DomainMatch, localMeta: SyncRecordMetadata, remoteMeta: SyncRecordMetadata): DomainMatch {
   const chosen = choose(local, remote, localMeta, remoteMeta);
-  const participants = [...new Map([...remote.participants, ...local.participants].map((item) => [item.id, item])).values()];
+  // A match lineup is an aggregate. Match edits replace participant rows and
+  // therefore may legitimately assign new row IDs to unchanged players.
+  const participants = clone(chosen.participants);
   const revisions = [...new Map([...remote.scoreRevisions, ...local.scoreRevisions].map((item) => [item.id, item])).values()];
   const games = revisions.map((revision) => ({ ...revision, games: [...new Map([...revision.games, ...(local.scoreRevisions.find((item) => item.id === revision.id)?.games ?? [])].map((item) => [item.id, item])).values()] }));
   return { ...chosen, participants, scoreRevisions: games };
@@ -156,11 +158,11 @@ export function mergeSyncSnapshots(local: Snapshot, remote: Snapshot, localMetad
       if (isDeleted(mergedMeta, { clock: lm.clock }) || isDeleted(mergedMeta, { clock: rm.clock })) return null;
       const a = left.get(id);
       const b = right.get(id);
-      if (!a) return b!;
-      if (!b) return a;
+      if (!a) return clone(b!);
+      if (!b) return clone(a);
       if (collection === "players") return mergeFields(a as Record<string, unknown>, b as Record<string, unknown>, lm, rm) as typeof a;
       if (collection === "matches") return mergeMatch(a as DomainMatch, b as DomainMatch, lm, rm) as typeof a;
-      return choose(a, b, lm, rm);
+      return clone(choose(a, b, lm, rm));
     }).filter(Boolean);
   }
   const playerByName = new Map<string, string>();
