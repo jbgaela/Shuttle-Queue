@@ -128,9 +128,9 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
       <Card className="w-full max-w-md p-7 sm:p-9">
         <div className="mb-8 flex items-center gap-3">
           <div className="grid size-12 place-items-center rounded-2xl bg-[var(--teal)] text-white"><Zap size={23} /></div>
-          <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[var(--teal)]">Shuttle Queue</p><h1 className="display text-3xl">Run the current queue.</h1></div>
+          <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[var(--teal)]">Shuttle Queue</p><h1 className="display text-3xl">Badminton Queueing System</h1></div>
         </div>
-        <p className="mb-7 text-sm leading-6 text-[var(--muted)]">A calm command center for check-ins, fair matchups, courts, and results.</p>
+        <p className="mb-7 text-sm leading-6 text-[var(--muted)]">By: LineDrive PH: Jean Benedict Gaela & Jendii</p>
         <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); login.mutate(); }}>
           <label className="block text-sm font-semibold">Username<Input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
           <label className="block text-sm font-semibold">Password<Input value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" type="password" required /></label>
