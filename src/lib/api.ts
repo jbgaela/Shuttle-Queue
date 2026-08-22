@@ -78,8 +78,8 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   return (path.startsWith("/sync/") ? data : hydrateQueueFields(data));
 }
 
-async function publicRequest<T>(token: string): Promise<T> {
-  const response = await fetch(`${baseUrl}/public/rankings/${encodeURIComponent(token)}`, { credentials: "omit", cache: "no-store" });
+async function publicRequest<T>(token: string, suffix = ""): Promise<T> {
+  const response = await fetch(`${baseUrl}/public/rankings/${encodeURIComponent(token)}${suffix}`, { credentials: "omit", cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error?.message ?? "These public rankings are no longer available.");
   return (payload as ApiEnvelope<T>).data;
@@ -145,6 +145,7 @@ export const api = {
   publishPublicRankings: (version: number) => request<PublicRankingPublication>("/workspace/public-rankings/publish", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }),
   revokePublicRankings: (publication: PublicRankingPublication) => request<PublicRankingPublication>(`/workspace/public-rankings/${publication.id}/revoke`, { method: "POST", headers: { "if-match": String(publication.version) }, body: "{}" }),
   publicRankings: (token: string) => publicRequest<PublicRankingPayload>(token),
+  publicRankingPlayerHistory: (token: string, playerKey: string) => publicRequest<PublicRankingPlayerHistoryPayload>(token, `/players/${encodeURIComponent(playerKey)}/history`),
   fees: (_workspaceId: string) => request<FeeSummary>("/fees"),
   updateFeeConfig: (_workspaceId: string, body: { mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null }) => request<{ config: FeeConfig; summary: FeeSummary }>("/fees/config", { method: "PUT", body: JSON.stringify({ ...body, expectedQueueCostMinor: body.expectedQueueCostMinor ?? body.expectedSessionCostMinor }) }),
   payments: (_workspaceId: string) => request<Payment[]>("/payments"),
@@ -182,8 +183,10 @@ export type PlayerHistoryStats = { matchesPlayed: number; wins: number; losses: 
 export type PlayerHistoryResponse = { player: { queuePlayerId: string; sessionPlayerId: string; playerId: string; displayName: string; gender: string; skillLevel: string }; stats: PlayerHistoryStats; items: HistoryMatch[]; pagination: HistoryPagination };
 export type CareerRanking = { rank: number; player: string; playerId: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
 export type Ranking = { rank: number; queuePlayerId: string; sessionPlayerId: string; player: string; playerId: string; gender: string; skillLevel: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
-export type PublicRankingRow = { rank: number; player: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
-export type PublicRankingPayload = { sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL"; serverTime: string; lastUpdatedAt: string; rankings: PublicRankingRow[] };
+export type PublicRankingRow = { rank: number; playerKey?: string; player: string; matchesPlayed: number; wins: number; losses: number; winRateBasisPoints: number; pointsFor: number; pointsAgainst: number; pointDifferential: number };
+export type PublicRankingPayload = { sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL"; serverTime: string; lastUpdatedAt: string; historyAvailable: boolean; rankings: PublicRankingRow[] };
+export type PublicRankingMatch = { matchKey: string; completedAt: string | null; result: "WIN" | "LOSS"; winnerTeam: "A" | "B" | null; teamA: string[]; teamB: string[]; games: Array<{ gameNumber: number; teamAScore: number; teamBScore: number; winnerTeam: "A" | "B" }> };
+export type PublicRankingPlayerHistoryPayload = { player: { playerKey: string; player: string }; matches: PublicRankingMatch[] };
 export type PublicRankingPublication = { id: string; sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL" | "REVOKED"; publishedAt: string; finalizedAt?: string | null; revokedAt?: string | null; version: number; token?: string };
 export type PublicRankingPublicationResponse = { current: PublicRankingPublication | null; archives: PublicRankingPublication[] };
 export type FeeConfig = { id: string; mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null; participationRule: string; frozenAt?: string | null; version: number };
