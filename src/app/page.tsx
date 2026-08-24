@@ -478,7 +478,7 @@ function matchModeLabel(mode: string) { return mode === "BALANCED_3" ? "Handicap
 
 function LegacyMatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: string; queue: QueueState; courts: Court[]; onChanged: () => void }) {
   const [panelMode, setPanelMode] = useState<"suggested" | "manual">("suggested");
-  const [mode, setMode] = useState("BALANCED_1");
+  const [mode, setMode] = useState("SAME_SKILL");
   const strengthGap = suggestionStrengthGap(mode) ?? 1;
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [courtId, setCourtId] = useState("");
@@ -521,7 +521,7 @@ type MatchmakerPersistedState = {
   suggestionScope: string;
   suggestionCycle: { scope: string; keys: string[] };
 };
-const EMPTY_MATCHMAKER_STATE: MatchmakerPersistedState = { mode: "BALANCED_1", strengthGap: 1, suggestion: null, draft: null, editing: false, courtId: "", suggestionScope: "", suggestionCycle: { scope: "", keys: [] } };
+const EMPTY_MATCHMAKER_STATE: MatchmakerPersistedState = { mode: "SAME_SKILL", strengthGap: 1, suggestion: null, draft: null, editing: false, courtId: "", suggestionScope: "", suggestionCycle: { scope: "", keys: [] } };
 const MatchmakerPersistenceContext = createContext<{ state: MatchmakerPersistedState; onPersist: (state: MatchmakerPersistedState) => void; clear: () => void; version: number }>({ state: EMPTY_MATCHMAKER_STATE, onPersist: () => undefined, clear: () => undefined, version: 0 });
 
 function strengthValue(player: Pick<SessionPlayer, "skillWeight" | "skillLevel">) {
@@ -626,7 +626,7 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   useEffect(() => {
     if (previousPersistenceVersion.current === persistenceVersion) return;
     previousPersistenceVersion.current = persistenceVersion;
-    setMode("BALANCED_1"); setSuggestion(null); setDraft(null); setEditing(false); setCourtIdRaw(""); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] });
+    setMode("SAME_SKILL"); setSuggestion(null); setDraft(null); setEditing(false); setCourtIdRaw(""); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] });
   }, [persistenceVersion]);
   useEffect(() => { onPersist({ mode, strengthGap, suggestion, draft, editing, courtId, suggestionScope, suggestionCycle }); }, [courtId, draft, editing, mode, onPersist, suggestion, suggestionCycle, suggestionScope, strengthGap]);
   useEffect(() => {
