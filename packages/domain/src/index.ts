@@ -5,7 +5,7 @@ export type LatePenaltyState = "PENDING" | "SERVED" | "WAIVED";
 export type CourtStatus = "AVAILABLE" | "OCCUPIED" | "PAUSED" | "CLOSED";
 export type MatchStatus = "QUEUED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
 export type MatchSource = "MANUAL" | "AUTOMATIC" | "MANUAL_ADJUSTED";
-export type MatchmakingMode = "OPEN" | "SAME_SKILL" | "BALANCED" | "SAME_GENDER" | "MIXED_DOUBLES";
+export type MatchmakingMode = "OPEN" | "SAME_SKILL" | "BALANCED" | "SAME_GENDER" | "MIXED_DOUBLES" | "UNDEFEATED_CHALLENGE";
 export type TeamSide = "A" | "B";
 
 export type ScoreInput = { teamAScore: number; teamBScore: number };
@@ -177,12 +177,12 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
   return { snapshot: next, impact };
 }
 
-export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; status: QueuePlayerStatus; gamesPlayed: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
+export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; status: QueuePlayerStatus; gamesPlayed: number; wins?: number; losses?: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
 export type MatchHistory = { partners: Map<string, Map<string, number>>; opponents: Map<string, Map<string, number>>; quartets: Map<string, number>; encounters?: Map<string, Map<string, number>>; recentPartners?: Map<string, Map<string, number>>; recentOpponents?: Map<string, Map<string, number>>; recentEncounters?: Map<string, Map<string, number>>; recentQuartets?: Map<string, number> };
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; explanation: Record<string, unknown> };
 export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
-export const MATCHMAKING_ALGORITHM = "v4-upper-beginner-strict-balance";
+export const MATCHMAKING_ALGORITHM = "v5-undefeated-challenge";
 
 export const skillWeights: Record<SkillLevel, number> = {
   NEWBIE: 1,
@@ -204,9 +204,9 @@ export const validateBalancedLineup = (teamA: MatchPlayer[], teamB: MatchPlayer[
   const group = [...teamA, ...teamB];
   if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set(group.map((player) => player.id)).size !== group.length) return "Choose unique players with equal team sizes for singles or doubles.";
   const spread = Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight));
-  if (spread > strengthGap) return `Balanced matchups require all player strengths to be within ${strengthGap}.`;
+  if (spread > strengthGap) return `Handicap matchups require a player strength spread of at most ${strengthGap}.`;
   const teamDifference = Math.abs(teamA.reduce((sum, player) => sum + player.skillWeight, 0) - teamB.reduce((sum, player) => sum + player.skillWeight, 0));
-  if (teamDifference > strengthGap) return `Balanced matchups require team strength totals to be within ${strengthGap}.`;
+  if (teamDifference !== strengthGap) return `Handicap matchups require team strength totals to differ by exactly ${strengthGap}.`;
   return null;
 };
 
@@ -257,7 +257,89 @@ const partitions = <T,>(players: T[]) => { const [a, b, c, d] = players; return 
 const compare = (a: (number[] | number | string)[], b: (number[] | number | string)[]) => { for (let i = 0; i < a.length; i += 1) { const left = a[i]; const right = b[i]; if (Array.isArray(left) && Array.isArray(right)) { for (let j = 0; j < Math.max(left.length, right.length); j += 1) { const result = (left[j] ?? 0) - (right[j] ?? 0); if (result) return result; } } else if (typeof left === "string" && typeof right === "string") { const result = left.localeCompare(right); if (result) return result; } else if (typeof left === "number" && typeof right === "number" && left !== right) return left - right; } return 0; };
 const restReadyAt = (lastMatchEndedAt: string | null, minimumRestMinutes: number, now: number) => { if (!lastMatchEndedAt || minimumRestMinutes <= 0) return now; return new Date(lastMatchEndedAt).getTime() + minimumRestMinutes * 60_000; };
 
+const winsFor = (player: MatchPlayer) => player.wins ?? 0;
+const lossesFor = (player: MatchPlayer) => player.losses ?? 0;
+const gamesFor = (player: MatchPlayer) => player.gamesPlayed ?? 0;
+
+export function leaderboardOrder(players: MatchPlayer[]) {
+  return [...players].sort((a, b) => winsFor(b) - winsFor(a) || gamesFor(b) - gamesFor(a) || normalizeName(a.displayName).localeCompare(normalizeName(b.displayName)) || a.id.localeCompare(b.id));
+}
+
+export function undefeatedChallengePlayers(players: MatchPlayer[], minimumMatches = 4, rankLimit = 3) {
+  return leaderboardOrder(players).slice(0, rankLimit).flatMap((player, index) => winsFor(player) === gamesFor(player) && lossesFor(player) === 0 && gamesFor(player) >= minimumMatches ? [{ player, rank: index + 1 }] : []);
+}
+
+const challengePairKey = (players: MatchPlayer[]) => players.map((player) => player.id).sort().join(",");
+const challengeGroupKey = (teamA: MatchPlayer[], teamB: MatchPlayer[]) => teamA.map((player) => player.id).sort().join(",") + "|" + teamB.map((player) => player.id).sort().join(",");
+const combinationValues = (players: MatchPlayer[], size: number) => {
+  const values: MatchPlayer[][] = [];
+  forEachCombination(players, size, (selected) => values.push(selected));
+  return values;
+};
+
+function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistory, excludedKeys: string[], options: MatchmakingOptions): Suggestion | null {
+  const now = options.now ? new Date(options.now).getTime() : Date.now();
+  const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
+  const eligible = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const ranked = undefeatedChallengePlayers(players);
+  const rankedIds = new Set(ranked.map(({ player }) => player.id));
+  const readyQualifiers = ranked.filter(({ player }) => eligible.some((candidate) => candidate.id === player.id));
+  if (!readyQualifiers.length) return null;
+  const supports = eligible.filter((player) => !rankedIds.has(player.id));
+  const excluded = new Set(excludedKeys);
+  const excludedPairs = new Set(excludedKeys.map((key) => key.split("|").flatMap((part) => part.split(",")).filter((id) => rankedIds.has(id)).sort().join(",")).filter(Boolean));
+  const useFallback = readyQualifiers.length >= 3 && supports.length < 2;
+  const qualifierSets = readyQualifiers.length === 1
+    ? [[readyQualifiers[0]!.player]]
+    : useFallback
+      ? combinationValues(readyQualifiers.map(({ player }) => player), 3)
+      : combinationValues(readyQualifiers.map(({ player }) => player), 2);
+  const supportSize = qualifierSets[0]?.length === 1 ? 3 : useFallback ? 1 : 2;
+  if (supports.length < supportSize) return null;
+  const supportGroups = combinationValues(supports, supportSize);
+  const minimumSupportGames = supportGroups.reduce((minimum, group) => Math.min(minimum, ...group.map(gamesFor)), Number.POSITIVE_INFINITY);
+  const fairSupportExists = supportGroups.some((group) => Math.max(...group.map(gamesFor)) <= minimumSupportGames + 1);
+  let best: { key: (number[] | number | string)[]; suggestion: Suggestion } | null = null;
+
+  for (const qualifierSet of qualifierSets) {
+    const pairKey = challengePairKey(qualifierSet);
+    const pairWasExcluded = excludedPairs.has(pairKey);
+    const pairHistory = qualifierSet.length > 1 ? Math.max(...qualifierSet.flatMap((player, index) => qualifierSet.slice(index + 1).map((other) => pairCount(history, player.id, other.id, true)))) : 0;
+    for (const supportGroup of supportGroups) {
+      const group = [...qualifierSet, ...supportGroup];
+      const supportGames = supportGroup.map(gamesFor).sort((a, b) => a - b);
+      if (fairSupportExists && Math.max(...supportGames) > minimumSupportGames + 1) continue;
+      const supportPending = supportGroup.filter((player) => player.latePenaltyState === "PENDING").length;
+      const supportPriority = [...supportGroup].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b);
+      const supportQueueAge = Math.max(...supportGroup.map((player) => new Date(player.queueEnteredAt!).getTime()));
+      const recentPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => pairCount(history, player.id, other.id, true)));
+      const allPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => pairCount(history, player.id, other.id, false)));
+      for (const [teamA, teamB] of partitions([...group].sort((a, b) => a.id.localeCompare(b.id)))) {
+        if (isProhibitedGeneratedGenderMatch(teamA, teamB)) continue;
+        const teamAQualifiers = teamA.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
+        const teamBQualifiers = teamB.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
+        if (qualifierSet.length > 1 && (!teamAQualifiers.length || !teamBQualifiers.length)) continue;
+        const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
+        const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
+        const teamDifference = Math.abs(teamATotal - teamBTotal);
+        const qualifierTeam = teamAQualifiers.length ? teamA : teamB;
+        const opponentTeam = teamAQualifiers.length ? teamB : teamA;
+        const challengeAdvantage = opponentTeam.reduce((sum, player) => sum + player.skillWeight, 0) - qualifierTeam.reduce((sum, player) => sum + player.skillWeight, 0);
+        const qualifierPartner = qualifierSet.length === 1 ? qualifierTeam.find((player) => !qualifierSet.some((candidate) => candidate.id === player.id)) : undefined;
+        const pairRotation = qualifierSet.length > 1 && !pairWasExcluded ? 0 : 1;
+        const key: (number[] | number | string)[] = [pairRotation, pairHistory, supportPriority, supportGames, supportQueueAge, supportPending, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner?.skillWeight ?? 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];
+        const keyString = challengeGroupKey(teamA, teamB);
+        if (excluded.has(keyString)) continue;
+        const suggestion: Suggestion = { mode: "UNDEFEATED_CHALLENGE", teamA, teamB, teamATotal, teamBTotal, difference: teamDifference, key: keyString, explanation: { algorithmVersion: MATCHMAKING_ALGORITHM, mode: "UNDEFEATED_CHALLENGE", rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() }, challenge: { minimumMatches: 4, rankLimit: 3, qualifyingPlayers: ranked.map(({ player, rank }) => ({ id: player.id, displayName: player.displayName, rank, gamesPlayed: gamesFor(player), wins: winsFor(player), losses: lossesFor(player) })), selectedPlayerIds: qualifierSet.map((player) => player.id), opposingPlayerIds: qualifierSet.length > 1 ? qualifierSet.map((player) => player.id) : [], pairKey, rotatedPair: pairRotation === 1, fallbackIncludedThird: useFallback, difficultyPolicy: qualifierSet.length === 1 ? "WEAKER_TEAM_FAIR_QUEUE" : "QUALIFIED_PLAYERS_OPPOSED" }, teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: teamDifference }, repeatPenalties: { recentPairCount: recentPairs.filter(Boolean).length, recentPairTotal: recentPairs.reduce((sum, value) => sum + value, 0), allTimePairCount: allPairs.filter(Boolean).length, allTimePairTotal: allPairs.reduce((sum, value) => sum + value, 0) }, fairness: { supportMinimumGames: minimumSupportGames, supportPending } } };
+        if (!best || compare(key, best.key) < 0) best = { key, suggestion };
+      }
+    }
+  }
+  return best?.suggestion ?? null;
+}
+
 export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, history: MatchHistory, excludedKeys: string[] = [], options: MatchmakingOptions = {}): Suggestion | null {
+  if (mode === "UNDEFEATED_CHALLENGE") return suggestUndefeatedChallenge(players, history, excludedKeys, options);
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
   const strengthGap = mode === "BALANCED" ? options.strengthGap ?? DEFAULT_BALANCED_STRENGTH_GAP : undefined;
@@ -293,7 +375,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       if (isProhibitedGeneratedGenderMatch(teamA, teamB)) continue;
       const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
       const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
-      if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) > strengthGap!) continue;
+      if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) !== strengthGap!) continue;
       const keyString = `${teamA.map((player) => player.id).sort().join(",")}|${teamB.map((player) => player.id).sort().join(",")}`;
       if (excluded.has(keyString)) continue;
       const recentPartners = partnerCount(history, teamA[0]!.id, teamA[1]!.id, true) + partnerCount(history, teamB[0]!.id, teamB[1]!.id, true);
@@ -302,7 +384,9 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       const lowestGames = group.filter((player) => player.gamesPlayed === candidateMinimumGames).length;
       const previouslySkippedCount = group.filter((player) => previouslySkippedPlayerIds.has(player.id)).length;
       const pendingCount = group.filter((player) => player.latePenaltyState === "PENDING").length;
-      const key: (number[] | number | string)[] = [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, pendingCount, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, -previouslySkippedCount, mode === "BALANCED" ? -skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), recentPartners, allPartners, mode === "BALANCED" ? -partnerMix : 0, Math.abs(teamATotal - teamBTotal), sorted.map((player) => player.id).join(","), keyString];
+      const key: (number[] | number | string)[] = mode === "BALANCED"
+        ? [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, pendingCount, -previouslySkippedCount, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), Math.abs(teamATotal - teamBTotal), recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, recentPartners, allPartners, -partnerMix, sorted.map((player) => player.id).join(","), keyString]
+        : [[...group].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b), -lowestGames, Math.max(...group.map((player) => player.gamesPlayed)) - candidateMinimumGames, pendingCount, recentPairValues.filter(Boolean).length, recentPairValues.reduce((sum, value) => sum + value, 0), recentQuartetRepeats, allPairValues.filter(Boolean).length, allPairValues.reduce((sum, value) => sum + value, 0), allQuartetRepeats, -previouslySkippedCount, mode === "SAME_SKILL" ? skillSpread : 0, group.map((player) => player.gamesPlayed).sort((a, b) => a - b), sorted.map((player) => player.queueEnteredAt ? new Date(player.queueEnteredAt).getTime() : Number.MAX_SAFE_INTEGER).sort((a, b) => a - b), recentPartners, allPartners, 0, Math.abs(teamATotal - teamBTotal), sorted.map((player) => player.id).join(","), keyString];
       const suggestion = {
         mode,
         teamA,

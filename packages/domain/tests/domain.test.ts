@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPlayerDeletion, previewPlayerDeletion, skillWeight, suggestMatch, validateBalancedLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
+import { applyPlayerDeletion, previewPlayerDeletion, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
 
 test("validates the default race-to-31 scoring rule", () => {
   const result = validateScores([{ teamAScore: 31, teamBScore: 29 }], { pointsToWin: 31, winBy: 1, scoreCap: 31, bestOf: 1 });
@@ -16,16 +16,53 @@ test("suggests a deterministic eligible group", () => {
   assert.equal(new Set([...suggestion.teamA, ...suggestion.teamB].map((player) => player.id)).size, 4);
 });
 
-test("balanced suggestions cap player and team strength gaps", () => {
+test("handicap suggestions require an exact team-total difference", () => {
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const players = (weights: number[]): MatchPlayer[] => weights.map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
-  const valid = suggestMatch(players([2, 2, 3, 3]), "BALANCED", history);
+  const valid = suggestMatch(players([2, 2, 2, 3]), "BALANCED", history);
   assert.ok(valid);
-  assert.ok(valid.difference <= 1);
-  assert.ok(Math.max(...[...valid.teamA, ...valid.teamB].map((player) => player.skillWeight)) - Math.min(...[...valid.teamA, ...valid.teamB].map((player) => player.skillWeight)) <= 1);
+  assert.equal(valid.difference, 1);
+  assert.equal(Math.max(...[...valid.teamA, ...valid.teamB].map((player) => player.skillWeight)) - Math.min(...[...valid.teamA, ...valid.teamB].map((player) => player.skillWeight)), 1);
+  assert.equal(suggestMatch(players([2, 2, 2, 2]), "BALANCED", history), null);
   assert.equal(suggestMatch(players([1, 1, 3, 3]), "BALANCED", history), null);
   assert.equal(suggestMatch(players([1, 1, 5, 5]), "BALANCED", history), null);
   assert.ok(suggestMatch(players([1, 1, 3, 3]), "OPEN", history));
+});
+
+test("handicap strength variants require exact team totals and capped player spread", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (weights: number[]): MatchPlayer[] => weights.map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  assert.equal(suggestMatch(make([1, 1, 1, 1]), "BALANCED", history, [], { strengthGap: 1 }), null);
+  assert.ok(suggestMatch(make([1, 1, 1, 2]), "BALANCED", history, [], { strengthGap: 1 }));
+  assert.equal(suggestMatch(make([1, 1, 1, 2]), "BALANCED", history, [], { strengthGap: 2 }), null);
+  const plusTwo = suggestMatch(make([1, 1, 1, 3]), "BALANCED", history, [], { strengthGap: 2 });
+  assert.ok(plusTwo);
+  assert.equal(plusTwo.difference, 2);
+  assert.equal(suggestMatch(make([1, 1, 1, 3]), "BALANCED", history, [], { strengthGap: 3 }), null);
+  const plusThree = suggestMatch(make([1, 1, 1, 4]), "BALANCED", history, [], { strengthGap: 3 });
+  assert.ok(plusThree);
+  assert.equal(plusThree.difference, 3);
+});
+
+test("handicap validation enforces both the spread cap and exact team difference", () => {
+  const make = (weights: number[]): MatchPlayer[] => weights.map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  const exact = make([1, 1, 1, 2]);
+  assert.equal(validateBalancedLineup(exact.slice(0, 2), exact.slice(2), 1), null);
+  const equalTotals = make([1, 1, 3, 3]);
+  assert.match(validateBalancedLineup([equalTotals[0]!, equalTotals[2]!], [equalTotals[1]!, equalTotals[3]!], 2) ?? "", /differ by exactly 2/);
+  assert.match(validateBalancedLineup(equalTotals.slice(0, 2), equalTotals.slice(2), 1) ?? "", /spread of at most 1/);
+});
+
+test("handicap lineups keep the exact team total before partner rotation", () => {
+  const recentPartners = new Map<string, Map<string, number>>([
+    ["a", new Map([["d", 1]])],
+    ["b", new Map([["c", 1]])],
+  ]);
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map(), recentPartners };
+  const players: MatchPlayer[] = [1, 2, 2, 3].map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  const result = suggestMatch(players, "BALANCED", history, [], { strengthGap: 2 });
+  assert.ok(result);
+  assert.equal(result.difference, 2);
 });
 
 test("upper beginner fills the new adjacent skill band", () => {
@@ -34,7 +71,7 @@ test("upper beginner fills the new adjacent skill band", () => {
   assert.equal(skillWeight("INTERMEDIATE"), 4);
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const make = (weights: number[]): MatchPlayer[] => weights.map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "UPPER_BEGINNER", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
-  assert.ok(suggestMatch(make([2, 2, 3, 3]), "BALANCED", history));
+  assert.ok(suggestMatch(make([2, 2, 2, 3]), "BALANCED", history));
   assert.equal(suggestMatch(make([2, 2, 4, 4]), "BALANCED", history), null);
 });
 
@@ -44,11 +81,11 @@ test("generated doubles never place two female players against two male players"
   const result = suggestMatch(players, "OPEN", history);
   assert.ok(result);
   assert.equal(result.teamA.every((player) => player.gender === "FEMALE") || result.teamA.every((player) => player.gender === "MALE"), false);
-  assert.equal(validateBalancedLineup(result.teamA, result.teamB, 1), null);
+  assert.equal(validateBalancedLineup(result.teamA, result.teamB, 0), null);
 });
 
 test("balanced suggestions prioritize players skipped by the previous lineup", () => {
-  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: index < 3 ? 1 : 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const first = suggestMatch(players, "BALANCED", history);
   assert.ok(first);
@@ -63,7 +100,7 @@ test("balanced suggestions prioritize players skipped by the previous lineup", (
 });
 
 test("pending late penalties disable skipped-player priority for balanced suggestions", () => {
-  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0, latePenaltyState: id === "f" ? "PENDING" : null }));
+  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: index < 3 ? 1 : 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0, latePenaltyState: id === "f" ? "PENDING" : null }));
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const result = suggestMatch(players, "BALANCED", history, ["a,b|c,d"]);
   assert.ok(result);
@@ -130,4 +167,16 @@ test("blocks deletion of queued or playing players", () => {
   const snapshot = { schemaVersion: 2, queueMasterId: "a", settings: null, workspace: { startedAt: "2025-01-01", lateArrivalCutoffAt: null, matchmakingAlgorithm: "v2", matchmakingRevision: 1, version: 1 }, players: [{ id: "p", displayName: "Busy", gender: "MALE", skillLevel: "NEWBIE", skillWeight: 1, status: "ACTIVE" }], queuePlayers: [{ id: "qp", playerId: "p", displayName: "Busy", gender: "MALE", skillLevel: "NEWBIE", skillWeight: 1, status: "PLAYING", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, version: 1 }], courts: [], matches: [], feeConfig: null, payments: [], audits: [] } as CloudSnapshotV2;
   assert.equal(previewPlayerDeletion(snapshot, ["p"]).busyPlayers.length, 1);
   assert.throws(() => applyPlayerDeletion(snapshot, ["p"]), /Busy players/);
+});
+
+test("qualifies a current top-three 4-0 record only", () => {
+  const players: MatchPlayer[] = ["a", "b", "c", "d"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: index === 0 ? 3 : 4, wins: index === 2 ? 3 : index === 0 ? 3 : 4, losses: index === 2 ? 1 : 0, manualPriority: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null }));
+  assert.deepEqual(undefeatedChallengePlayers(players).map(({ player }) => player.id), ["b", "d"]);
+});
+
+test("challenge suggestions place two ready qualifiers on opposite teams", () => {
+  const players: MatchPlayer[] = ["a", "b", "c", "d", "e"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: index < 2 ? 4 : 0, wins: index < 2 ? 4 : 0, losses: 0, manualPriority: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null }));
+  const result = suggestMatch(players, "UNDEFEATED_CHALLENGE", { partners: new Map(), opponents: new Map(), quartets: new Map() });
+  assert.ok(result);
+  assert.equal(result.teamA.some((player) => player.id === "a") !== result.teamA.some((player) => player.id === "b"), true);
 });

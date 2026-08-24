@@ -32,9 +32,9 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <in
 export function Select({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   const isMatchmakerMode = Children.toArray(children).some((child) => isValidElement(child) && (child as ReactElement<{ value?: string }>).props.value === "BALANCED");
   const modeOptions = isMatchmakerMode ? [
-    <option value="BALANCED_1" key="BALANCED_1">Balanced (+1 strength)</option>,
-    <option value="BALANCED_2" key="BALANCED_2">Balanced (+2 strength)</option>,
-    <option value="BALANCED_3" key="BALANCED_3">Balanced (+3 strength)</option>,
+    <option value="BALANCED_1" key="BALANCED_1">Handicap +1 strength</option>,
+    <option value="BALANCED_2" key="BALANCED_2">Handicap +2 strength</option>,
+    <option value="BALANCED_3" key="BALANCED_3">Handicap +3 strength</option>,
     <option value="MIXED_DOUBLES" key="MIXED_DOUBLES">Mixed doubles</option>,
     <option value="SAME_GENDER" key="SAME_GENDER">Same gender</option>,
     <option value="SAME_SKILL" key="SAME_SKILL">Same skill</option>,

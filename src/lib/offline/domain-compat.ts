@@ -4,6 +4,7 @@ export {
   normalizeText,
   previewPlayerDeletion,
   suggestMatch,
+  undefeatedChallengePlayers,
   isProhibitedGeneratedGenderMatch,
   skillWeight,
   validateBalancedLineup,
