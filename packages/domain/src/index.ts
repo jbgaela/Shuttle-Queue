@@ -101,6 +101,26 @@ const allocateEqualSplit = (total: number, ids: string[]) => {
   return new Map(ids.map((idValue, index) => [idValue, base + (index < remainder ? 1 : 0)]));
 };
 
+const SESSION_PLAYER_NOT_REMOVABLE_MESSAGE = "Only inactive or checked-out players without match or payment history can be removed from this session.";
+
+export function removeSessionPlayer(snapshot: CloudSnapshotV2, queuePlayerId: string) {
+  if (snapshot.workspace.endedAt) throw new Error("This queue session has ended. Start a fresh queue before continuing operations.");
+  const current = snapshot.queuePlayers.find((player) => player.id === queuePlayerId);
+  if (!current) throw new Error("Queue player not found.");
+  if (current.status !== "INACTIVE" && current.status !== "CHECKED_OUT") throw new Error(SESSION_PLAYER_NOT_REMOVABLE_MESSAGE);
+  if (snapshot.matches.some((match) => match.participants.some((participant) => participant.queuePlayerId === queuePlayerId)) || snapshot.payments.some((payment) => payment.queuePlayerId === queuePlayerId)) throw new Error(SESSION_PLAYER_NOT_REMOVABLE_MESSAGE);
+  const next = snapshotClone(snapshot);
+  next.queuePlayers = next.queuePlayers.filter((player) => player.id !== queuePlayerId);
+  next.workspace.matchmakingRevision += 1;
+  next.workspace.version += 1;
+  if (next.feeConfig?.mode === "EQUAL_SPLIT") {
+    const roster = next.queuePlayers.filter((player) => Boolean(player.checkedInAt)).slice().sort((a, b) => a.id.localeCompare(b.id));
+    const allocations = allocateEqualSplit(next.feeConfig.expectedQueueCostMinor ?? 0, roster.map((player) => player.id));
+    for (const player of roster) { player.amountDueMinor = allocations.get(player.id) ?? 0; player.version += 1; }
+  }
+  return { snapshot: next, removedPlayerId: queuePlayerId };
+}
+
 export function previewPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string[]): PlayerDeletionImpact {
   const uniqueIds = [...new Set(playerIds)];
   const selectedPlayers = snapshot.players.filter((player) => uniqueIds.includes(player.id));

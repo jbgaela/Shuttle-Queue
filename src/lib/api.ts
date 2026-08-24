@@ -115,6 +115,7 @@ export const api = {
   updatePlayer: (player: Player, body: { displayName: string; gender: "MALE" | "FEMALE"; skillLevel: string }) => request<Player>(`/players/${player.id}`, { method: "PATCH", ...(player.version === undefined ? {} : { headers: { "if-match": String(player.version) } }), body: JSON.stringify(body) }),
   addPlayers: (_workspaceId: string, playerIds: string[]) => request<QueuePlayer[]>("/queue/players", { method: "POST", body: JSON.stringify({ playerIds }) }),
   sessionPlayers: (_workspaceId: string) => request<QueuePlayer[]>("/queue/players"),
+  removeSessionPlayer: (_workspaceId: string, queuePlayerId: string) => request<void>(`/queue/players/${queuePlayerId}`, { method: "DELETE", body: "{}" }),
   queue: (_workspaceId: string) => request<QueueState>("/queue"),
   courts: (_workspaceId: string) => request<Court[]>("/courts"),
   createCourt: (_workspaceId: string, name: string) => request<Court>("/courts", { method: "POST", body: JSON.stringify({ name }) }),

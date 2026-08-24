@@ -2,6 +2,7 @@ export {
   applyPlayerDeletion,
   historyDurationSeconds,
   normalizeText,
+  removeSessionPlayer,
   previewPlayerDeletion,
   suggestMatch,
   undefeatedChallengePlayers,
