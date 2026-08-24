@@ -789,7 +789,7 @@ function PlayersDirectoryView({ sessionId }: { sessionId: string }) {
     }
     field.value = "";
     return () => { insertedLabel?.remove(); };
-  }, [sessionId]);
+  }, [playersQuery.isSuccess, sessionId, sessionPlayersQuery.isSuccess]);
   const rosterReady = sessionPlayersQuery.isSuccess;
   if (playersQuery.isPending || sessionPlayersQuery.isPending) return <LoadingState label="Loading players" />;
   const hasDuplicateName = (displayName: string, excludedPlayerId?: string) => hasPlayerNameConflict(allPlayers, sessionPlayers, displayName, excludedPlayerId);
