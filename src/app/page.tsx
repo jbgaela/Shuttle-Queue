@@ -49,7 +49,7 @@ import { currentClockForTimezone, dateTimeInputForTimezone } from "@/lib/timezon
 const PAGE_SIZE = 15;
 const MAX_PLAYER_ADD_BATCH = 100;
 const QUEUE_TABLE_GRID_COLUMNS = "md:grid-cols-[minmax(140px,1.4fr)_70px_76px_56px_68px_84px_152px]";
-const SKILLS = ["NEWBIE", "BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"];
+const SKILLS = ["NEWBIE", "BEGINNER", "UPPER_BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"];
 
 const Button = UiButton;
 const PLAYER_NAME_CONFLICT_MESSAGE = "A player with this name has already been created or is already in the current queue.";
@@ -80,6 +80,22 @@ function playerDetails(player: Pick<QueuePlayer, "gender" | "skillLevel"> & Pick
   const skill = player.skillLevel ? pretty(player.skillLevel) : "Skill unavailable";
   if (player.latePenaltyState === "PENDING") return `${gender} - ${skill} - Late priority pending`;
   return `${gender} · ${skill}`;
+}
+
+function prohibitedGeneratedGenderLineup(teamA: SessionPlayer[], teamB: SessionPlayer[]) {
+  return teamA.length === 2 && teamB.length === 2
+    && ((teamA.every((player) => player.gender === "FEMALE") && teamB.every((player) => player.gender === "MALE"))
+      || (teamA.every((player) => player.gender === "MALE") && teamB.every((player) => player.gender === "FEMALE")));
+}
+
+function balancedLineupError(teamA: SessionPlayer[], teamB: SessionPlayer[], gap: number) {
+  const players = [...teamA, ...teamB];
+  if (players.length !== 4) return null;
+  const spread = Math.max(...players.map(strengthValue)) - Math.min(...players.map(strengthValue));
+  if (spread > gap) return `Balanced matchups require all player strengths to be within ${gap}.`;
+  const difference = Math.abs(teamA.reduce((sum, player) => sum + strengthValue(player), 0) - teamB.reduce((sum, player) => sum + strengthValue(player), 0));
+  if (difference > gap) return `Balanced matchups require team strength totals to be within ${gap}.`;
+  return null;
 }
 
 function rotationMessage(suggestion: Suggestion) {
@@ -585,7 +601,12 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   const draftIds = draft ? [...draft.teamA, ...draft.teamB] : [];
   const selectedIds = new Set(draftIds);
   const unavailableIds = draftIds.filter((id) => !waitingById.has(id));
-  const draftReady = Boolean(draft && draft.teamA.length === 2 && draft.teamB.length === 2 && new Set(draftIds).size === 4 && unavailableIds.length === 0);
+  const draftTeamAPlayers = draft?.teamA.map((id) => getPlayer(id)).filter((player): player is SessionPlayer => Boolean(player)) ?? [];
+  const draftTeamBPlayers = draft?.teamB.map((id) => getPlayer(id)).filter((player): player is SessionPlayer => Boolean(player)) ?? [];
+  const draftGenderError = prohibitedGeneratedGenderLineup(draftTeamAPlayers, draftTeamBPlayers) ? "Generated matchups cannot place two female players against two male players." : null;
+  const draftBalanceError = suggestionApiMode(mode) === "BALANCED" ? balancedLineupError(draftTeamAPlayers, draftTeamBPlayers, strengthGap ?? 1) : null;
+  const draftConstraintError = draftGenderError ?? draftBalanceError;
+  const draftReady = Boolean(draft && draft.teamA.length === 2 && draft.teamB.length === 2 && new Set(draftIds).size === 4 && unavailableIds.length === 0 && !draftConstraintError);
   const isAdjusted = Boolean(suggestion && draft && (suggestion.teamA.some((player, index) => draft.teamA[index] !== player.id) || suggestion.teamB.some((player, index) => draft.teamB[index] !== player.id)));
   const expired = Boolean(suggestion && suggestion.expiresAt <= clock);
   const availableCourts = courts.filter((court) => court.status === "AVAILABLE");
@@ -603,8 +624,9 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
     const interval = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [suggestion]);
+  useEffect(() => { if (draftConstraintError) toast.message(draftConstraintError); }, [draftConstraintError]);
   const suggest = useMutation({ mutationFn: () => api.suggestions(sessionId, suggestionApiMode(mode), suggestionStrengthGap(mode), excludedSuggestionKeys), onSuccess: (result) => { if (!result.suggestion) { toast.message(result.noMatch?.message ?? "No valid group is available yet."); return; } const nextSuggestion = result.suggestion; setSuggestion(nextSuggestion); setDraft({ teamA: nextSuggestion.teamA.map((player) => player.id), teamB: nextSuggestion.teamB.map((player) => player.id) }); setSuggestionScope(cycleScope); setEditing(false); setPickerTarget(null); setCourtIdRaw(availableCourts[0]?.id ?? ""); setSuggestionCycle((current) => { const keys = result.cycleRestarted || current.scope !== cycleScope ? [] : current.keys; return { scope: cycleScope, keys: [...new Set([...keys, nextSuggestion.key])].slice(-50) }; }); }, onError: (error) => toast.error(errorMessage(error)) });
-  const createSuggested = useMutation({ mutationFn: ({ startNow }: { startNow: boolean }) => { if (!suggestion || !draft || !draftReady) throw new Error("Every selected player must still be waiting."); if (expired) throw new Error("This suggestion expired. Generate a new suggestion or continue in Manual mode."); if (startNow && !courtId) throw new Error("Select an available court first."); return api.createSuggestedMatch(sessionId, { teamA: draft.teamA, teamB: draft.teamB, suggestionToken: suggestion.token, suggestionAdjusted: isAdjusted, ...(startNow ? { courtId } : {}) }); }, onSuccess: (_match, variables) => { setSuggestion(null); setDraft(null); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setEditing(false); setPickerTarget(null); setCourtId(""); onChanged(); toast.success(variables.startNow ? "Match started." : "Match queued."); } });
+  const createSuggested = useMutation({ mutationFn: ({ startNow }: { startNow: boolean }) => { if (!suggestion || !draft || !draftReady) throw new Error(draftConstraintError ?? "Every selected player must still be waiting."); if (expired) throw new Error("This suggestion expired. Generate a new suggestion or continue in Manual mode."); if (startNow && !courtId) throw new Error("Select an available court first."); return api.createSuggestedMatch(sessionId, { teamA: draft.teamA, teamB: draft.teamB, suggestionToken: suggestion.token, suggestionAdjusted: isAdjusted, ...(startNow ? { courtId } : {}) }); }, onSuccess: (_match, variables) => { setSuggestion(null); setDraft(null); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setEditing(false); setPickerTarget(null); setCourtId(""); onChanged(); toast.success(variables.startNow ? "Match started." : "Match queued."); } });
   const [manualPickerTeam, setManualPickerTeam] = useState<SuggestionTeam | null>(null);
   const selectedManualIds = useMemo(() => new Set([...manualTeamA, ...manualTeamB]), [manualTeamA, manualTeamB]);
   const manualReady = manualTeamA.length > 0 && manualTeamA.length === manualTeamB.length && [1, 2].includes(manualTeamA.length) && new Set([...manualTeamA, ...manualTeamB]).size === manualTeamA.length + manualTeamB.length && [...manualTeamA, ...manualTeamB].every((id) => ["WAITING", "PLAYING", "QUEUED", "RESTING"].includes(manualById.get(id)?.status ?? ""));

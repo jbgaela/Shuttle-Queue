@@ -101,10 +101,13 @@ function isDeleted(meta: SyncRecordMetadata, recordMeta: SyncRecordMetadata) {
 }
 
 function rebuildDerivedState(snapshot: CloudSnapshotV3) {
+  const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, UPPER_BEGINNER: 3, INTERMEDIATE: 4, UPPER_INTERMEDIATE: 5, ADVANCED: 6 };
+  for (const player of snapshot.players) player.skillWeight = skillWeights[player.skillLevel] ?? player.skillWeight;
   const players = new Map(snapshot.players.map((player) => [player.id, player]));
   for (const queuePlayer of snapshot.queuePlayers) {
     const profile = players.get(queuePlayer.playerId);
     if (profile) Object.assign(queuePlayer, { displayName: profile.displayName, gender: profile.gender, skillLevel: profile.skillLevel, skillWeight: profile.skillWeight });
+    else queuePlayer.skillWeight = skillWeights[queuePlayer.skillLevel] ?? queuePlayer.skillWeight;
     Object.assign(queuePlayer, { matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, lastMatchEndedAt: null });
   }
   const queuePlayers = new Map(snapshot.queuePlayers.map((player) => [player.id, player]));

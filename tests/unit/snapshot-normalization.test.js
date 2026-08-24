@@ -44,3 +44,13 @@ test("defaults the account grace duration for older snapshots", () => {
   assert.equal(original.settings.lateArrivalGraceMinutes, undefined);
   assert.equal(normalized.settings.lateArrivalGraceMinutes, 10);
 });
+
+test("repairs stale skill weights from the skill level", () => {
+  const original = { ...incompleteSnapshot([{ id: "qp1", playerId: "p1", displayName: "Alice", gender: "FEMALE", skillLevel: "INTERMEDIATE", skillWeight: 3, status: "WAITING", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, version: 1 }]), players: [{ id: "p1", displayName: "Alice", gender: "FEMALE", skillLevel: "INTERMEDIATE", skillWeight: 3, status: "ACTIVE" }] };
+  const normalized = normalizeSnapshotForSync(original);
+
+  assert.equal(original.players[0].skillWeight, 3);
+  assert.equal(original.queuePlayers[0].skillWeight, 3);
+  assert.equal(normalized.players[0].skillWeight, 4);
+  assert.equal(normalized.queuePlayers[0].skillWeight, 4);
+});

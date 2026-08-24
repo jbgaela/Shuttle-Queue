@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPlayerDeletion, previewPlayerDeletion, suggestMatch, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
+import { applyPlayerDeletion, previewPlayerDeletion, skillWeight, suggestMatch, validateBalancedLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
 
 test("validates the default race-to-31 scoring rule", () => {
   const result = validateScores([{ teamAScore: 31, teamBScore: 29 }], { pointsToWin: 31, winBy: 1, scoreCap: 31, bestOf: 1 });
@@ -26,6 +26,25 @@ test("balanced suggestions cap player and team strength gaps", () => {
   assert.equal(suggestMatch(players([1, 1, 3, 3]), "BALANCED", history), null);
   assert.equal(suggestMatch(players([1, 1, 5, 5]), "BALANCED", history), null);
   assert.ok(suggestMatch(players([1, 1, 3, 3]), "OPEN", history));
+});
+
+test("upper beginner fills the new adjacent skill band", () => {
+  assert.equal(skillWeight("BEGINNER"), 2);
+  assert.equal(skillWeight("UPPER_BEGINNER"), 3);
+  assert.equal(skillWeight("INTERMEDIATE"), 4);
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (weights: number[]): MatchPlayer[] => weights.map((skillWeight, index) => ({ id: String.fromCharCode(97 + index), displayName: String(index), gender: "MALE", skillWeight, skillLevel: "UPPER_BEGINNER", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  assert.ok(suggestMatch(make([2, 2, 3, 3]), "BALANCED", history));
+  assert.equal(suggestMatch(make([2, 2, 4, 4]), "BALANCED", history), null);
+});
+
+test("generated doubles never place two female players against two male players", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const players: MatchPlayer[] = ["f1", "f2", "m1", "m2"].map((id, index) => ({ id, displayName: id, gender: index < 2 ? "FEMALE" : "MALE", skillWeight: 2, skillLevel: "BEGINNER", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 }));
+  const result = suggestMatch(players, "OPEN", history);
+  assert.ok(result);
+  assert.equal(result.teamA.every((player) => player.gender === "FEMALE") || result.teamA.every((player) => player.gender === "MALE"), false);
+  assert.equal(validateBalancedLineup(result.teamA, result.teamB, 1), null);
 });
 
 test("balanced suggestions prioritize players skipped by the previous lineup", () => {

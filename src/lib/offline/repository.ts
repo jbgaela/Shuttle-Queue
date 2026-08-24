@@ -1,5 +1,5 @@
 import type { CloudSnapshotV2, DomainMatch, DomainPlayer, DomainQueuePlayer, MatchHistory, MatchPlayer, ScoreSettings, SyncMetadata } from "./domain-compat";
-import { applyPlayerDeletion, historyDurationSeconds, normalizeText, suggestMatch, validateScores } from "./domain-compat";
+import { applyPlayerDeletion, historyDurationSeconds, isProhibitedGeneratedGenderMatch, normalizeText, skillWeight, suggestMatch, validateBalancedLineup, validateScores } from "./domain-compat";
 import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, Suggestion, WorkspaceSummary } from "../api";
 import { request } from "../api";
 import { hasPlayerNameConflict } from "../player-names";
@@ -14,7 +14,10 @@ const uploadFlights = new Map<string, Promise<{ state: "uploaded"; cloudRevision
 const now = () => new Date().toISOString();
 const PLAYER_NAME_CONFLICT_MESSAGE = "A player with this name has already been created or is already in the current queue.";
 const DEFAULT_LATE_ARRIVAL_GRACE_MINUTES = 10;
-const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, INTERMEDIATE: 3, UPPER_INTERMEDIATE: 4, ADVANCED: 5 };
+const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, UPPER_BEGINNER: 3, INTERMEDIATE: 4, UPPER_INTERMEDIATE: 5, ADVANCED: 6 };
+const MATCHMAKING_ALGORITHM = "v4-upper-beginner-strict-balance";
+const encodeLocalSuggestion = (value: Record<string, unknown>) => `local:${btoa(JSON.stringify(value))}`;
+const decodeLocalSuggestion = (value: string) => { if (!value.startsWith("local:")) throw new Error("Generate a new suggestion."); try { return JSON.parse(atob(value.slice(6))) as Record<string, unknown>; } catch { throw new Error("Generate a new suggestion."); } };
 const parseBody = (init?: RequestInit) => { try { return init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}; } catch { return {}; } };
 const parts = (path: string) => path.split("?")[0]!.split("/").filter(Boolean);
 const params = (path: string) => new URLSearchParams(path.split("?")[1] ?? "");
@@ -120,7 +123,7 @@ async function bulkQueueAction(accountId: string, body: Record<string, unknown>)
 async function makeSuggestion(accountId: string, body: Record<string, unknown>) {
   const snapshot = await readSnapshot(accountId);
   if (!snapshot) throw new Error("Download this account before working offline.");
-  const input: MatchPlayer[] = snapshot.queuePlayers.filter((player) => player.status === "WAITING").map((player) => ({ id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: player.skillWeight, skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }));
+  const input: MatchPlayer[] = snapshot.queuePlayers.filter((player) => player.status === "WAITING").map((player) => ({ id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }));
   const mode = String(body.mode) as never;
   const strengthGap = mode === "BALANCED" && [1, 2, 3].includes(Number(body.strengthGap)) ? Number(body.strengthGap) as 1 | 2 | 3 : mode === "BALANCED" ? 1 : undefined;
   const excludedKeys = Array.isArray(body.excludeKeys) ? body.excludeKeys.map(String) : [];
@@ -159,7 +162,8 @@ async function makeSuggestion(accountId: string, body: Record<string, unknown>) 
     return { suggestion: null, cycleRestarted: false, noMatch: { code: restBlocked ? "REST_REQUIRED" : "NO_VALID_GROUP", message, nextEligibleAt } };
   }
   const convert = (player: MatchPlayer) => playerView(findQueuePlayer(snapshot, player.id)!, snapshot);
-  const result: Suggestion = { token: `local:${id()}`, expiresAt: Date.now() + 300000, key: suggestion.key, difference: suggestion.difference, teamATotal: suggestion.teamATotal, teamBTotal: suggestion.teamBTotal, lateArrivalCutoffAt: snapshot.workspace.lateArrivalCutoffAt ?? null, teamA: suggestion.teamA.map(convert), teamB: suggestion.teamB.map(convert), explanation: suggestion.explanation as Suggestion["explanation"] };
+  const expiresAt = Date.now() + 300000;
+  const result: Suggestion = { token: encodeLocalSuggestion({ revision: snapshot.workspace.matchmakingRevision, mode, strengthGap: strengthGap ?? null, key: suggestion.key, teamA: suggestion.teamA.map((player) => player.id), teamB: suggestion.teamB.map((player) => player.id), expiresAt }), expiresAt, key: suggestion.key, difference: suggestion.difference, teamATotal: suggestion.teamATotal, teamBTotal: suggestion.teamBTotal, lateArrivalCutoffAt: snapshot.workspace.lateArrivalCutoffAt ?? null, teamA: suggestion.teamA.map(convert), teamB: suggestion.teamB.map(convert), explanation: suggestion.explanation as Suggestion["explanation"] };
   return { suggestion: result, cycleRestarted };
 }
 async function createMatchLegacy(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "MATCH_CREATED", (snapshot) => { const teamA = Array.isArray(body.teamA) ? body.teamA.map(String) : []; const teamB = Array.isArray(body.teamB) ? body.teamB.map(String) : []; if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set([...teamA, ...teamB]).size !== teamA.length + teamB.length) throw new Error("Choose one player per team for singles or two per team for doubles."); const court = body.courtId ? findCourt(snapshot, String(body.courtId)) : undefined; if (body.courtId && (!court || court.status !== "AVAILABLE" || court.currentMatchId)) throw new Error("The selected court is not available."); const match: DomainMatch = { id: id(), courtId: court?.id ?? null, courtIdSnapshot: court?.id ?? null, courtNameSnapshot: court?.name ?? null, status: court ? "IN_PROGRESS" : "QUEUED", source: body.suggestionToken ? "AUTOMATIC" : "MANUAL", matchmakingMode: null, algorithmVersion: body.suggestionToken ? "v2-rotation" : null, suggestionKey: typeof body.suggestionToken === "string" ? body.suggestionToken : null, suggestionExplanation: null, pointsToWin: settings(snapshot).pointsToWin, winBy: settings(snapshot).winBy, scoreCap: settings(snapshot).scoreCap, bestOf: settings(snapshot).bestOf, queuedAt: now(), startedAt: court ? now() : null, completedAt: null, cancelledAt: null, cancellationReason: null, winnerTeam: null, currentRevisionId: null, version: 1, participants: [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))], scoreRevisions: [] }; match.participants.forEach((participant) => { participant.matchId = match.id; const player = findQueuePlayer(snapshot, participant.queuePlayerId); if (player) { player.status = court ? "PLAYING" : "QUEUED"; player.currentMatchId = match.id; player.queueEnteredAt = null; player.version += 1; } }); if (court) { court.status = "OCCUPIED"; court.currentMatchId = match.id; court.version += 1; serveOfflineLatePenalties(snapshot, match.participants.map((participant) => participant.queuePlayerId)); } snapshot.matches.push(match); snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; return matchView(snapshot, match); }); }
@@ -180,12 +184,29 @@ async function createMatchStacked(accountId: string, body: Record<string, unknow
       const blocked = (players as DomainQueuePlayer[]).filter((player) => Date.parse(restEligibleAt(player, snapshot)) > Date.now());
       if (blocked.length) throw new Error(`REST_REQUIRED: ${blocked.map((player) => player.displayName).join(", ")} must complete the configured rest period before playing again.`);
     }
+    const suggestionPayload = typeof body.suggestionToken === "string" ? decodeLocalSuggestion(body.suggestionToken) : null;
+    if (suggestionPayload) {
+      if (Number(suggestionPayload.revision) !== snapshot.workspace.matchmakingRevision || Number(suggestionPayload.expiresAt) < Date.now()) throw new Error("SUGGESTION_STALE: Generate a new suggestion.");
+      const originalTeamA = Array.isArray(suggestionPayload.teamA) ? suggestionPayload.teamA.map(String) : [];
+      const originalTeamB = Array.isArray(suggestionPayload.teamB) ? suggestionPayload.teamB.map(String) : [];
+      if (!body.suggestionAdjusted && (JSON.stringify(originalTeamA) !== JSON.stringify(teamA) || JSON.stringify(originalTeamB) !== JSON.stringify(teamB))) throw new Error("SUGGESTION_STALE: Generate a new suggestion.");
+      const byId = new Map((players as DomainQueuePlayer[]).map((player) => [player.id, player]));
+      const toMatchPlayer = (queuePlayerId: string): MatchPlayer => { const player = byId.get(queuePlayerId); if (!player) throw new Error("SUGGESTION_STALE: Generate a new suggestion."); return { id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }; };
+      const teamAPlayers = teamA.map(toMatchPlayer);
+      const teamBPlayers = teamB.map(toMatchPlayer);
+      if (isProhibitedGeneratedGenderMatch(teamAPlayers, teamBPlayers)) throw new Error("GENERATED_GENDER_RULE: Generated matchups cannot place two female players against two male players.");
+      if (suggestionPayload.mode === "BALANCED") {
+        const balanceError = validateBalancedLineup(teamAPlayers, teamBPlayers, Number(suggestionPayload.strengthGap ?? 1));
+        if (balanceError) throw new Error(`BALANCE_CONSTRAINT_VIOLATION: ${balanceError}`);
+      }
+    }
     const court = body.courtId ? findCourt(snapshot, String(body.courtId)) : undefined;
     if (body.courtId && (!court || court.status !== "AVAILABLE" || court.currentMatchId)) throw new Error("The selected court is not available.");
     const createdAt = now();
     const adjusted = Boolean(body.suggestionAdjusted);
-    const suggestionExplanation = body.suggestionToken ? { mode: "BALANCED", adjusted, algorithmVersion: "v3-rest-strength", strengthGap: body.strengthGap ?? 1 } : null;
-    const match: DomainMatch = { id: id(), courtId: court?.id ?? null, courtIdSnapshot: court?.id ?? null, courtNameSnapshot: court?.name ?? null, status: court ? "IN_PROGRESS" : "QUEUED", source: body.suggestionToken ? (adjusted ? "MANUAL_ADJUSTED" : "AUTOMATIC") : "MANUAL", matchmakingMode: body.suggestionToken ? "BALANCED" : null, algorithmVersion: body.suggestionToken ? "v3-rest-strength" : null, suggestionKey: typeof body.suggestionToken === "string" ? body.suggestionToken : null, suggestionExplanation, pointsToWin: settings(snapshot).pointsToWin, winBy: settings(snapshot).winBy, scoreCap: settings(snapshot).scoreCap, bestOf: settings(snapshot).bestOf, queuedAt: createdAt, startedAt: court ? createdAt : null, completedAt: null, cancelledAt: null, cancellationReason: null, winnerTeam: null, currentRevisionId: null, version: 1, participants: [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))], scoreRevisions: [] };
+    const suggestionMode = suggestionPayload?.mode as DomainMatch["matchmakingMode"] ?? null;
+    const suggestionExplanation = suggestionPayload ? { mode: suggestionMode, adjusted, algorithmVersion: MATCHMAKING_ALGORITHM, strengthGap: suggestionPayload.strengthGap ?? null, generatedGenderRule: "NO_TWO_FEMALE_VS_TWO_MALE" } : null;
+    const match: DomainMatch = { id: id(), courtId: court?.id ?? null, courtIdSnapshot: court?.id ?? null, courtNameSnapshot: court?.name ?? null, status: court ? "IN_PROGRESS" : "QUEUED", source: body.suggestionToken ? (adjusted ? "MANUAL_ADJUSTED" : "AUTOMATIC") : "MANUAL", matchmakingMode: suggestionMode, algorithmVersion: body.suggestionToken ? MATCHMAKING_ALGORITHM : null, suggestionKey: typeof body.suggestionToken === "string" ? body.suggestionToken : null, suggestionExplanation, pointsToWin: settings(snapshot).pointsToWin, winBy: settings(snapshot).winBy, scoreCap: settings(snapshot).scoreCap, bestOf: settings(snapshot).bestOf, queuedAt: createdAt, startedAt: court ? createdAt : null, completedAt: null, cancelledAt: null, cancellationReason: null, winnerTeam: null, currentRevisionId: null, version: 1, participants: [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))], scoreRevisions: [] };
     match.participants.forEach((participant) => { participant.matchId = match.id; });
     snapshot.matches.push(match);
     if (court) { court.status = "OCCUPIED"; court.currentMatchId = match.id; court.version += 1; }
@@ -237,6 +258,14 @@ async function startMatchStacked(accountId: string, matchId: string, courtId: st
     if (snapshot.matches.some((item) => item.status === "IN_PROGRESS" && item.participants.some((participant) => ids.includes(participant.queuePlayerId)))) throw new Error("This matchup is waiting for a player to finish their current match.");
     const players = ids.map((queuePlayerId) => findQueuePlayer(snapshot, queuePlayerId));
     if (players.some((player) => !player || !["WAITING", "QUEUED"].includes(player.status))) throw new Error("This matchup is not ready to start.");
+    if (match.matchmakingMode === "BALANCED") {
+      const byId = new Map((players as DomainQueuePlayer[]).map((player) => [player.id, player]));
+      const toMatchPlayer = (queuePlayerId: string): MatchPlayer => { const player = byId.get(queuePlayerId); if (!player) throw new Error("This matchup is not ready to start."); return { id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }; };
+      const teamA = match.participants.filter((participant) => participant.team === "A").sort((a, b) => a.teamSlot - b.teamSlot).map((participant) => toMatchPlayer(participant.queuePlayerId));
+      const teamB = match.participants.filter((participant) => participant.team === "B").sort((a, b) => a.teamSlot - b.teamSlot).map((participant) => toMatchPlayer(participant.queuePlayerId));
+      const balanceError = validateBalancedLineup(teamA, teamB, Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1));
+      if (balanceError) throw new Error(`BALANCE_CONSTRAINT_VIOLATION: ${balanceError}`);
+    }
     const blocked = (players as DomainQueuePlayer[]).filter((player) => Date.parse(restEligibleAt(player, snapshot)) > Date.now());
     if (blocked.length) throw new Error(`REST_REQUIRED: ${blocked.map((player) => player.displayName).join(", ")} must complete the configured rest period before playing again.`);
     const startedAt = now();
@@ -280,14 +309,22 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
     if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set(ids).size !== ids.length) throw new Error("Choose one player per team for singles or two per team for doubles.");
     const players = ids.map((queuePlayerId) => findQueuePlayer(snapshot, queuePlayerId));
     if (players.some((player) => !player || !["WAITING", "QUEUED", "PLAYING"].includes(player.status))) throw new Error("Only waiting, queued, or playing players can be assigned.");
+    if (match.matchmakingMode === "BALANCED") {
+      const selected = players as DomainQueuePlayer[];
+      const byId = new Map(selected.map((player) => [player.id, player]));
+      const toMatchPlayer = (queuePlayerId: string): MatchPlayer => { const player = byId.get(queuePlayerId); if (!player) throw new Error("Every selected player must be waiting, queued, or playing."); return { id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }; };
+      const balanceError = validateBalancedLineup(teamA.map(toMatchPlayer), teamB.map(toMatchPlayer), Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1));
+      if (balanceError) throw new Error(`BALANCE_CONSTRAINT_VIOLATION: ${balanceError}`);
+    }
     const prior = new Map(match.participants.map((participant) => [participant.queuePlayerId, participant.priorQueueEnteredAt ?? null]));
     const oldIds = match.participants.map((participant) => participant.queuePlayerId);
     match.participants = [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))];
+    const preservedBalanced = match.matchmakingMode === "BALANCED";
     match.source = "MANUAL_ADJUSTED";
-    match.matchmakingMode = null;
-    match.algorithmVersion = null;
+    match.matchmakingMode = preservedBalanced ? "BALANCED" : null;
+    match.algorithmVersion = preservedBalanced ? match.algorithmVersion ?? MATCHMAKING_ALGORITHM : null;
     match.suggestionKey = null;
-    match.suggestionExplanation = null;
+    match.suggestionExplanation = preservedBalanced ? { ...(match.suggestionExplanation as Record<string, unknown> | null ?? {}), algorithmVersion: match.algorithmVersion, adjusted: true } : null;
     match.version += 1;
     reconcileOfflinePlayers(snapshot, [...oldIds, ...ids]);
     snapshot.workspace.matchmakingRevision += 1;
