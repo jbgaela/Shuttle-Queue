@@ -7,6 +7,7 @@ export {
   suggestMatch,
   undefeatedChallengePlayers,
   isProhibitedGeneratedGenderMatch,
+  loneFemalePolicy,
   skillWeight,
   validateBalancedLineup,
   emptySyncMetadata,

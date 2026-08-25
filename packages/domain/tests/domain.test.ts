@@ -180,3 +180,30 @@ test("challenge suggestions place two ready qualifiers on opposite teams", () =>
   assert.ok(result);
   assert.equal(result.teamA.some((player) => player.id === "a") !== result.teamA.some((player) => player.id === "b"), true);
 });
+
+test("qualified lone-female groups are supported and mixed doubles prefers standard composition", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (id: string, gender: "MALE" | "FEMALE", skillWeight: number): MatchPlayer => ({ id, displayName: id, gender, skillWeight, skillLevel: skillWeight >= 4 ? "INTERMEDIATE" : "BEGINNER", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(Number(id.replace(/\D/g, "")) || 0).toISOString(), lastMatchEndedAt: null, manualPriority: 0 });
+  const fallback = suggestMatch([make("f", "FEMALE", 4), make("m1", "MALE", 1), make("m2", "MALE", 2), make("m3", "MALE", 3)], "MIXED_DOUBLES", history);
+  assert.ok(fallback);
+  const fallbackPolicy = fallback.explanation.loneFemalePolicy as { applied: boolean; qualifyingFemaleId: string | null; mixedDoublesFallback: boolean };
+  assert.equal(fallbackPolicy.applied, true);
+  assert.equal(fallbackPolicy.qualifyingFemaleId, "f");
+  assert.equal(fallbackPolicy.mixedDoublesFallback, true);
+  assert.equal([...fallback.teamA, ...fallback.teamB].filter((player) => player.gender === "FEMALE").length, 1);
+  assert.equal(suggestMatch([make("u", "FEMALE", 3), make("m1", "MALE", 1), make("m2", "MALE", 2), make("m3", "MALE", 3)], "MIXED_DOUBLES", history), null);
+  const standard = suggestMatch([make("f1", "FEMALE", 4), make("f2", "FEMALE", 4), make("m1", "MALE", 1), make("m2", "MALE", 2), make("m3", "MALE", 3)], "MIXED_DOUBLES", history);
+  assert.ok(standard);
+  assert.equal([...standard.teamA, ...standard.teamB].filter((player) => player.gender === "FEMALE").length, 2);
+});
+
+test("qualified lone female is prioritized in open mode after fairness constraints", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (id: string, gender: "MALE" | "FEMALE", skillWeight: number): MatchPlayer => ({ id, displayName: id, gender, skillWeight, skillLevel: skillWeight >= 4 ? "INTERMEDIATE" : "BEGINNER", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null, manualPriority: 0 });
+  const result = suggestMatch([make("f", "FEMALE", 4), make("m1", "MALE", 1), make("m2", "MALE", 2), make("m3", "MALE", 3), make("m4", "MALE", 4)], "OPEN", history);
+  assert.ok(result);
+  assert.equal([...result.teamA, ...result.teamB].some((player) => player.id === "f"), true);
+  const policy = result.explanation.loneFemalePolicy as { applied: boolean; mixedDoublesFallback: boolean };
+  assert.equal(policy.applied, true);
+  assert.equal(policy.mixedDoublesFallback, false);
+});
