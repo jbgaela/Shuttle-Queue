@@ -36,7 +36,7 @@ header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color:
 }
 
 .live-court-matchup {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 }
 
 .live-court-actions {
@@ -54,10 +54,6 @@ header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color:
 }
 
 @container (min-width: 760px) {
-  .live-court-matchup {
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  }
-
   .live-court-actions {
     grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
   }
