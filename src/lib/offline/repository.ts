@@ -183,7 +183,7 @@ async function makeSuggestion(accountId: string, body: Record<string, unknown>) 
   const options = mode === "BALANCED" ? { strengthGap: strengthGap as 1 | 2 | 3, minimumRestMinutes: minimumRestMinutes(snapshot), now: new Date() } : { minimumRestMinutes: minimumRestMinutes(snapshot), now: new Date() };
   let suggestion = suggestMatch(input, mode, history, excludedKeys, options);
   let cycleRestarted = false;
-  if (!suggestion && excludedKeys.length) {
+  if (!suggestion && excludedKeys.length && mode !== "UNDEFEATED_CHALLENGE") {
     suggestion = suggestMatch(input, mode, history, [], options);
     cycleRestarted = Boolean(suggestion);
   }
@@ -197,7 +197,8 @@ async function makeSuggestion(accountId: string, body: Record<string, unknown>) 
     const challengeNoMatch = mode === "UNDEFEATED_CHALLENGE";
     const challengeRestBlocked = challengeNoMatch && restBlocked;
     const balancedNoMatch = mode === "BALANCED" && !restBlocked;
-    const message = challengeNoMatch ? (challengeRanked.length === 0 ? "No top-three player has reached four wins without a loss yet." : challengeReady.length === 0 ? "Qualified players are not ready for an Undefeated Challenge match." : challengeRestBlocked ? "Some waiting players are still completing their required rest period." : "At least four eligible players are required for this challenge mode.") : restBlocked ? "Some players are still completing their required rest period." : balancedNoMatch ? `No exact Handicap +${strengthGap} strength lineup is available. Choose a tighter mode and generate again.` : "No eligible group satisfies this mode.";
+    const noChallengeAlternate = challengeNoMatch && excludedKeys.length > 0;
+    const message = challengeNoMatch ? (challengeRanked.length === 0 ? "No top-three player has reached four wins without a loss yet." : challengeReady.length === 0 ? "Qualified players are not ready for an Undefeated Challenge match." : challengeRestBlocked ? "Some waiting players are still completing their required rest period." : noChallengeAlternate ? "No other valid Undefeated Challenge lineup keeps the undefeated player at a disadvantage." : "No valid Undefeated Challenge lineup is available under the challenge rules.") : restBlocked ? "Some players are still completing their required rest period." : balancedNoMatch ? `No exact Handicap +${strengthGap} strength lineup is available. Choose a tighter mode and generate again.` : "No eligible group satisfies this mode.";
     return { suggestion: null, cycleRestarted: false, noMatch: { code: challengeNoMatch ? (challengeRanked.length === 0 ? "NO_UNDEFEATED_QUALIFIER" : challengeReady.length === 0 || challengeRestBlocked ? "REST_REQUIRED" : "NO_VALID_GROUP") : restBlocked ? "REST_REQUIRED" : balancedNoMatch ? "NO_EXACT_STRENGTH_GAP" : "NO_VALID_GROUP", message, nextEligibleAt } };
   }
   const convert = (player: MatchPlayer) => playerView(findQueuePlayer(snapshot, player.id)!, snapshot);

@@ -364,6 +364,7 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
         const qualifierTeam = teamAQualifiers.length ? teamA : teamB;
         const opponentTeam = teamAQualifiers.length ? teamB : teamA;
         const challengeAdvantage = opponentTeam.reduce((sum, player) => sum + player.skillWeight, 0) - qualifierTeam.reduce((sum, player) => sum + player.skillWeight, 0);
+        if (qualifierSet.length === 1 && challengeAdvantage <= 0) continue;
         const qualifierPartner = qualifierSet.length === 1 ? qualifierTeam.find((player) => !qualifierSet.some((candidate) => candidate.id === player.id)) : undefined;
         const pairRotation = qualifierSet.length > 1 && !pairWasExcluded ? 0 : 1;
         const key: (number[] | number | string)[] = [pairRotation, pairHistory, supportPriority, supportGames, supportPending, supportQueueAge, isQualifiedLoneFemaleGroup(group) ? 0 : 1, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner?.skillWeight ?? 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];

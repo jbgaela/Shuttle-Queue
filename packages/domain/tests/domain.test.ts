@@ -197,6 +197,29 @@ test("challenge suggestions place two ready qualifiers on opposite teams", () =>
   assert.equal(result.teamA.some((player) => player.id === "a") !== result.teamA.some((player) => player.id === "b"), true);
 });
 
+test("single-qualifier challenge alternates keep the qualifier disadvantaged", () => {
+  const make = (id: string, skillWeight: number, gamesPlayed: number): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight, skillLevel: "BEGINNER", status: "WAITING", gamesPlayed, wins: gamesPlayed, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null });
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const challengeAdvantage = (result: NonNullable<ReturnType<typeof suggestMatch>>) => {
+    const selectedId = ((result.explanation.challenge as { selectedPlayerIds: string[] }).selectedPlayerIds[0]);
+    const qualifierOnA = result.teamA.some((player) => player.id === selectedId);
+    return qualifierOnA ? result.teamBTotal - result.teamATotal : result.teamATotal - result.teamBTotal;
+  };
+  const players = [make("q", 5, 4), make("s1", 3, 0), make("s2", 6, 0), make("s3", 5, 0)];
+  const first = suggestMatch(players, "UNDEFEATED_CHALLENGE", history);
+  assert.ok(first);
+  assert.ok(challengeAdvantage(first) > 0);
+  assert.equal(suggestMatch(players, "UNDEFEATED_CHALLENGE", history, [first.key]), null);
+
+  const playersWithAlternate = [...players, make("s4", 7, 0)];
+  const alternateFirst = suggestMatch(playersWithAlternate, "UNDEFEATED_CHALLENGE", history);
+  assert.ok(alternateFirst);
+  const alternate = suggestMatch(playersWithAlternate, "UNDEFEATED_CHALLENGE", history, [alternateFirst.key]);
+  assert.ok(alternate);
+  assert.notEqual(alternate.key, alternateFirst.key);
+  assert.ok(challengeAdvantage(alternate) > 0);
+});
+
 test("qualified lone-female groups are supported and mixed doubles prefers standard composition", () => {
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const make = (id: string, gender: "MALE" | "FEMALE", skillWeight: number): MatchPlayer => ({ id, displayName: id, gender, skillWeight, skillLevel: skillWeight >= 4 ? "INTERMEDIATE" : "BEGINNER", status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(Number(id.replace(/\D/g, "")) || 0).toISOString(), lastMatchEndedAt: null, manualPriority: 0 });
