@@ -23,6 +23,50 @@ header.sticky { background-color: var(--paper); backdrop-filter: none; }
 header.sticky .overflow-x-auto > button { background-color: var(--paper); }
 header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color: var(--teal); color: #ffffff; }
 
+.live-courts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr));
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.live-court-card {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+.live-court-matchup {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.live-court-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container (min-width: 440px) {
+  .live-court-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .live-court-actions > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@container (min-width: 760px) {
+  .live-court-matchup {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .live-court-actions {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .live-court-actions > :first-child {
+    grid-column: auto;
+  }
+}
+
 /* Keep the Queue header on the same tracks as player rows, including rows with multiple actions. */
 @media (min-width: 768px) {
   div[class*="grid-cols-[28px_minmax(140px"] {
