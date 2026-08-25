@@ -59,7 +59,39 @@ const challengeInput = (player: DomainQueuePlayer): MatchPlayer => ({ id: player
 const challengeNotifications = (before: DomainQueuePlayer[], after: DomainQueuePlayer[]) => { const previous = new Set(undefeatedChallengePlayers(before.map(challengeInput)).map(({ player }) => player.id)); return undefeatedChallengePlayers(after.map(challengeInput)).filter(({ player }) => !previous.has(player.id)).map(({ player, rank }) => ({ type: "UNDEFEATED_CHALLENGE_ELIGIBLE" as const, queuePlayerId: player.id, displayName: player.displayName, rank, matchesPlayed: player.gamesPlayed, wins: player.wins ?? 0, losses: player.losses ?? 0 })); };
 const workspaceView = (snapshot: CloudSnapshotV2): WorkspaceSummary => ({ id: "workspace", name: "Current queue", sessionDate: snapshot.workspace.startedAt, startedAt: snapshot.workspace.startedAt, endedAt: snapshot.workspace.endedAt ?? null, status: snapshot.workspace.endedAt ? "ENDED" : "ACTIVE", lateArrivalCutoffAt: snapshot.workspace.lateArrivalCutoffAt ?? null, version: snapshot.workspace.version, playerCount: snapshot.queuePlayers.length, courtCount: snapshot.courts.length, scoring: settings(snapshot), feeConfig: snapshot.feeConfig as any });
 const courtView = (court: CloudSnapshotV2["courts"][number]): Court => ({ id: court.id, name: court.name, status: court.status, displayOrder: court.displayOrder, currentMatchId: court.currentMatchId ?? null, version: court.version });
-const matchView = (snapshot: CloudSnapshotV2, match: DomainMatch): Match => ({ id: match.id, status: match.status, source: match.source, courtId: match.courtId ?? null, matchmakingMode: match.matchmakingMode ?? null, algorithmVersion: match.algorithmVersion ?? null, suggestionKey: match.suggestionKey ?? null, suggestionExplanation: match.suggestionExplanation ?? null, queuedAt: match.queuedAt, startedAt: match.startedAt ?? null, completedAt: match.completedAt ?? null, winnerTeam: match.winnerTeam ?? null, cancellationReason: match.cancellationReason ?? null, version: match.version, scoring: { pointsToWin: match.pointsToWin, winBy: match.winBy, scoreCap: match.scoreCap, bestOf: match.bestOf }, participants: match.participants.map((participant) => ({ id: participant.id, queuePlayerId: participant.queuePlayerId, displayName: findQueuePlayer(snapshot, participant.queuePlayerId)?.displayName, playerStatus: findQueuePlayer(snapshot, participant.queuePlayerId)?.status, lastMatchEndedAt: findQueuePlayer(snapshot, participant.queuePlayerId)?.lastMatchEndedAt ?? null, team: participant.team, teamSlot: participant.teamSlot })) } as Match);
+const matchView = (snapshot: CloudSnapshotV2, match: DomainMatch): Match => {
+  return {
+    id: match.id,
+    status: match.status,
+    source: match.source,
+    courtId: match.courtId ?? null,
+    matchmakingMode: match.matchmakingMode ?? null,
+    algorithmVersion: match.algorithmVersion ?? null,
+    suggestionKey: match.suggestionKey ?? null,
+    suggestionExplanation: match.suggestionExplanation ?? null,
+    queuedAt: match.queuedAt,
+    startedAt: match.startedAt ?? null,
+    completedAt: match.completedAt ?? null,
+    winnerTeam: match.winnerTeam ?? null,
+    cancellationReason: match.cancellationReason ?? null,
+    version: match.version,
+    scoring: { pointsToWin: match.pointsToWin, winBy: match.winBy, scoreCap: match.scoreCap, bestOf: match.bestOf },
+    participants: match.participants.map((participant) => {
+      const player = findQueuePlayer(snapshot, participant.queuePlayerId);
+      return {
+        id: participant.id,
+        queuePlayerId: participant.queuePlayerId,
+        displayName: player?.displayName,
+        gender: player?.gender,
+        skillLevel: player?.skillLevel,
+        playerStatus: player?.status,
+        lastMatchEndedAt: player?.lastMatchEndedAt ?? null,
+        team: participant.team,
+        teamSlot: participant.teamSlot,
+      };
+    }),
+  } as Match;
+};
 const feeSummary = (snapshot: CloudSnapshotV2): FeeSummary => {
   const payments = snapshot.payments;
   const players = snapshot.queuePlayers.map((player) => {
@@ -353,20 +385,38 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
     const teamA = Array.isArray(body.teamA) ? body.teamA.map(String) : [];
     const teamB = Array.isArray(body.teamB) ? body.teamB.map(String) : [];
     const ids = [...teamA, ...teamB];
-    if (!match || match.status !== "QUEUED") throw new Error("Only queued matches can be edited.");
+    const live = match?.status === "IN_PROGRESS";
+    if (!match || !["QUEUED", "IN_PROGRESS"].includes(match.status)) throw new Error("Only queued or playing matches can be edited.");
+    if (!live && body.courtId !== undefined) throw new Error("COURT_TRANSFER_NOT_LIVE: A court can only be changed while a match is playing.");
     if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set(ids).size !== ids.length) throw new Error("Choose one player per team for singles or two per team for doubles.");
+    const oldIds = match.participants.map((participant) => participant.queuePlayerId);
+    const originalIds = new Set(oldIds);
     const players = ids.map((queuePlayerId) => findQueuePlayer(snapshot, queuePlayerId));
-    if (players.some((player) => !player || !["WAITING", "QUEUED", "PLAYING"].includes(player.status))) throw new Error("Only waiting, queued, or playing players can be assigned.");
+    if (players.some((player) => !player || (live ? originalIds.has(player.id) ? player.status !== "PLAYING" : player.status !== "WAITING" : !["WAITING", "QUEUED", "PLAYING"].includes(player.status)))) throw new Error(live ? "PLAYER_BUSY: New live-match participants must be waiting and cannot already be queued or playing another match." : "Only waiting, queued, or playing players can be assigned.");
     const selected = players as DomainQueuePlayer[];
     const byId = new Map(selected.map((player) => [player.id, player]));
     const toMatchPlayer = (queuePlayerId: string): MatchPlayer => { const player = byId.get(queuePlayerId); if (!player) throw new Error("Every selected player must be waiting, queued, or playing."); return { id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }; };
+    const addedPlayers = selected.filter((player) => !originalIds.has(player.id));
+    const blocked = live ? addedPlayers.filter((player) => Date.parse(restEligibleAt(player, snapshot)) > Date.now()) : [];
+    if (blocked.length) throw new Error(`REST_REQUIRED: ${blocked.map((player) => player.displayName).join(", ")} must complete the configured rest period before playing again.`);
     if (match.source === "AUTOMATIC" && isProhibitedGeneratedGenderMatch(teamA.map(toMatchPlayer), teamB.map(toMatchPlayer))) throw new Error("GENERATED_GENDER_RULE: Generated matchups cannot place two female players against two male players.");
     if (match.matchmakingMode === "BALANCED") {
       const balanceError = validateBalancedLineup(teamA.map(toMatchPlayer), teamB.map(toMatchPlayer), Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1));
       if (balanceError) throw new Error(`BALANCE_CONSTRAINT_VIOLATION: ${balanceError}`);
     }
+    if (live && body.courtId !== undefined && String(body.courtId) !== match.courtId) {
+      const targetCourt = findCourt(snapshot, String(body.courtId));
+      if (!targetCourt || targetCourt.status !== "AVAILABLE" || targetCourt.currentMatchId) throw new Error("COURT_NOT_AVAILABLE: The selected court is no longer available.");
+      const currentCourt = findCourt(snapshot, match.courtId ?? undefined);
+      if (currentCourt?.currentMatchId === match.id) { currentCourt.currentMatchId = null; currentCourt.status = "AVAILABLE"; currentCourt.version += 1; }
+      targetCourt.status = "OCCUPIED";
+      targetCourt.currentMatchId = match.id;
+      targetCourt.version += 1;
+      match.courtId = targetCourt.id;
+      match.courtIdSnapshot = targetCourt.id;
+      match.courtNameSnapshot = targetCourt.name;
+    }
     const prior = new Map(match.participants.map((participant) => [participant.queuePlayerId, participant.priorQueueEnteredAt ?? null]));
-    const oldIds = match.participants.map((participant) => participant.queuePlayerId);
     match.participants = [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))];
     const preservedBalanced = match.matchmakingMode === "BALANCED";
     match.source = "MANUAL_ADJUSTED";
