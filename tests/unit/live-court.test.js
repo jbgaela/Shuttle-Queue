@@ -1,16 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { liveCourtStatusLabel, participantMetadata, playerInitials } from "../../src/lib/live-court.ts";
+import { liveCourtStatusLabel, participantSkillLabel, playerGenderKind, playerGenderLabel } from "../../src/lib/live-court.ts";
 
-test("live court initials handle one-word, multi-word, and missing names", () => {
-  assert.equal(playerInitials("King"), "K");
-  assert.equal(playerInitials("King Arthur"), "KA");
-  assert.equal(playerInitials(""), "P");
+test("live court chooses the male silhouette and accessible label", () => {
+  assert.equal(playerGenderKind("MALE"), "MALE");
+  assert.equal(playerGenderLabel("MALE"), "Male player");
 });
 
-test("live court metadata formats gender and skill with safe fallbacks", () => {
-  assert.equal(participantMetadata("MALE", "UPPER_BEGINNER"), "Male · Upper Beginner");
-  assert.equal(participantMetadata(undefined, undefined), "Gender unavailable · Skill unavailable");
+test("live court chooses the female silhouette and keeps skill text separate", () => {
+  assert.equal(playerGenderKind("FEMALE"), "FEMALE");
+  assert.equal(playerGenderLabel("FEMALE"), "Female player");
+  assert.equal(participantSkillLabel("UPPER_INTERMEDIATE"), "Upper Intermediate");
+});
+
+test("live court uses the neutral silhouette when gender is unavailable", () => {
+  assert.equal(playerGenderKind(undefined), "NEUTRAL");
+  assert.equal(playerGenderKind("UNKNOWN"), "NEUTRAL");
+  assert.equal(playerGenderKind("UNDISCLOSED"), "NEUTRAL");
+  assert.equal(playerGenderLabel(undefined), "Player");
+  assert.equal(participantSkillLabel(undefined), "Skill unavailable");
 });
 
 test("occupied courts use the readable Playing status label", () => {
