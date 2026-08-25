@@ -202,7 +202,7 @@ export type MatchHistory = { partners: Map<string, Map<string, number>>; opponen
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; explanation: Record<string, unknown> };
 export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
-export const MATCHMAKING_ALGORITHM = "v6-lone-female-priority";
+export const MATCHMAKING_ALGORITHM = "v7-newbie-partner-policy";
 
 export const skillWeights: Record<SkillLevel, number> = {
   NEWBIE: 1,
@@ -282,6 +282,16 @@ const partnerCount = (history: MatchHistory, a: string, b: string, recent: boole
 const quartetKey = (players: MatchPlayer[]) => players.map((player) => player.id).sort().join(":");
 const forEachCombination = <T,>(items: T[], size: number, callback: (selected: T[]) => void) => { const walk = (start: number, selected: T[]) => { if (selected.length === size) { callback([...selected]); return; } for (let index = start; index <= items.length - (size - selected.length); index += 1) { selected.push(items[index]!); walk(index + 1, selected); selected.pop(); } }; walk(0, []); };
 const partitions = <T,>(players: T[]) => { const [a, b, c, d] = players; return [[[a, b], [c, d]], [[a, c], [b, d]], [[a, d], [b, c]]] as [T[], T[]][]; };
+const isAllowedNewbiePartner = (player: MatchPlayer) => player.skillLevel === "BEGINNER" || player.skillLevel === "UPPER_BEGINNER";
+export const isProhibitedGeneratedNewbieMatch = (teamA: MatchPlayer[], teamB: MatchPlayer[]) => {
+  if (teamA.length !== 2 || teamB.length !== 2) return false;
+  return [teamA, teamB].some((team) => team.some((player) => {
+    if (player.skillLevel !== "NEWBIE") return false;
+    const partner = team.find((candidate) => candidate.id !== player.id);
+    return !partner || !isAllowedNewbiePartner(partner);
+  }));
+};
+const hasNewbieCompatiblePartition = (group: MatchPlayer[]) => partitions(group).some(([teamA, teamB]) => !isProhibitedGeneratedNewbieMatch(teamA, teamB));
 const compare = (a: (number[] | number | string)[], b: (number[] | number | string)[]) => { for (let i = 0; i < a.length; i += 1) { const left = a[i]; const right = b[i]; if (Array.isArray(left) && Array.isArray(right)) { for (let j = 0; j < Math.max(left.length, right.length); j += 1) { const result = (left[j] ?? 0) - (right[j] ?? 0); if (result) return result; } } else if (typeof left === "string" && typeof right === "string") { const result = left.localeCompare(right); if (result) return result; } else if (typeof left === "number" && typeof right === "number" && left !== right) return left - right; } return 0; };
 const restReadyAt = (lastMatchEndedAt: string | null, minimumRestMinutes: number, now: number) => { if (!lastMatchEndedAt || minimumRestMinutes <= 0) return now; return new Date(lastMatchEndedAt).getTime() + minimumRestMinutes * 60_000; };
 
@@ -324,7 +334,8 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
       : combinationValues(readyQualifiers.map(({ player }) => player), 2);
   const supportSize = qualifierSets[0]?.length === 1 ? 3 : useFallback ? 1 : 2;
   if (supports.length < supportSize) return null;
-  const supportGroups = combinationValues(supports, supportSize);
+  const supportGroups = combinationValues(supports, supportSize).filter((group) => qualifierSets.some((qualifierSet) => hasNewbieCompatiblePartition([...qualifierSet, ...group])));
+  if (!supportGroups.length) return null;
   const minimumSupportGames = supportGroups.reduce((minimum, group) => Math.min(minimum, ...group.map(gamesFor)), Number.POSITIVE_INFINITY);
   const fairSupportExists = supportGroups.some((group) => Math.max(...group.map(gamesFor)) <= minimumSupportGames + 1);
   let best: { key: (number[] | number | string)[]; suggestion: Suggestion } | null = null;
@@ -343,7 +354,7 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
       const recentPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => pairCount(history, player.id, other.id, true)));
       const allPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => pairCount(history, player.id, other.id, false)));
       for (const [teamA, teamB] of partitions([...group].sort((a, b) => a.id.localeCompare(b.id)))) {
-        if (isProhibitedGeneratedGenderMatch(teamA, teamB)) continue;
+        if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
         const teamAQualifiers = teamA.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
         const teamBQualifiers = teamB.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
         if (qualifierSet.length > 1 && (!teamAQualifiers.length || !teamBQualifiers.length)) continue;
@@ -380,7 +391,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       : [],
   );
   const previouslySkippedPlayerIds = new Set(previousSuggestionPlayerIds.size > 0 ? eligible.filter((player) => !previousSuggestionPlayerIds.has(player.id)).map((player) => player.id) : []);
-  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); const qualifiedLoneFemale = isQualifiedLoneFemaleGroup(group); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && !((genders.size === 2 && group.filter((player) => player.gender === "MALE").length === 2) || qualifiedLoneFemale)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) <= strengthGap!; };
+  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); const qualifiedLoneFemale = isQualifiedLoneFemaleGroup(group); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && !((genders.size === 2 && group.filter((player) => player.gender === "MALE").length === 2) || qualifiedLoneFemale)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; if (!hasNewbieCompatiblePartition(group)) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) <= strengthGap!; };
   let candidateMinimumGames = Number.POSITIVE_INFINITY;
   forEachCombination(eligible, 4, (group) => { if (!validGroup(group)) return; candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed)); });
   if (!Number.isFinite(candidateMinimumGames)) return null;
@@ -402,7 +413,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       const qualifiedLoneFemale = isQualifiedLoneFemaleGroup(group);
       const standardMixedDoubles = new Set(teamA.map((player) => player.gender)).size === 2 && new Set(teamB.map((player) => player.gender)).size === 2;
       if (mode === "MIXED_DOUBLES" && !standardMixedDoubles && !qualifiedLoneFemale) continue;
-      if (isProhibitedGeneratedGenderMatch(teamA, teamB)) continue;
+      if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
       const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
       const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
       if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) !== strengthGap!) continue;

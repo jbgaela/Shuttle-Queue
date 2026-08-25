@@ -15,7 +15,7 @@ const now = () => new Date().toISOString();
 const PLAYER_NAME_CONFLICT_MESSAGE = "A player with this name has already been created or is already in the current queue.";
 const DEFAULT_LATE_ARRIVAL_GRACE_MINUTES = 10;
 const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, UPPER_BEGINNER: 3, INTERMEDIATE: 4, UPPER_INTERMEDIATE: 5, ADVANCED: 6 };
-const MATCHMAKING_ALGORITHM = "v6-lone-female-priority";
+const MATCHMAKING_ALGORITHM = "v7-newbie-partner-policy";
 const encodeLocalSuggestion = (value: Record<string, unknown>) => `local:${btoa(JSON.stringify(value))}`;
 const decodeLocalSuggestion = (value: string) => { if (!value.startsWith("local:")) throw new Error("Generate a new suggestion."); try { return JSON.parse(atob(value.slice(6))) as Record<string, unknown>; } catch { throw new Error("Generate a new suggestion."); } };
 const parseBody = (init?: RequestInit) => { try { return init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}; } catch { return {}; } };
