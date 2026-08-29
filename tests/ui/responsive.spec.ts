@@ -220,6 +220,7 @@ async function mockPublicRankingApi(route: Route) {
   const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
   if (path === "/public/rankings/public-token" || path === "/public/rankings/empty-token") {
     const rankings = path.endsWith("empty-token") ? [] : [
+      { rank: null, playerKey: "early-key", player: "Early Player", matchesPlayed: 1, wins: 1, losses: 0, winRateBasisPoints: 10000, pointsFor: 21, pointsAgainst: 10, pointDifferential: 11 },
       { rank: 1, playerKey: "played-key", player: "Played Player", matchesPlayed: 2, wins: 1, losses: 1, winRateBasisPoints: 5000, pointsFor: 42, pointsAgainst: 40, pointDifferential: 2 },
       { rank: 2, playerKey: "zero-key", player: "Public Did Not Play", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0, pointsFor: 0, pointsAgainst: 0, pointDifferential: 0 },
     ];
@@ -346,16 +347,26 @@ test.describe("responsive regressions", () => {
     await expect(page.getByText("Did Not Play Player", { exact: true })).toHaveCount(1);
   });
 
-  test("public rankings separate zero-game players without rank or history controls", async ({ page }) => {
+  test("public rankings show provisional records and compact no-game players", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/public-token");
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    await expect(page.getByText("Early Player", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 games · 1W / 0L", { exact: true })).toBeVisible();
+    await expect(page.getByText("100%", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Players need 5 completed games/i)).toHaveCount(0);
+    await expect(page.getByText("Not yet eligible", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Prize", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/score/i)).toHaveCount(0);
     const section = page.getByTestId("did-not-play-section");
     await expect(section).toContainText("Did not play");
     await expect(section).toContainText("Public Did Not Play");
+    await expect(section).toContainText("1");
+    await expect(section.locator("li")).toHaveCount(1);
     await expect(section.getByRole("button")).toHaveCount(0);
     await expect(page.getByText("Public Did Not Play", { exact: true })).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 
   test("public rankings can save the current leaderboard to the device", async ({ page }) => {

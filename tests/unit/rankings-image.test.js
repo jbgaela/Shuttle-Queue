@@ -50,6 +50,20 @@ test("export rows accept public ranking data without signed-in identifiers", () 
   }]);
 });
 
+test("public export ranks under-five players and omits score and eligibility sections", () => {
+  const rows = rankingExportRows([
+    ranking({ player: "Short Sample", matchesPlayed: 2, wins: 2, losses: 0, winRateBasisPoints: 10000 }),
+    ranking({ player: "Qualified Sample", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000 }),
+    ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
+  ], { variant: "public" });
+  assert.deepEqual(rows.map(({ player, rank, section }) => ({ player, rank, section })), [
+    { player: "Short Sample", rank: 1, section: "RANKED" },
+    { player: "Qualified Sample", rank: 2, section: "RANKED" },
+    { player: "No Games", rank: null, section: "DID_NOT_PLAY" },
+  ]);
+  assert.equal(rows.some((row) => row.rankingScore !== undefined), false);
+});
+
 function canvasEnvironment() {
   const drawnText = [];
   const context = {
@@ -105,6 +119,30 @@ test("canvas export renders zero-game players only in the Did not play section",
     assert.equal(environment.drawnText.filter((value) => value === "0W / 0L").length, 0);
     assert.equal(environment.drawnText.filter((value) => value === "0%").length, 0);
     assert.equal(environment.drawnText.filter((value) => value === "0").length, 0);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("public canvas export uses the aligned five-column layout and compact no-game chips", () => {
+  const environment = canvasEnvironment();
+  const previousDocument = globalThis.document;
+  globalThis.document = environment.document;
+  try {
+    const canvas = createRankingExportCanvas([
+      ranking({ player: "Short Sample", matchesPlayed: 2, wins: 2, losses: 0, winRateBasisPoints: 10000 }),
+      ranking({ player: "Qualified Sample", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000 }),
+      ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
+      ranking({ player: "Another No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
+    ], new Date(2026, 7, 15), { variant: "public" });
+    assert.ok(canvas.height > 208 + 64 + 2 * 76);
+    assert.ok(environment.drawnText.includes("WIN RATE"));
+    assert.ok(environment.drawnText.includes("Did not play"));
+    assert.ok(environment.drawnText.includes("2 players"));
+    assert.ok(environment.drawnText.includes("No Games"));
+    assert.ok(environment.drawnText.includes("Another No Games"));
+    assert.equal(environment.drawnText.includes("SCORE"), false);
+    assert.equal(environment.drawnText.includes("Not yet eligible (5 games required)"), false);
   } finally {
     globalThis.document = previousDocument;
   }
