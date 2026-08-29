@@ -34,7 +34,7 @@ export default defineConfig({
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
   webServer: {
-    command: `npm.cmd exec -- next dev --hostname 127.0.0.1 --port ${testPort}`,
+    command: `npm.cmd exec -- next dev --webpack --hostname 127.0.0.1 --port ${testPort}`,
     cwd: frontendRoot,
     url: baseURL,
     reuseExistingServer: !process.env.CI,

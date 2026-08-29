@@ -43,6 +43,11 @@ header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color:
   grid-template-columns: minmax(0, 1fr);
 }
 
+.live-action-label-compact,
+.live-court-challenge-compact {
+  display: none;
+}
+
 @container (min-width: 440px) {
   .live-court-actions {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -60,6 +65,162 @@ header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color:
 
   .live-court-actions > :first-child {
     grid-column: auto;
+  }
+}
+
+/* Tablet live boards use two compact columns so four courts remain visible at once. */
+@media (pointer: coarse) and (min-width: 700px) and (max-width: 1279px) and (min-height: 700px) {
+  .live-workspace-content-active {
+    padding-top: 0.5rem;
+    padding-bottom: 1rem;
+  }
+
+  .live-view {
+    gap: 0.75rem;
+  }
+
+  .live-view > :not(:first-child) {
+    margin-top: 0.75rem;
+  }
+
+  .live-view-summary {
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .live-view-summary-heading h2 {
+    font-size: 2rem;
+    line-height: 2.25rem;
+  }
+
+  .live-view-summary-heading > p {
+    display: inline;
+    margin-right: 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .live-view-summary-heading h2 {
+    display: inline;
+  }
+
+  .live-view-statuses {
+    gap: 0.375rem;
+  }
+
+  .live-courts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .live-view > .live-courts-grid {
+    margin-top: 0.25rem !important;
+  }
+
+  .live-court-card {
+    border-radius: 1.5rem;
+    padding: 0.5rem;
+  }
+
+  .live-court-header {
+    gap: 0.5rem;
+  }
+
+  .live-court-name,
+  .live-team-player-name {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .live-court-status-group {
+    gap: 0.25rem;
+  }
+
+  .live-court-playing {
+    margin-top: 0.5rem;
+  }
+
+  .live-court-matchup-panel {
+    border-radius: 1rem;
+    padding: 0.375rem;
+  }
+
+  .live-court-matchup {
+    gap: 0.375rem;
+  }
+
+  .live-team-panel {
+    border-radius: 0.75rem;
+    padding: 0.375rem;
+  }
+
+  .live-team-player {
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 0.375rem;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .live-team-avatar {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
+  .live-team-avatar svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .live-team-player-name {
+    font-size: 0.75rem;
+    line-height: 0.875rem;
+  }
+
+  .live-team-player-skill {
+    font-size: 0.625rem;
+    line-height: 0.625rem;
+  }
+
+  .live-court-meta {
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.375rem;
+    padding-top: 0.375rem;
+  }
+
+  .live-court-challenge-compact {
+    display: inline-flex;
+  }
+
+  .live-court-challenge-desktop {
+    display: none;
+  }
+
+  .live-court-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+  }
+
+  .live-court-actions > :first-child {
+    grid-column: auto;
+  }
+
+  .live-court-actions > button {
+    min-height: 2.75rem;
+    gap: 0.375rem;
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .live-action-label-full {
+    display: none;
+  }
+
+  .live-action-label-compact {
+    display: inline;
   }
 }
 
