@@ -49,6 +49,7 @@ import { saveRankingsToDevice } from "@/lib/rankings-image";
 import { publishedPublicRankingState, revokedPublicRankingState, visiblePublicRankingPublication } from "@/lib/public-rankings";
 import { currentClockForTimezone, dateTimeInputForTimezone } from "@/lib/timezone";
 import { validateMixedDoublesLineup } from "@/lib/offline/domain-compat";
+import { isQueuePlayerReady, matchmakingWaitingFingerprint } from "@/lib/matchmaking-scope";
 
 const PAGE_SIZE = 15;
 const MAX_PLAYER_ADD_BATCH = 100;
@@ -609,10 +610,10 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   const manualPlayers = useMemo(() => [...queue.waiting, ...queue.playing, ...queue.queued, ...queue.resting], [queue.waiting, queue.playing, queue.queued, queue.resting]);
   const challengePlayers = queue.undefeatedChallenge?.players ?? [];
   const readyChallengePlayers = challengePlayers.filter((player) => player.ready);
-  const waitingFingerprint = useMemo(() => `${queue.lateArrivalCutoffAt ?? ""}|${queue.waiting.map((player) => `${player.id}:${player.gender}:${player.skillLevel}:${player.matchesPlayed}:${player.manualPriority}:${player.queueEnteredAt ?? ""}:${player.lastMatchEndedAt ?? ""}:${player.restEligibleAt ?? ""}:${player.restEligibleAt && Date.parse(player.restEligibleAt) > Date.parse(queue.serverTime) ? "RESTING" : "READY"}:${player.latePenaltyState ?? ""}`).sort().join("|")}`, [queue.lateArrivalCutoffAt, queue.serverTime, queue.waiting]);
+  const waitingFingerprint = useMemo(() => matchmakingWaitingFingerprint(queue), [queue]);
   const mixedCounts = useMemo(() => {
     const waiting = queue.waiting;
-    const ready = waiting.filter((player) => !player.restEligibleAt || Date.parse(player.restEligibleAt) <= Date.parse(queue.serverTime));
+    const ready = waiting.filter((player) => isQueuePlayerReady(player, queue.serverTime));
     return {
       waitingMale: waiting.filter((player) => player.gender === "MALE").length,
       waitingFemale: waiting.filter((player) => player.gender === "FEMALE").length,
