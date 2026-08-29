@@ -1,5 +1,5 @@
 import type { CloudSnapshotV2, DomainMatch, DomainPlayer, DomainQueuePlayer, MatchHistory, MatchPlayer, ScoreSettings, SyncMetadata } from "./domain-compat";
-import { applyPlayerDeletion, historyDurationSeconds, isProhibitedGeneratedGenderMatch, loneFemalePolicy, normalizeText, removeSessionPlayer, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateScores } from "./domain-compat";
+import { applyPlayerDeletion, historyDurationSeconds, isProhibitedGeneratedGenderMatch, loneFemalePolicy, normalizeText, removeSessionPlayer, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateMixedDoublesLineup, MATCHMAKING_ALGORITHM, validateScores } from "./domain-compat";
 import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, Suggestion, WorkspaceSummary } from "../api";
 import { request } from "../api";
 import { hasPlayerNameConflict } from "../player-names";
@@ -15,7 +15,6 @@ const now = () => new Date().toISOString();
 const PLAYER_NAME_CONFLICT_MESSAGE = "A player with this name has already been created or is already in the current queue.";
 const DEFAULT_LATE_ARRIVAL_GRACE_MINUTES = 10;
 const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, UPPER_BEGINNER: 3, INTERMEDIATE: 4, UPPER_INTERMEDIATE: 5, ADVANCED: 6 };
-const MATCHMAKING_ALGORITHM = "v7-newbie-partner-policy";
 const encodeLocalSuggestion = (value: Record<string, unknown>) => `local:${btoa(JSON.stringify(value))}`;
 const decodeLocalSuggestion = (value: string) => { if (!value.startsWith("local:")) throw new Error("Generate a new suggestion."); try { return JSON.parse(atob(value.slice(6))) as Record<string, unknown>; } catch { throw new Error("Generate a new suggestion."); } };
 const parseBody = (init?: RequestInit) => { try { return init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}; } catch { return {}; } };
@@ -119,7 +118,7 @@ async function mutate<T>(accountId: string, action: string, update: (snapshot: C
   return result;
 }
 async function addPlayers(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "PLAYERS_ADDED", (snapshot) => { const ids = [...new Set((Array.isArray(body.playerIds) ? body.playerIds : []).map(String))]; const result: DomainQueuePlayer[] = []; for (const playerId of ids) { const player = snapshot.players.find((item) => item.id === playerId && item.status === "ACTIVE"); if (!player || snapshot.queuePlayers.some((item) => item.playerId === playerId)) throw new Error("Every selected player must be active and not already in the current queue."); const created: DomainQueuePlayer = { id: id(), playerId, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel as DomainQueuePlayer["skillLevel"], skillWeight: player.skillWeight, status: "INACTIVE", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, amountDueMinor: 0, manualPriority: 0, priorityReason: null, latePenaltyState: null, latePenaltyAppliedAt: null, queueEnteredAt: null, lastMatchEndedAt: null, currentMatchId: null, checkedInAt: null, checkedOutAt: null, restStartedAt: null, version: 1 }; snapshot.queuePlayers.push(created); result.push(created); } return result.map((player) => playerView(player, snapshot)); }); }
-async function transition(accountId: string, queuePlayerId: string, status: DomainQueuePlayer["status"], action: string) { return mutate(accountId, action, (snapshot) => { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); if (action === "LATE_PENALTY_WAIVED") { player.latePenaltyState = "WAIVED"; player.version += 1; return playerView(player); } const changedAt = now(); if (action === "QUEUE_PLAYER_CHECK_IN") { const late = Boolean(!player.checkedInAt && snapshot.workspace.lateArrivalCutoffAt && Date.parse(changedAt) > Date.parse(snapshot.workspace.lateArrivalCutoffAt) && !player.latePenaltyState); player.status = "WAITING"; player.checkedInAt = player.checkedInAt ?? changedAt; player.checkedOutAt = null; player.queueEnteredAt = changedAt; if (late) { player.latePenaltyState = "PENDING"; player.latePenaltyAppliedAt = changedAt; } } else { player.status = status; player.checkedInAt = player.checkedInAt ?? (status === "WAITING" ? changedAt : null); player.checkedOutAt = status === "CHECKED_OUT" ? changedAt : status === "WAITING" ? null : player.checkedOutAt ?? null; player.restStartedAt = status === "RESTING" ? changedAt : null; player.queueEnteredAt = status === "WAITING" ? changedAt : null; } player.version += 1; return playerView(player); }); }
+async function transition(accountId: string, queuePlayerId: string, status: DomainQueuePlayer["status"], action: string) { return mutate(accountId, action, (snapshot) => { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); if (action === "LATE_PENALTY_WAIVED") { player.latePenaltyState = "WAIVED"; player.version += 1; snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; return playerView(player); } const changedAt = now(); if (action === "QUEUE_PLAYER_CHECK_IN") { const late = Boolean(!player.checkedInAt && snapshot.workspace.lateArrivalCutoffAt && Date.parse(changedAt) > Date.parse(snapshot.workspace.lateArrivalCutoffAt) && !player.latePenaltyState); player.status = "WAITING"; player.checkedInAt = player.checkedInAt ?? changedAt; player.checkedOutAt = null; player.queueEnteredAt = changedAt; if (late) { player.latePenaltyState = "PENDING"; player.latePenaltyAppliedAt = changedAt; } } else { player.status = status; player.checkedInAt = player.checkedInAt ?? (status === "WAITING" ? changedAt : null); player.checkedOutAt = status === "CHECKED_OUT" ? changedAt : status === "WAITING" ? null : player.checkedOutAt ?? null; player.restStartedAt = status === "RESTING" ? changedAt : null; player.queueEnteredAt = status === "WAITING" ? changedAt : null; } player.version += 1; snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; return playerView(player); }); }
 async function bulkQueueAction(accountId: string, body: Record<string, unknown>) {
   return mutate(accountId, "QUEUE_PLAYERS_BULK_ACTION", (snapshot) => {
     const ids = Array.isArray(body.playerIds) ? body.playerIds.map(String) : [];
@@ -151,6 +150,8 @@ async function bulkQueueAction(accountId: string, body: Record<string, unknown>)
       }
       player.version += 1;
     }
+    snapshot.workspace.matchmakingRevision += 1;
+    snapshot.workspace.version += 1;
     return players.map((player) => playerView(player!));
   });
 }
@@ -190,24 +191,30 @@ async function makeSuggestion(accountId: string, body: Record<string, unknown>) 
   if (!suggestion) {
     const waiting = snapshot.queuePlayers.filter((player) => player.status === "WAITING");
     const ready = waiting.filter((player) => Date.parse(restEligibleAt(player, snapshot)) <= Date.now());
+    const waitingMaleCount = waiting.filter((player) => player.gender === "MALE").length;
+    const waitingFemaleCount = waiting.filter((player) => player.gender === "FEMALE").length;
+    const readyMaleCount = ready.filter((player) => player.gender === "MALE").length;
+    const readyFemaleCount = ready.filter((player) => player.gender === "FEMALE").length;
+    const compositionPool = snapshot.queuePlayers.filter((player) => player.status === "WAITING" || player.status === "RESTING");
+    const compositionMaleCount = compositionPool.filter((player) => player.gender === "MALE").length;
+    const compositionFemaleCount = compositionPool.filter((player) => player.gender === "FEMALE").length;
+    const mixedCompositionBlocked = mode === "MIXED_DOUBLES" && (compositionMaleCount < 2 || compositionFemaleCount < 2);
     const nextEligibleAt = waiting.map((player) => restEligibleAt(player, snapshot)).filter((value) => Date.parse(value) > Date.now()).sort()[0] ?? null;
-    const restBlocked = waiting.length >= 4 && ready.length < 4 && minimumRestMinutes(snapshot) > 0;
+    const restBlocked = !mixedCompositionBlocked && ((mode === "MIXED_DOUBLES" && (readyMaleCount < 2 || readyFemaleCount < 2)) || (mode !== "MIXED_DOUBLES" && waiting.length >= 4 && ready.length < 4)) && minimumRestMinutes(snapshot) > 0;
     const challengeRanked = undefeatedChallengePlayers(input);
     const challengeReady = challengeRanked.filter(({ player }) => player.status === "WAITING" && Date.parse(restEligibleAt(findQueuePlayer(snapshot, player.id)!, snapshot)) <= Date.now());
     const challengeNoMatch = mode === "UNDEFEATED_CHALLENGE";
     const challengeRestBlocked = challengeNoMatch && restBlocked;
     const balancedNoMatch = mode === "BALANCED" && !restBlocked;
     const noChallengeAlternate = challengeNoMatch && excludedKeys.length > 0;
-    const message = challengeNoMatch ? (challengeRanked.length === 0 ? "No top-three player has reached four wins without a loss yet." : challengeReady.length === 0 ? "Qualified players are not ready for an Undefeated Challenge match." : challengeRestBlocked ? "Some waiting players are still completing their required rest period." : noChallengeAlternate ? "No other valid Undefeated Challenge lineup keeps the undefeated player at a disadvantage." : "No valid Undefeated Challenge lineup is available under the challenge rules.") : restBlocked ? "Some players are still completing their required rest period." : balancedNoMatch ? `No exact Handicap +${strengthGap} strength lineup is available. Choose a tighter mode and generate again.` : "No eligible group satisfies this mode.";
-    return { suggestion: null, cycleRestarted: false, noMatch: { code: challengeNoMatch ? (challengeRanked.length === 0 ? "NO_UNDEFEATED_QUALIFIER" : challengeReady.length === 0 || challengeRestBlocked ? "REST_REQUIRED" : "NO_VALID_GROUP") : restBlocked ? "REST_REQUIRED" : balancedNoMatch ? "NO_EXACT_STRENGTH_GAP" : "NO_VALID_GROUP", message, nextEligibleAt } };
+    const message = challengeNoMatch ? (challengeRanked.length === 0 ? "No top-three player has reached four wins without a loss yet." : challengeReady.length === 0 ? "Qualified players are not ready for an Undefeated Challenge match." : challengeRestBlocked ? "Some waiting players are still completing their required rest period." : noChallengeAlternate ? "No other valid Undefeated Challenge lineup keeps the undefeated player at a disadvantage." : "No valid Undefeated Challenge lineup is available under the challenge rules.") : mixedCompositionBlocked ? "Mixed doubles requires exactly two ready male and two ready female players." : restBlocked ? "Some players are still completing their required rest period." : balancedNoMatch ? `No exact Handicap +${strengthGap} strength lineup is available. Choose a tighter mode and generate again.` : "No eligible group satisfies this mode.";
+    return { suggestion: null, cycleRestarted: false, noMatch: { code: challengeNoMatch ? (challengeRanked.length === 0 ? "NO_UNDEFEATED_QUALIFIER" : challengeReady.length === 0 || challengeRestBlocked ? "REST_REQUIRED" : "NO_VALID_GROUP") : mixedCompositionBlocked ? "NO_MIXED_DOUBLES_COMPOSITION" : restBlocked ? "REST_REQUIRED" : balancedNoMatch ? "NO_EXACT_STRENGTH_GAP" : "NO_VALID_GROUP", message, nextEligibleAt, readyMaleCount, readyFemaleCount, waitingMaleCount, waitingFemaleCount } };
   }
   const convert = (player: MatchPlayer) => playerView(findQueuePlayer(snapshot, player.id)!, snapshot);
   const expiresAt = Date.now() + 300000;
-  const result: Suggestion = { token: encodeLocalSuggestion({ revision: snapshot.workspace.matchmakingRevision, mode, strengthGap: strengthGap ?? null, key: suggestion.key, teamA: suggestion.teamA.map((player) => player.id), teamB: suggestion.teamB.map((player) => player.id), expiresAt }), expiresAt, key: suggestion.key, difference: suggestion.difference, teamATotal: suggestion.teamATotal, teamBTotal: suggestion.teamBTotal, lateArrivalCutoffAt: snapshot.workspace.lateArrivalCutoffAt ?? null, teamA: suggestion.teamA.map(convert), teamB: suggestion.teamB.map(convert), explanation: suggestion.explanation as Suggestion["explanation"] };
+  const result: Suggestion = { token: encodeLocalSuggestion({ algorithmVersion: MATCHMAKING_ALGORITHM, revision: snapshot.workspace.matchmakingRevision, mode, strengthGap: strengthGap ?? null, key: suggestion.key, teamA: suggestion.teamA.map((player) => player.id), teamB: suggestion.teamB.map((player) => player.id), expiresAt }), expiresAt, key: suggestion.key, difference: suggestion.difference, teamATotal: suggestion.teamATotal, teamBTotal: suggestion.teamBTotal, lateArrivalCutoffAt: snapshot.workspace.lateArrivalCutoffAt ?? null, teamA: suggestion.teamA.map(convert), teamB: suggestion.teamB.map(convert), explanation: suggestion.explanation as Suggestion["explanation"] };
   return { suggestion: result, cycleRestarted };
 }
-async function createMatchLegacy(accountId: string, body: Record<string, unknown>) { return mutate(accountId, "MATCH_CREATED", (snapshot) => { const teamA = Array.isArray(body.teamA) ? body.teamA.map(String) : []; const teamB = Array.isArray(body.teamB) ? body.teamB.map(String) : []; if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set([...teamA, ...teamB]).size !== teamA.length + teamB.length) throw new Error("Choose one player per team for singles or two per team for doubles."); const court = body.courtId ? findCourt(snapshot, String(body.courtId)) : undefined; if (body.courtId && (!court || court.status !== "AVAILABLE" || court.currentMatchId)) throw new Error("The selected court is not available."); const match: DomainMatch = { id: id(), courtId: court?.id ?? null, courtIdSnapshot: court?.id ?? null, courtNameSnapshot: court?.name ?? null, status: court ? "IN_PROGRESS" : "QUEUED", source: body.suggestionToken ? "AUTOMATIC" : "MANUAL", matchmakingMode: null, algorithmVersion: body.suggestionToken ? MATCHMAKING_ALGORITHM : null, suggestionKey: typeof body.suggestionToken === "string" ? body.suggestionToken : null, suggestionExplanation: null, pointsToWin: settings(snapshot).pointsToWin, winBy: settings(snapshot).winBy, scoreCap: settings(snapshot).scoreCap, bestOf: settings(snapshot).bestOf, queuedAt: now(), startedAt: court ? now() : null, completedAt: null, cancelledAt: null, cancellationReason: null, winnerTeam: null, currentRevisionId: null, version: 1, participants: [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId: "", queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))], scoreRevisions: [] }; match.participants.forEach((participant) => { participant.matchId = match.id; const player = findQueuePlayer(snapshot, participant.queuePlayerId); if (player) { player.status = court ? "PLAYING" : "QUEUED"; player.currentMatchId = match.id; player.queueEnteredAt = null; player.version += 1; } }); if (court) { court.status = "OCCUPIED"; court.currentMatchId = match.id; court.version += 1; serveOfflineLatePenalties(snapshot, match.participants.map((participant) => participant.queuePlayerId)); } snapshot.matches.push(match); snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; return matchView(snapshot, match); }); }
-async function finishMatchLegacy(accountId: string, matchId: string, games: Array<{ teamAScore: number; teamBScore: number }>) { return mutate(accountId, "MATCH_COMPLETED", (snapshot) => { const match = snapshot.matches.find((item) => item.id === matchId); if (!match || match.status !== "IN_PROGRESS") throw new Error("Only playing matches can be completed."); const validated = validateScores(games, { pointsToWin: match.pointsToWin, winBy: match.winBy, scoreCap: match.scoreCap, bestOf: match.bestOf }); const aWins = validated.filter((game) => game.winnerTeam === "A").length; const winnerTeam: "A" | "B" = aWins > validated.length / 2 ? "A" : "B"; const revisionId = id(); const completedAt = now(); match.status = "COMPLETED"; match.completedAt = completedAt; match.winnerTeam = winnerTeam; match.currentRevisionId = revisionId; match.scoreRevisions.push({ id: revisionId, matchId, revisionNumber: 1, winnerTeam, reason: null, supersedesRevisionId: null, createdAt: now(), games: validated.map((game, index) => ({ id: id(), scoreRevisionId: revisionId, gameNumber: index + 1, teamAScore: game.teamAScore, teamBScore: game.teamBScore, winnerTeam: game.winnerTeam })) }); const court = findCourt(snapshot, match.courtId ?? undefined); if (court?.currentMatchId === match.id) { court.currentMatchId = null; court.status = court.status === "CLOSED" ? "CLOSED" : "AVAILABLE"; court.version += 1; } match.participants.forEach((participant) => { const player = findQueuePlayer(snapshot, participant.queuePlayerId); if (!player) return; const won = participant.team === winnerTeam; player.status = "WAITING"; player.currentMatchId = null; player.queueEnteredAt = now(); player.matchesPlayed += 1; player.wins += won ? 1 : 0; player.losses += won ? 0 : 1; player.lastMatchEndedAt = completedAt; player.version += 1; }); return matchView(snapshot, match); }); }
 
 async function createMatchStacked(accountId: string, body: Record<string, unknown>) {
   return mutate(accountId, "MATCH_CREATED", (snapshot) => {
@@ -227,15 +234,19 @@ async function createMatchStacked(accountId: string, body: Record<string, unknow
     const suggestionPayload = typeof body.suggestionToken === "string" ? decodeLocalSuggestion(body.suggestionToken) : null;
     let generatedLoneFemalePolicy: ReturnType<typeof loneFemalePolicy> | null = null;
     if (suggestionPayload) {
-      if (Number(suggestionPayload.revision) !== snapshot.workspace.matchmakingRevision || Number(suggestionPayload.expiresAt) < Date.now()) throw new Error("SUGGESTION_STALE: Generate a new suggestion.");
+      if (suggestionPayload.algorithmVersion !== MATCHMAKING_ALGORITHM || Number(suggestionPayload.revision) !== snapshot.workspace.matchmakingRevision || Number(suggestionPayload.expiresAt) < Date.now()) throw new Error("SUGGESTION_STALE: Generate a new suggestion.");
       const originalTeamA = Array.isArray(suggestionPayload.teamA) ? suggestionPayload.teamA.map(String) : [];
       const originalTeamB = Array.isArray(suggestionPayload.teamB) ? suggestionPayload.teamB.map(String) : [];
       if (!body.suggestionAdjusted && (JSON.stringify(originalTeamA) !== JSON.stringify(teamA) || JSON.stringify(originalTeamB) !== JSON.stringify(teamB))) throw new Error("SUGGESTION_STALE: Generate a new suggestion.");
       const byId = new Map((players as DomainQueuePlayer[]).map((player) => [player.id, player]));
       const toMatchPlayer = (queuePlayerId: string): MatchPlayer => { const player = byId.get(queuePlayerId); if (!player) throw new Error("SUGGESTION_STALE: Generate a new suggestion."); return { id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }; };
-       const teamAPlayers = teamA.map(toMatchPlayer);
-       const teamBPlayers = teamB.map(toMatchPlayer);
-       generatedLoneFemalePolicy = loneFemalePolicy(teamAPlayers, teamBPlayers, suggestionPayload.mode === "MIXED_DOUBLES");
+      const teamAPlayers = teamA.map(toMatchPlayer);
+      const teamBPlayers = teamB.map(toMatchPlayer);
+      generatedLoneFemalePolicy = loneFemalePolicy(teamAPlayers, teamBPlayers, suggestionPayload.mode === "MIXED_DOUBLES");
+      if (suggestionPayload.mode === "MIXED_DOUBLES") {
+        const mixedError = validateMixedDoublesLineup(teamAPlayers, teamBPlayers);
+        if (mixedError) throw new Error(`MIXED_DOUBLES_COMPOSITION: ${mixedError}`);
+      }
       if (isProhibitedGeneratedGenderMatch(teamAPlayers, teamBPlayers)) throw new Error("GENERATED_GENDER_RULE: Generated matchups cannot place two female players against two male players.");
       if (suggestionPayload.mode === "BALANCED") {
         const balanceError = validateBalancedLineup(teamAPlayers, teamBPlayers, Number(suggestionPayload.strengthGap ?? 1));
@@ -290,6 +301,8 @@ async function finishMatchStacked(accountId: string, matchId: string, games: Arr
       player.lastMatchEndedAt = completedAt;
     }
     reconcileOfflinePlayers(snapshot, match.participants.map((participant) => participant.queuePlayerId), completedAt);
+    snapshot.workspace.matchmakingRevision += 1;
+    snapshot.workspace.version += 1;
     return { ...matchView(snapshot, match), notifications: challengeNotifications(beforeChallengePlayers, snapshot.queuePlayers) };
   });
 }
@@ -339,13 +352,18 @@ async function startMatchStacked(accountId: string, matchId: string, courtId: st
     if (snapshot.matches.some((item) => item.status === "IN_PROGRESS" && item.participants.some((participant) => ids.includes(participant.queuePlayerId)))) throw new Error("This matchup is waiting for a player to finish their current match.");
     const players = ids.map((queuePlayerId) => findQueuePlayer(snapshot, queuePlayerId));
     if (players.some((player) => !player || !["WAITING", "QUEUED"].includes(player.status))) throw new Error("This matchup is not ready to start.");
-    if (match.matchmakingMode === "BALANCED") {
+    if (match.matchmakingMode === "BALANCED" || match.matchmakingMode === "MIXED_DOUBLES") {
       const byId = new Map((players as DomainQueuePlayer[]).map((player) => [player.id, player]));
       const toMatchPlayer = (queuePlayerId: string): MatchPlayer => { const player = byId.get(queuePlayerId); if (!player) throw new Error("This matchup is not ready to start."); return { id: player.id, displayName: player.displayName, gender: player.gender, skillWeight: skillWeight(player.skillLevel), skillLevel: player.skillLevel, status: player.status, gamesPlayed: player.matchesPlayed, queueEnteredAt: player.queueEnteredAt ?? null, lastMatchEndedAt: player.lastMatchEndedAt ?? null, manualPriority: player.manualPriority ?? 0, latePenaltyState: player.latePenaltyState ?? null }; };
       const teamA = match.participants.filter((participant) => participant.team === "A").sort((a, b) => a.teamSlot - b.teamSlot).map((participant) => toMatchPlayer(participant.queuePlayerId));
       const teamB = match.participants.filter((participant) => participant.team === "B").sort((a, b) => a.teamSlot - b.teamSlot).map((participant) => toMatchPlayer(participant.queuePlayerId));
-      const balanceError = validateBalancedLineup(teamA, teamB, Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1));
-      if (balanceError) throw new Error(`BALANCE_CONSTRAINT_VIOLATION: ${balanceError}`);
+      if (match.matchmakingMode === "MIXED_DOUBLES") {
+        const mixedError = validateMixedDoublesLineup(teamA, teamB);
+        if (mixedError) throw new Error(`MIXED_DOUBLES_COMPOSITION: ${mixedError}`);
+      } else {
+        const balanceError = validateBalancedLineup(teamA, teamB, Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1));
+        if (balanceError) throw new Error(`BALANCE_CONSTRAINT_VIOLATION: ${balanceError}`);
+      }
     }
     const blocked = (players as DomainQueuePlayer[]).filter((player) => Date.parse(restEligibleAt(player, snapshot)) > Date.now());
     if (blocked.length) throw new Error(`REST_REQUIRED: ${blocked.map((player) => player.displayName).join(", ")} must complete the configured rest period before playing again.`);
@@ -361,6 +379,8 @@ async function startMatchStacked(accountId: string, matchId: string, courtId: st
     court.version += 1;
     reconcileOfflinePlayers(snapshot, ids, startedAt);
     serveOfflineLatePenalties(snapshot, ids);
+    snapshot.workspace.matchmakingRevision += 1;
+    snapshot.workspace.version += 1;
     return matchView(snapshot, match);
   });
 }
@@ -377,6 +397,8 @@ async function cancelMatchStacked(accountId: string, matchId: string) {
     match.cancelledAt = cancelledAt;
     match.cancellationReason = "DISCARDED";
     reconcileOfflinePlayers(snapshot, match.participants.map((participant) => participant.queuePlayerId), cancelledAt);
+    snapshot.workspace.matchmakingRevision += 1;
+    snapshot.workspace.version += 1;
     return matchView(snapshot, match);
   });
 }
@@ -508,6 +530,7 @@ export async function handleRequest(accountId: string, path: string, init?: Requ
       const firstCheckIn = player.checkedInAt ? Date.parse(player.checkedInAt) : player.latePenaltyAppliedAt ? Date.parse(player.latePenaltyAppliedAt) : NaN;
       if (mode === "DISABLED" || (cutoffMs !== null && Number.isFinite(firstCheckIn) && firstCheckIn <= cutoffMs)) { player.latePenaltyState = null; player.latePenaltyAppliedAt = null; player.version += 1; reclassifiedPlayerCount += 1; }
     }
+    value.workspace.matchmakingRevision += 1;
     value.workspace.version += 1;
     return { ...workspaceView(value), reclassifiedPlayerCount };
   });
@@ -515,9 +538,11 @@ export async function handleRequest(accountId: string, path: string, init?: Requ
     if (method === "GET") return snapshot.settings;
     return mutate(accountId, "SETTINGS_UPDATED", (value) => {
       if (!value.settings) throw new Error("Settings are not available offline.");
+      const restChanged = body.minimumRestMinutes !== undefined && Number(body.minimumRestMinutes) !== value.settings.minimumRestMinutes;
       if (body.minimumRestMinutes !== undefined) { const minutes = Number(body.minimumRestMinutes); if (!Number.isInteger(minutes) || minutes < 0 || minutes > 60) throw new Error("Minimum rest must be a whole number from 0 to 60 minutes."); value.settings.minimumRestMinutes = minutes; }
       if (body.lateArrivalGraceMinutes !== undefined) { const minutes = Number(body.lateArrivalGraceMinutes); if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) throw new Error("Late-arrival grace must be a whole number from 1 to 60 minutes."); value.settings.lateArrivalGraceMinutes = minutes; }
       value.settings.version += 1;
+      if (restChanged) { value.workspace.matchmakingRevision += 1; value.workspace.version += 1; }
       return value.settings;
     });
   }
