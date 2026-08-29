@@ -76,6 +76,8 @@ export type CloudSnapshotV2 = {
 
 export type { CloudSnapshotV3, SyncClock, SyncMetadata, SyncRecordMetadata } from "./sync.js";
 export { emptySyncMetadata, mergeSyncMetadata, mergeSyncSnapshots, seedSyncMetadata, stampSnapshotChanges } from "./sync.js";
+export { PRIZE_RANKING_METHOD, PRIZE_RANKING_MIN_MATCHES, PRIZE_RANKING_PRIZE_PLACES, PRIZE_RANKING_VERSION, prizeRankingRows, wilsonLowerBound } from "./rankings.js";
+export type { PrizeRankingInput, PrizeRankingMethod, PrizeRankingRow } from "./rankings.js";
 
 export type PlayerDeletionBusyPlayer = {
   playerId: string;

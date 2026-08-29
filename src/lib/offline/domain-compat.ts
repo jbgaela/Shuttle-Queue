@@ -20,6 +20,8 @@ export {
   seedSyncMetadata,
   stampSnapshotChanges,
   validateScores,
+  prizeRankingRows,
+  PRIZE_RANKING_METHOD,
 } from "@shuttle-queue/domain";
 
 export type {
@@ -43,4 +45,7 @@ export type {
   QueuePlayerStatus,
   ScoreSettings,
   SyncMetadata,
+  PrizeRankingInput,
+  PrizeRankingMethod,
+  PrizeRankingRow,
 } from "@shuttle-queue/domain";

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRankingExportCanvas, formatRankingExportDate, rankingExportFilename, rankingExportRows, saveRankingsToDevice } from "../../src/lib/rankings-image.ts";
 
-const ranking = (overrides = {}) => ({ rank: 1, queuePlayerId: "queue-1", sessionPlayerId: "queue-1", player: "Alice Santos", playerId: "player-1", gender: "FEMALE", skillLevel: "BEGINNER", matchesPlayed: 4, wins: 3, losses: 1, winRateBasisPoints: 7500, pointsFor: 84, pointsAgainst: 60, pointDifferential: 24, ...overrides });
+const ranking = (overrides = {}) => ({ rank: 1, queuePlayerId: "queue-1", sessionPlayerId: "queue-1", player: "Alice Santos", playerId: "player-1", gender: "FEMALE", skillLevel: "BEGINNER", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000, pointsFor: 84, pointsAgainst: 60, pointDifferential: 24, ...overrides });
 
 test("ranking export formats the requested long date and stable filename", () => {
   const date = new Date(2026, 7, 15);
@@ -10,16 +10,44 @@ test("ranking export formats the requested long date and stable filename", () =>
   assert.equal(rankingExportFilename(date), "linedrive-rankings-2026-08-15.png");
 });
 
-test("export rows preserve ranking order and compact record fields", () => {
+test("export rows put ranked players first and retain zero-game players for the separate section", () => {
   const rows = rankingExportRows([
     ranking({ rank: 2, player: "Bob", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
     ranking({ rank: 1, player: "Alice", matchesPlayed: 8, wins: 8, losses: 0, winRateBasisPoints: 10000 }),
   ]);
-  assert.deepEqual(rows.map((row) => row.player), ["Bob", "Alice"]);
-  assert.deepEqual(rows.map((row) => ({ games: row.games, record: row.record, winRate: row.winRate })), [
-    { games: 0, record: "0W / 0L", winRate: "0%" },
-    { games: 8, record: "8W / 0L", winRate: "100%" },
+  assert.deepEqual(rows.map((row) => row.player), ["Alice", "Bob"]);
+  assert.deepEqual(rows.map((row) => ({ rank: row.rank, section: row.section })), [
+    { rank: 1, section: "RANKED" },
+    { rank: null, section: "DID_NOT_PLAY" },
   ]);
+  assert.deepEqual(rows.map((row) => ({ games: row.games, record: row.record, winRate: row.winRate })), [
+    { games: 8, record: "8W / 0L", winRate: "100%" },
+    { games: 0, record: "0W / 0L", winRate: "0%" },
+  ]);
+  assert.deepEqual(rows.map((row) => row.rankingScore), ["—", "—"]);
+});
+
+test("export rows accept public ranking data without signed-in identifiers", () => {
+  const rows = rankingExportRows([{
+    rank: null,
+    player: "Public Player",
+    matchesPlayed: 5,
+    wins: 4,
+    losses: 1,
+    winRateBasisPoints: 8000,
+    eligible: true,
+    rankingScoreBasisPoints: 8125,
+    seededDrawUsed: false,
+  }]);
+  assert.deepEqual(rows, [{
+    rank: 1,
+    player: "Public Player",
+    games: 5,
+    record: "4W / 1L",
+    winRate: "80%",
+    rankingScore: "81.3%",
+    section: "RANKED",
+  }]);
 });
 
 function canvasEnvironment() {
@@ -58,6 +86,25 @@ test("canvas export includes every player and adapts for long names", () => {
     assert.ok(environment.drawnText.includes("A very long player name that should"));
     assert.ok(environment.drawnText.includes("Bob"));
     assert.ok(environment.drawnText.includes("Carol"));
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test("canvas export renders zero-game players only in the Did not play section", () => {
+  const environment = canvasEnvironment();
+  const previousDocument = globalThis.document;
+  globalThis.document = environment.document;
+  try {
+    createRankingExportCanvas([
+      ranking({ rank: 1, player: "Alice" }),
+      ranking({ rank: 2, player: "Bob", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
+    ], new Date(2026, 7, 15));
+    assert.ok(environment.drawnText.includes("Did not play"));
+    assert.ok(environment.drawnText.includes("Bob"));
+    assert.equal(environment.drawnText.filter((value) => value === "0W / 0L").length, 0);
+    assert.equal(environment.drawnText.filter((value) => value === "0%").length, 0);
+    assert.equal(environment.drawnText.filter((value) => value === "0").length, 0);
   } finally {
     globalThis.document = previousDocument;
   }

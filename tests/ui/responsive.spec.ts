@@ -119,6 +119,44 @@ function liveSnapshot() {
   };
 }
 
+function rankingSnapshot() {
+  const snapshot = liveSnapshot() as any;
+  const player = {
+    id: "player-did-not-play",
+    displayName: "Did Not Play Player",
+    gender: "FEMALE",
+    skillLevel: "BEGINNER",
+    skillWeight: 2,
+    status: "INACTIVE",
+  };
+  snapshot.players.push(player);
+  snapshot.queuePlayers.push({
+    id: "queue-did-not-play",
+    playerId: player.id,
+    displayName: player.displayName,
+    gender: player.gender,
+    skillLevel: player.skillLevel,
+    skillWeight: player.skillWeight,
+    status: "INACTIVE",
+    matchesPlayed: 0,
+    wins: 0,
+    losses: 0,
+    pointsFor: 0,
+    pointsAgainst: 0,
+    amountDueMinor: 0,
+    manualPriority: 0,
+    priorityReason: null,
+    latePenaltyState: null,
+    latePenaltyAppliedAt: null,
+    currentMatchId: null,
+    checkedInAt: null,
+    checkedOutAt: null,
+    restStartedAt: null,
+    version: 1,
+  });
+  return snapshot;
+}
+
 async function mockLiveApi(route: Route) {
   const corsHeaders = {
     "access-control-allow-origin": "http://127.0.0.1:3100",
@@ -141,6 +179,51 @@ async function mockLiveApi(route: Route) {
   }
   if (path === "/workspace/public-rankings") {
     await route.fulfill({ json: { data: { current: null, archives: [] } }, headers: corsHeaders });
+    return;
+  }
+  await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
+}
+
+async function mockRankingApi(route: Route) {
+  const corsHeaders = {
+    "access-control-allow-origin": "http://127.0.0.1:3100",
+    "access-control-allow-credentials": "true",
+    "access-control-allow-headers": "content-type, x-csrf-token",
+    "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+  };
+  if (route.request().method() === "OPTIONS") {
+    await route.fulfill({ status: 204, headers: corsHeaders });
+    return;
+  }
+  const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
+  if (path === "/auth/me") {
+    await route.fulfill({ json: { data: { user: { id: "account-1", username: "ranking-test", role: "QUEUE_MASTER" }, csrfToken: "test-token" } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/sync/snapshot") {
+    await route.fulfill({ json: { data: { snapshot: rankingSnapshot(), cloudRevision: 1 } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/workspace/public-rankings") {
+    await route.fulfill({ json: { data: { current: null, archives: [] } }, headers: corsHeaders });
+    return;
+  }
+  await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
+}
+
+async function mockPublicRankingApi(route: Route) {
+  const corsHeaders = { "access-control-allow-origin": "http://127.0.0.1:3100" };
+  if (route.request().method() === "OPTIONS") {
+    await route.fulfill({ status: 204, headers: corsHeaders });
+    return;
+  }
+  const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
+  if (path === "/public/rankings/public-token" || path === "/public/rankings/empty-token") {
+    const rankings = path.endsWith("empty-token") ? [] : [
+      { rank: 1, playerKey: "played-key", player: "Played Player", matchesPlayed: 2, wins: 1, losses: 1, winRateBasisPoints: 5000, pointsFor: 42, pointsAgainst: 40, pointDifferential: 2 },
+      { rank: 2, playerKey: "zero-key", player: "Public Did Not Play", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0, pointsFor: 0, pointsAgainst: 0, pointDifferential: 0 },
+    ];
+    await route.fulfill({ json: { data: { sessionStartedAt: "2026-08-30T08:00:00.000Z", firstMatchStartedAt: "2026-08-30T08:10:00.000Z", state: "LIVE", serverTime: "2026-08-30T08:20:00.000Z", lastUpdatedAt: "2026-08-30T08:20:00.000Z", historyAvailable: true, rankings } }, headers: corsHeaders });
     return;
   }
   await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
@@ -204,6 +287,10 @@ test.describe("tablet Live court layout", () => {
       await courtOne.getByRole("button", { name: "Edit match" }).click();
       const editDialog = page.getByRole("dialog", { name: "Edit live match" });
       await expect(editDialog).toBeVisible();
+      await editDialog.getByRole("combobox", { name: "Live court" }).selectOption("court-2");
+      await expect(editDialog).toContainText("This court is occupied by another live match.");
+      await editDialog.getByRole("button", { name: "Review court swap" }).click();
+      await expect(editDialog.getByRole("button", { name: "Confirm court swap" })).toBeVisible();
       await editDialog.getByRole("button", { name: "Close edit live match dialog" }).click();
 
       await courtOne.getByRole("button", { name: "Cancel match" }).click();
@@ -244,5 +331,48 @@ test.describe("responsive regressions", () => {
     await expect(page.getByText("Enter final score", { exact: true }).first()).toBeVisible();
     expect(await page.locator(".live-action-label-full:visible").count()).toBe(12);
     expect(await page.locator(".live-action-label-compact:visible").count()).toBe(0);
+  });
+
+  test("signed-in rankings separate zero-game players without rank or history controls", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    const section = page.getByTestId("did-not-play-section");
+    await expect(section).toContainText("Did not play");
+    await expect(section).toContainText("Did Not Play Player");
+    await expect(section.getByRole("button")).toHaveCount(0);
+    await expect(page.getByText("Did Not Play Player", { exact: true })).toHaveCount(1);
+  });
+
+  test("public rankings separate zero-game players without rank or history controls", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await page.goto("/rankings/shared/public-token");
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    const section = page.getByTestId("did-not-play-section");
+    await expect(section).toContainText("Did not play");
+    await expect(section).toContainText("Public Did Not Play");
+    await expect(section.getByRole("button")).toHaveCount(0);
+    await expect(page.getByText("Public Did Not Play", { exact: true })).toHaveCount(1);
+  });
+
+  test("public rankings can save the current leaderboard to the device", async ({ page }) => {
+    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await page.goto("/rankings/shared/public-token");
+    const saveButton = page.getByRole("button", { name: "Save to device" });
+    await expect(saveButton).toBeVisible();
+    const downloadPromise = page.waitForEvent("download");
+    await saveButton.click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^linedrive-rankings-\d{4}-\d{2}-\d{2}\.png$/);
+    await expect(page.getByText("Rankings saved to your device.")).toBeVisible();
+  });
+
+  test("public rankings disable saving when the leaderboard is empty", async ({ page }) => {
+    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await page.goto("/rankings/shared/empty-token");
+    await expect(page.getByRole("button", { name: "Save to device" })).toBeDisabled();
   });
 });

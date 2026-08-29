@@ -1,11 +1,27 @@
-import type { Ranking } from "./api";
+// @ts-expect-error Node's direct TypeScript unit runner requires the explicit extension.
+import { partitionRankingRows } from "./ranking-presentation.ts";
+
+export type RankingExportSourceRow = {
+  rank: number | null;
+  player: string;
+  matchesPlayed: number;
+  wins: number;
+  losses: number;
+  winRateBasisPoints: number;
+  eligible?: boolean;
+  gamesNeeded?: number;
+  rankingScoreBasisPoints?: number | null;
+  seededDrawUsed?: boolean;
+};
 
 export type RankingExportRow = {
-  rank: number;
+  rank: number | null;
   player: string;
   games: number;
   record: string;
   winRate: string;
+  rankingScore: string;
+  section: "RANKED" | "NOT_YET_ELIGIBLE" | "DID_NOT_PLAY";
 };
 
 const IMAGE_WIDTH = 1200;
@@ -27,14 +43,37 @@ export function rankingExportFilename(date: Date) {
   return `linedrive-rankings-${year}-${month}-${day}.png`;
 }
 
-export function rankingExportRows(rankings: Ranking[]): RankingExportRow[] {
-  return rankings.map((ranking) => ({
-    rank: ranking.rank,
-    player: ranking.player,
-    games: ranking.matchesPlayed,
-    record: `${ranking.wins}W / ${ranking.losses}L`,
-    winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
-  }));
+export function rankingExportRows(rankings: RankingExportSourceRow[]): RankingExportRow[] {
+  const { ranked, notYetEligible, didNotPlay } = partitionRankingRows(rankings);
+  return [
+    ...ranked.map((ranking) => ({
+      rank: ranking.rank,
+      player: ranking.player,
+      games: ranking.matchesPlayed,
+      record: `${ranking.wins}W / ${ranking.losses}L`,
+      winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
+      rankingScore: ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined ? "—" : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
+      section: "RANKED" as const,
+    })),
+    ...notYetEligible.map((ranking) => ({
+      rank: null,
+      player: ranking.player,
+      games: ranking.matchesPlayed,
+      record: `${ranking.wins}W / ${ranking.losses}L`,
+      winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
+      rankingScore: ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined ? "—" : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
+      section: "NOT_YET_ELIGIBLE" as const,
+    })),
+    ...didNotPlay.map((ranking) => ({
+      rank: null,
+      player: ranking.player,
+      games: ranking.matchesPlayed,
+      record: `${ranking.wins}W / ${ranking.losses}L`,
+      winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
+      rankingScore: ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined ? "—" : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
+      section: "DID_NOT_PLAY" as const,
+    })),
+  ];
 }
 
 function wrapText(context: CanvasRenderingContext2D, text: string, maxWidth: number) {
@@ -78,18 +117,24 @@ function drawCentered(context: CanvasRenderingContext2D, value: string, x: numbe
   context.textAlign = "left";
 }
 
-export function createRankingExportCanvas(rankings: Ranking[], date: Date): HTMLCanvasElement {
+export function createRankingExportCanvas(rankings: RankingExportSourceRow[], date: Date): HTMLCanvasElement {
   if (typeof document === "undefined") throw new Error("Ranking images can only be created in a browser.");
   const canvas = document.createElement("canvas");
   canvas.width = IMAGE_WIDTH;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("This browser could not create an image canvas.");
   const rows = rankingExportRows(rankings);
+  const rankedRows = rows.filter((row) => row.section === "RANKED");
+  const notYetEligibleRows = rows.filter((row) => row.section === "NOT_YET_ELIGIBLE");
+  const didNotPlayRows = rows.filter((row) => row.section === "DID_NOT_PLAY");
   const nameColumnWidth = 570;
   context.font = NAME_FONT;
-  const rowHeights = rows.map((row) => Math.max(MIN_ROW_HEIGHT, wrapText(context, row.player, nameColumnWidth).length * 32 + ROW_PADDING * 2));
+  const rowHeights = rankedRows.map((row) => Math.max(MIN_ROW_HEIGHT, wrapText(context, row.player, nameColumnWidth).length * 32 + ROW_PADDING * 2));
   const footerHeight = 72;
-  canvas.height = HEADER_HEIGHT + TABLE_HEADER_HEIGHT + rowHeights.reduce((total, height) => total + height, 0) + footerHeight;
+  const notYetEligibleSectionHeight = notYetEligibleRows.length ? 40 + notYetEligibleRows.length * 56 : 0;
+  const didNotPlaySectionHeight = didNotPlayRows.length ? 40 + didNotPlayRows.length * 56 : 0;
+  const rankedSectionHeight = rankedRows.length ? TABLE_HEADER_HEIGHT + rowHeights.reduce((total, height) => total + height, 0) : 90;
+  canvas.height = HEADER_HEIGHT + rankedSectionHeight + notYetEligibleSectionHeight + didNotPlaySectionHeight + footerHeight;
 
   context.fillStyle = "#f5f7f3";
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -121,54 +166,108 @@ export function createRankingExportCanvas(rankings: Ranking[], date: Date): HTML
   const tableX = HORIZONTAL_MARGIN;
   const tableWidth = IMAGE_WIDTH - HORIZONTAL_MARGIN * 2;
   const tableY = HEADER_HEIGHT;
-  const columns = { rank: 96, player: nameColumnWidth, games: 130, record: 170, winRate: tableWidth - 96 - nameColumnWidth - 130 - 170 };
-  context.fillStyle = "#102a2d";
-  roundedRect(context, tableX, tableY, tableWidth, TABLE_HEADER_HEIGHT, 16);
-  context.fill();
-  const headerColor = "#ffffff";
-  drawCentered(context, "RANK", tableX, tableY + TABLE_HEADER_HEIGHT / 2, columns.rank, headerColor, "700 18px Arial");
-  context.textAlign = "left";
-  context.font = "700 18px Arial";
-  context.fillStyle = headerColor;
-  context.fillText("PLAYER", tableX + columns.rank + 18, tableY + TABLE_HEADER_HEIGHT / 2 + 1);
-  drawCentered(context, "GAMES", tableX + columns.rank + columns.player, tableY + TABLE_HEADER_HEIGHT / 2, columns.games, headerColor, "700 18px Arial");
-  drawCentered(context, "RECORD", tableX + columns.rank + columns.player + columns.games, tableY + TABLE_HEADER_HEIGHT / 2, columns.record, headerColor, "700 18px Arial");
-  drawCentered(context, "WIN RATE", tableX + columns.rank + columns.player + columns.games + columns.record, tableY + TABLE_HEADER_HEIGHT / 2, columns.winRate, headerColor, "700 18px Arial");
-
-  let rowY = tableY + TABLE_HEADER_HEIGHT;
-  rows.forEach((row, index) => {
-    const rowHeight = rowHeights[index]!;
-    context.fillStyle = index % 2 === 0 ? "#ffffff" : "#edf8f4";
-    context.fillRect(tableX, rowY, tableWidth, rowHeight);
-    const rankColor = row.rank === 1 ? "#f6b667" : row.rank === 2 ? "#c9d9dc" : row.rank === 3 ? "#e9bd91" : "#d8f1eb";
-    context.fillStyle = rankColor;
-    context.beginPath();
-    context.arc(tableX + columns.rank / 2, rowY + rowHeight / 2, 25, 0, Math.PI * 2);
+  const columns = { rank: 96, player: nameColumnWidth, games: 130, record: 170, winRate: 123, rankingScore: tableWidth - 96 - nameColumnWidth - 130 - 170 - 123 };
+  let rowY = tableY;
+  if (rankedRows.length) {
+    context.fillStyle = "#102a2d";
+    roundedRect(context, tableX, rowY, tableWidth, TABLE_HEADER_HEIGHT, 16);
     context.fill();
-    drawCentered(context, String(row.rank), tableX + 2, rowY + rowHeight / 2, columns.rank - 4, "#102a2d", "700 21px Arial");
-    context.font = NAME_FONT;
+    const headerColor = "#ffffff";
+    drawCentered(context, "RANK", tableX, rowY + TABLE_HEADER_HEIGHT / 2, columns.rank, headerColor, "700 18px Arial");
+    context.textAlign = "left";
+    context.font = "700 18px Arial";
+    context.fillStyle = headerColor;
+    context.fillText("PLAYER", tableX + columns.rank + 18, rowY + TABLE_HEADER_HEIGHT / 2 + 1);
+    drawCentered(context, "GAMES", tableX + columns.rank + columns.player, rowY + TABLE_HEADER_HEIGHT / 2, columns.games, headerColor, "700 18px Arial");
+    drawCentered(context, "RECORD", tableX + columns.rank + columns.player + columns.games, rowY + TABLE_HEADER_HEIGHT / 2, columns.record, headerColor, "700 18px Arial");
+    drawCentered(context, "WIN RATE", tableX + columns.rank + columns.player + columns.games + columns.record, rowY + TABLE_HEADER_HEIGHT / 2, columns.winRate, headerColor, "700 18px Arial");
+    drawCentered(context, "SCORE", tableX + columns.rank + columns.player + columns.games + columns.record + columns.winRate, rowY + TABLE_HEADER_HEIGHT / 2, columns.rankingScore, headerColor, "700 18px Arial");
+    rowY += TABLE_HEADER_HEIGHT;
+    rankedRows.forEach((row, index) => {
+      const rowHeight = rowHeights[index]!;
+      context.fillStyle = index % 2 === 0 ? "#ffffff" : "#edf8f4";
+      context.fillRect(tableX, rowY, tableWidth, rowHeight);
+      const rankColor = row.rank === 1 ? "#f6b667" : row.rank === 2 ? "#c9d9dc" : row.rank === 3 ? "#e9bd91" : "#d8f1eb";
+      context.fillStyle = rankColor;
+      context.beginPath();
+      context.arc(tableX + columns.rank / 2, rowY + rowHeight / 2, 25, 0, Math.PI * 2);
+      context.fill();
+      drawCentered(context, String(row.rank), tableX + 2, rowY + rowHeight / 2, columns.rank - 4, "#102a2d", "700 21px Arial");
+      context.font = NAME_FONT;
+      context.fillStyle = "#102a2d";
+      context.textBaseline = "top";
+      wrapText(context, row.player, columns.player - 36).forEach((line, lineIndex) => context.fillText(line, tableX + columns.rank + 18, rowY + ROW_PADDING + lineIndex * 32));
+      drawCentered(context, String(row.games), tableX + columns.rank + columns.player, rowY + rowHeight / 2, columns.games, "#102a2d", "600 23px Arial");
+      drawCentered(context, row.record, tableX + columns.rank + columns.player + columns.games, rowY + rowHeight / 2, columns.record, "#102a2d", "600 22px Arial");
+      drawCentered(context, row.winRate, tableX + columns.rank + columns.player + columns.games + columns.record, rowY + rowHeight / 2, columns.winRate, "#087a72", "700 24px Arial");
+      drawCentered(context, row.rankingScore, tableX + columns.rank + columns.player + columns.games + columns.record + columns.winRate, rowY + rowHeight / 2, columns.rankingScore, "#536a6d", "600 20px Arial");
+      context.strokeStyle = "#dce8e2";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(tableX, rowY + rowHeight);
+      context.lineTo(tableX + tableWidth, rowY + rowHeight);
+      context.stroke();
+      rowY += rowHeight;
+    });
+  } else {
+    context.fillStyle = "#ffffff";
+    roundedRect(context, tableX, rowY, tableWidth, 76, 16);
+    context.fill();
+    context.font = "600 22px Arial";
+    context.fillStyle = "#536a6d";
+    context.textBaseline = "middle";
+    context.fillText("No ranked players yet", tableX + 24, rowY + 38);
+    rowY += 90;
+  }
+
+  if (notYetEligibleRows.length) {
+    context.font = "700 24px Arial";
     context.fillStyle = "#102a2d";
     context.textBaseline = "top";
-    wrapText(context, row.player, columns.player - 36).forEach((line, lineIndex) => context.fillText(line, tableX + columns.rank + 18, rowY + ROW_PADDING + lineIndex * 32));
-    drawCentered(context, String(row.games), tableX + columns.rank + columns.player, rowY + rowHeight / 2, columns.games, "#102a2d", "600 23px Arial");
-    drawCentered(context, row.record, tableX + columns.rank + columns.player + columns.games, rowY + rowHeight / 2, columns.record, "#102a2d", "600 22px Arial");
-    drawCentered(context, row.winRate, tableX + columns.rank + columns.player + columns.games + columns.record, rowY + rowHeight / 2, columns.winRate, "#087a72", "700 24px Arial");
-    context.strokeStyle = "#dce8e2";
-    context.lineWidth = 1;
-    context.beginPath();
-    context.moveTo(tableX, rowY + rowHeight);
-    context.lineTo(tableX + tableWidth, rowY + rowHeight);
-    context.stroke();
-    rowY += rowHeight;
-  });
+    context.fillText("Not yet eligible (5 games required)", tableX, rowY + 4);
+    rowY += 40;
+    notYetEligibleRows.forEach((row, index) => {
+      const rowHeight = 56;
+      context.fillStyle = index % 2 === 0 ? "#ffffff" : "#edf8f4";
+      context.fillRect(tableX, rowY, tableWidth, rowHeight);
+      context.font = NAME_FONT;
+      context.fillStyle = "#102a2d";
+      context.textBaseline = "middle";
+      context.fillText(row.player, tableX + 24, rowY + rowHeight / 2);
+      context.font = "500 18px Arial";
+      context.fillStyle = "#536a6d";
+      context.fillText(`${row.games}/5 games`, tableX + tableWidth - 170, rowY + rowHeight / 2);
+      rowY += rowHeight;
+    });
+  }
+
+  if (didNotPlayRows.length) {
+    context.font = "700 24px Arial";
+    context.fillStyle = "#102a2d";
+    context.textBaseline = "top";
+    context.fillText("Did not play", tableX, rowY + 4);
+    rowY += 40;
+    didNotPlayRows.forEach((row, index) => {
+      const rowHeight = 56;
+      context.fillStyle = index % 2 === 0 ? "#ffffff" : "#edf8f4";
+      context.fillRect(tableX, rowY, tableWidth, rowHeight);
+      context.font = NAME_FONT;
+      context.fillStyle = "#102a2d";
+      context.textBaseline = "middle";
+      context.fillText(row.player, tableX + 24, rowY + rowHeight / 2);
+      rowY += rowHeight;
+    });
+  }
 
   context.fillStyle = "#536a6d";
   context.font = "500 18px Arial";
-  context.fillText(`${rows.length} ranked player${rows.length === 1 ? "" : "s"}`, tableX, canvas.height - 28);
+  const rankedLabel = `${rankedRows.length} ranked player${rankedRows.length === 1 ? "" : "s"}`;
+  const didNotPlayLabel = `${didNotPlayRows.length} did not play`;
+  context.fillText(`${rankedLabel} · ${didNotPlayLabel}`, tableX, canvas.height - 28);
   return canvas;
 }
 
-export async function saveRankingsToDevice(rankings: Ranking[], date = new Date()) {
+export async function saveRankingsToDevice(rankings: RankingExportSourceRow[], date = new Date()) {
   if (!rankings.length) throw new Error("There are no rankings to save yet.");
   const canvas = createRankingExportCanvas(rankings, date);
   const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("The ranking image could not be created.")), "image/png"));

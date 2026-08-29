@@ -1,6 +1,6 @@
 import type { CloudSnapshotV2, DomainMatch, DomainPlayer, DomainQueuePlayer, MatchHistory, MatchPlayer, ScoreSettings, SyncMetadata } from "./domain-compat";
-import { applyPlayerDeletion, historyDurationSeconds, isProhibitedGeneratedGenderMatch, loneFemalePolicy, normalizeText, removeSessionPlayer, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateMixedDoublesLineup, MATCHMAKING_ALGORITHM, validateScores } from "./domain-compat";
-import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, Suggestion, WorkspaceSummary } from "../api";
+import { applyPlayerDeletion, historyDurationSeconds, isProhibitedGeneratedGenderMatch, loneFemalePolicy, normalizeText, removeSessionPlayer, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateMixedDoublesLineup, MATCHMAKING_ALGORITHM, validateScores, prizeRankingRows, PRIZE_RANKING_METHOD } from "./domain-compat";
+import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, RankingPayload, Suggestion, WorkspaceSummary } from "../api";
 import { request } from "../api";
 import { hasPlayerNameConflict } from "../player-names";
 import { appendAudit, clearAccountData, completeSnapshotUpload, firstProfile, getDeviceId, getMeta, hasSnapshot, markSyncAttention, offlineDb, prepareSnapshotUpload, readSnapshot, replaceSnapshot, saveProfile, storageEstimate, updateLocalSnapshot } from "./db";
@@ -411,6 +411,8 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
     const live = match?.status === "IN_PROGRESS";
     if (!match || !["QUEUED", "IN_PROGRESS"].includes(match.status)) throw new Error("Only queued or playing matches can be edited.");
     if (!live && body.courtId !== undefined) throw new Error("COURT_TRANSFER_NOT_LIVE: A court can only be changed while a match is playing.");
+    if (body.swapWithMatchId !== undefined && body.courtId === undefined) throw new Error("A target court is required for a court swap.");
+    if (body.swapWithMatchId !== undefined && body.courtId !== undefined && String(body.courtId) === match?.courtId) throw new Error("Choose a different target court for a court swap.");
     if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set(ids).size !== ids.length) throw new Error("Choose one player per team for singles or two per team for doubles.");
     const oldIds = match.participants.map((participant) => participant.queuePlayerId);
     const originalIds = new Set(oldIds);
@@ -429,12 +431,30 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
     }
     if (live && body.courtId !== undefined && String(body.courtId) !== match.courtId) {
       const targetCourt = findCourt(snapshot, String(body.courtId));
-      if (!targetCourt || targetCourt.status !== "AVAILABLE" || targetCourt.currentMatchId) throw new Error("COURT_NOT_AVAILABLE: The selected court is no longer available.");
       const currentCourt = findCourt(snapshot, match.courtId ?? undefined);
-      if (currentCourt?.currentMatchId === match.id) { currentCourt.currentMatchId = null; currentCourt.status = "AVAILABLE"; currentCourt.version += 1; }
-      targetCourt.status = "OCCUPIED";
-      targetCourt.currentMatchId = match.id;
-      targetCourt.version += 1;
+      if (!targetCourt) throw new Error("COURT_NOT_AVAILABLE: The selected court is no longer available.");
+      if (targetCourt.status === "AVAILABLE" && !targetCourt.currentMatchId) {
+        if (body.swapWithMatchId !== undefined) throw new Error("COURT_SWAP_STALE: The selected court is no longer occupied. Refresh the live courts and try again.");
+        if (currentCourt?.currentMatchId === match.id) { currentCourt.currentMatchId = null; currentCourt.status = "AVAILABLE"; currentCourt.version += 1; }
+        targetCourt.status = "OCCUPIED";
+        targetCourt.currentMatchId = match.id;
+        targetCourt.version += 1;
+      } else {
+        if (typeof body.swapWithMatchId !== "string") throw new Error("COURT_SWAP_REQUIRED: The selected court is occupied. Confirm a court swap to continue.");
+        const swappedMatch = snapshot.matches.find((item) => item.id === body.swapWithMatchId && item.status === "IN_PROGRESS" && item.courtId === targetCourt.id);
+        if (!currentCourt || currentCourt.status !== "OCCUPIED" || currentCourt.currentMatchId !== match.id || targetCourt.status !== "OCCUPIED" || targetCourt.currentMatchId !== body.swapWithMatchId || !swappedMatch || swappedMatch.id === match.id) throw new Error("COURT_SWAP_STALE: The selected court assignments changed. Refresh the live courts and try again.");
+        currentCourt.currentMatchId = swappedMatch.id;
+        currentCourt.version += 1;
+        targetCourt.currentMatchId = match.id;
+        targetCourt.version += 1;
+        swappedMatch.courtId = currentCourt.id;
+        swappedMatch.courtIdSnapshot = currentCourt.id;
+        swappedMatch.courtNameSnapshot = currentCourt.name;
+        swappedMatch.source = "MANUAL_ADJUSTED";
+        swappedMatch.suggestionKey = null;
+        swappedMatch.suggestionExplanation = { ...(swappedMatch.suggestionExplanation as Record<string, unknown> | null ?? {}), adjusted: true };
+        swappedMatch.version += 1;
+      }
       match.courtId = targetCourt.id;
       match.courtIdSnapshot = targetCourt.id;
       match.courtNameSnapshot = targetCourt.name;
@@ -497,7 +517,7 @@ async function freshQueue(accountId: string) { return mutate(accountId, "WORKSPA
 
 function historyResponse(snapshot: CloudSnapshotV2, path: string): HistoryResponse { const search = params(path).get("search") ?? ""; return page(historyMatches(snapshot, search).map((match) => historyView(snapshot, match)), path) as HistoryResponse; }
 function playerHistory(snapshot: CloudSnapshotV2, queuePlayerId: string, path: string): PlayerHistoryResponse { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); const matches = historyMatches(snapshot).filter((match) => match.participants.some((participant) => participant.queuePlayerId === queuePlayerId)); const rows = matches.map((match) => historyView(snapshot, match)); let wins = 0; let pointsFor = 0; let pointsAgainst = 0; for (const match of matches) { const participant = match.participants.find((item) => item.queuePlayerId === queuePlayerId); const revision = scoreFor(match); if (!participant || !revision) continue; const a = revision.games.reduce((sum, game) => sum + game.teamAScore, 0); const b = revision.games.reduce((sum, game) => sum + game.teamBScore, 0); pointsFor += participant.team === "A" ? a : b; pointsAgainst += participant.team === "A" ? b : a; wins += Number(participant.team === revision.winnerTeam); } return { player: { queuePlayerId, playerId: player.playerId, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel }, stats: { matchesPlayed: matches.length, wins, losses: matches.length - wins, winRateBasisPoints: matches.length ? Math.floor(wins * 10000 / matches.length) : 0, pointsFor, pointsAgainst, pointDifferential: pointsFor - pointsAgainst, averageDurationSeconds: null, mostPlayedPartner: null, mostPlayedOpponent: null }, ...page(rows, path) } as PlayerHistoryResponse; }
-function rankings(snapshot: CloudSnapshotV2): Ranking[] { return [...snapshot.queuePlayers].sort((a, b) => b.wins - a.wins || b.matchesPlayed - a.matchesPlayed || normalizeText(a.displayName).toLowerCase().localeCompare(normalizeText(b.displayName).toLowerCase()) || a.id.localeCompare(b.id)).map((player, index) => ({ rank: index + 1, queuePlayerId: player.id, player: player.displayName, playerId: player.playerId, gender: player.gender, skillLevel: player.skillLevel, matchesPlayed: player.matchesPlayed, wins: player.wins, losses: player.losses, winRateBasisPoints: player.matchesPlayed ? Math.floor(player.wins * 10000 / player.matchesPlayed) : 0, pointsFor: player.pointsFor, pointsAgainst: player.pointsAgainst, pointDifferential: player.pointsFor - player.pointsAgainst } as Ranking)); }
+function rankings(snapshot: CloudSnapshotV2): Ranking[] { return prizeRankingRows(snapshot.queuePlayers.map((player) => ({ id: player.id, displayName: player.displayName, matchesPlayed: player.matchesPlayed, wins: player.wins, losses: player.losses, pointsFor: player.pointsFor, pointsAgainst: player.pointsAgainst })), snapshot.workspace.startedAt).map((ranking, index) => { const player = snapshot.queuePlayers.find((candidate) => candidate.id === ranking.id)!; return { rank: ranking.rank, queuePlayerId: player.id, sessionPlayerId: player.id, player: player.displayName, playerId: player.playerId, gender: player.gender, skillLevel: player.skillLevel, matchesPlayed: player.matchesPlayed, wins: player.wins, losses: player.losses, winRateBasisPoints: player.matchesPlayed ? Math.floor(player.wins * 10000 / player.matchesPlayed) : 0, pointsFor: player.pointsFor, pointsAgainst: player.pointsAgainst, pointDifferential: player.pointsFor - player.pointsAgainst, eligible: ranking.eligible, gamesNeeded: ranking.gamesNeeded, rankingScoreBasisPoints: ranking.rankingScoreBasisPoints, pointPercentageBasisPoints: ranking.pointPercentageBasisPoints, isPrizePosition: ranking.isPrizePosition, seededDrawUsed: ranking.seededDrawUsed }; }); }
 
 export async function handleRequest(accountId: string, path: string, init?: RequestInit): Promise<unknown> {
   const snapshot = await readSnapshot(accountId); if (!snapshot) throw new Error("Download this account before working offline.");
@@ -597,7 +617,7 @@ export async function handleRequest(accountId: string, path: string, init?: Requ
   if (route[0] === "matches" && route[1] && route[2] === "correct") return correctMatchStacked(accountId, route[1], Array.isArray(body.games) ? body.games as Array<{ teamAScore: number; teamBScore: number }> : [], body.reason ? String(body.reason) : undefined);
   if (route[0] === "matches" && route[1] && route[2] === "cancel") return cancelMatchStacked(accountId, route[1]);
   if (route[0] === "history") return historyResponse(snapshot, path);
-  if (route[0] === "rankings") return rankings(snapshot);
+  if (route[0] === "rankings") return { rankingMethod: PRIZE_RANKING_METHOD, rankings: rankings(snapshot) } as RankingPayload;
   if (route[0] === "fees" && route[1] === "config") return mutate(accountId, "FEE_CONFIG_UPDATED", (value) => { value.feeConfig = { ...(value.feeConfig ?? { id: id(), participationRule: "ALL_ACTIVE", frozenAt: null, version: 0 }), mode: String(body.mode) as never, currencyCode: value.feeConfig?.currencyCode ?? value.settings?.currencyCode ?? "PHP", fixedAmountPerPlayerMinor: typeof body.fixedAmountPerPlayerMinor === "number" ? body.fixedAmountPerPlayerMinor : null, expectedQueueCostMinor: Number(body.expectedQueueCostMinor ?? body.expectedSessionCostMinor ?? 0), version: (value.feeConfig?.version ?? 0) + 1 }; applyFeeAllocationsOffline(value); return { config: value.feeConfig, summary: feeSummary(value) }; });
   if (route[0] === "fees") return feeSummary(snapshot);
   if (route[0] === "payments" && route.length === 1) return method === "GET" ? snapshot.payments as unknown as Payment[] : mutate(accountId, "PAYMENT_CREATED", (value) => { const playerId = String(body.queuePlayerId ?? body.sessionPlayerId ?? ""); if (!findQueuePlayer(value, playerId)) throw new Error("Queue player not found."); const payment = { id: id(), queuePlayerId: playerId, kind: String(body.kind), method: body.method ? String(body.method) : null, amountMinor: Number(body.amountMinor), reference: body.reference ? String(body.reference) : null, note: body.note ? String(body.note) : null, reversalOfPaymentId: null, recordedById: accountId, occurredAt: now(), createdAt: now() }; value.payments.push(payment); return { payment, summary: feeSummary(value), replayed: false }; });
