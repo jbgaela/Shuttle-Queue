@@ -565,7 +565,8 @@ test.describe("responsive regressions", () => {
     const earlyRow = page.getByRole("button").filter({ hasText: "Early Player" });
     await expect(earlyRow).toHaveCount(1);
     await expect(earlyRow).toContainText("Early Player");
-    await expect(page.getByText("1 games · 1W / 0L · 4 games to prize", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 games · 1W / 0L", { exact: true })).toBeVisible();
+    await expect(page.getByText(/games to prize/i)).toHaveCount(0);
     await expect(earlyRow.getByText("Provisional", { exact: true })).toHaveCount(0);
     await expect(page.getByText("100%", { exact: true })).toBeVisible();
     await expect(page.getByText(/Players need 5 completed games/i)).toHaveCount(0);
