@@ -111,6 +111,7 @@ test("canvas export includes every player and adapts for long names", () => {
     assert.ok(environment.drawnText.includes("A very long player name that should"));
     assert.ok(environment.drawnText.includes("Bob"));
     assert.ok(environment.drawnText.includes("Carol"));
+    assert.equal(environment.drawnText.includes("Ranks start after 1 completed game · prize eligibility after 5"), false);
   } finally {
     globalThis.document = previousDocument;
   }

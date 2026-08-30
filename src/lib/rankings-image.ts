@@ -210,9 +210,6 @@ export function createRankingExportCanvas(rankings: RankingExportSourceRow[], da
   context.font = "500 22px Arial";
   context.fillStyle = "#ffffff";
   context.fillText(formatRankingExportDate(date), HORIZONTAL_MARGIN, 174);
-  context.font = "500 17px Arial";
-  context.fillStyle = "#d8f1eb";
-  context.fillText("Ranks start after 1 completed game · prize eligibility after 5", HORIZONTAL_MARGIN, 200);
 
   const tableX = HORIZONTAL_MARGIN;
   const tableWidth = IMAGE_WIDTH - HORIZONTAL_MARGIN * 2;
