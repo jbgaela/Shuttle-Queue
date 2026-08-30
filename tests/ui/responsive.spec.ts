@@ -119,8 +119,57 @@ function liveSnapshot() {
   };
 }
 
+function queueLayoutSnapshot() {
+  const snapshot = liveSnapshot() as any;
+  snapshot.matches = [];
+  snapshot.courts = [];
+  snapshot.queuePlayers = snapshot.queuePlayers.map((player: any, index: number) => ({
+    ...player,
+    status: index < 4 ? "INACTIVE" : "WAITING",
+    currentMatchId: null,
+    checkedInAt: index < 4 ? null : player.checkedInAt,
+    checkedOutAt: null,
+    queueEnteredAt: index < 4 ? null : snapshot.workspace.startedAt,
+  }));
+  return snapshot;
+}
+
+function feesSnapshot() {
+  const snapshot = liveSnapshot() as any;
+  const endedAt = new Date(Date.now() - 60_000).toISOString();
+  snapshot.workspace.endedAt = endedAt;
+  snapshot.settings.noShowPenaltyMinor = 150;
+  snapshot.queuePlayers[0].matchesPlayed = 0;
+  snapshot.queuePlayers[0].status = "INACTIVE";
+  snapshot.queuePlayers[0].amountDueMinor = 150;
+  snapshot.queuePlayers[1].amountDueMinor = 500;
+  snapshot.feeConfig = {
+    id: "fee-1",
+    mode: "FIXED_PER_PLAYER",
+    currencyCode: "PHP",
+    fixedAmountPerPlayerMinor: 500,
+    expectedQueueCostMinor: 0,
+    noShowPenaltyMinor: 150,
+    participationRule: "ALL_ACTIVE",
+    frozenAt: endedAt,
+    version: 1,
+  };
+  snapshot.payments = [
+    { id: "payment-1", queuePlayerId: "queue-1", kind: "COLLECTION", method: "CASH", amountMinor: 100, reference: null, note: null, reversalOfPaymentId: null, recordedById: "account-1", occurredAt: endedAt, createdAt: endedAt },
+    { id: "payment-2", queuePlayerId: "queue-2", kind: "COLLECTION", method: "EWALLET", amountMinor: 500, reference: null, note: null, reversalOfPaymentId: null, recordedById: "account-1", occurredAt: endedAt, createdAt: endedAt },
+  ];
+  return snapshot;
+}
+
 function rankingSnapshot() {
   const snapshot = liveSnapshot() as any;
+  snapshot.queuePlayers.forEach((player: any) => { player.matchesPlayed = 5; player.wins = 4; player.losses = 1; });
+  const completedMatch = snapshot.matches[0];
+  completedMatch.status = "COMPLETED";
+  completedMatch.completedAt = new Date(new Date(completedMatch.startedAt).getTime() + 5 * 60_000).toISOString();
+  completedMatch.winnerTeam = "A";
+  completedMatch.currentRevisionId = "revision-ranking-test";
+  completedMatch.scoreRevisions = [{ id: "revision-ranking-test", revisionNumber: 1, winnerTeam: "A", games: [{ id: "game-ranking-test", scoreRevisionId: "revision-ranking-test", gameNumber: 1, teamAScore: 21, teamBScore: 18, winnerTeam: "A" }] }];
   const player = {
     id: "player-did-not-play",
     displayName: "Did Not Play Player",
@@ -184,6 +233,33 @@ async function mockLiveApi(route: Route) {
   await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
 }
 
+async function mockQueueApi(route: Route) {
+  const corsHeaders = {
+    "access-control-allow-origin": "http://127.0.0.1:3100",
+    "access-control-allow-credentials": "true",
+    "access-control-allow-headers": "content-type, x-csrf-token",
+    "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+  };
+  if (route.request().method() === "OPTIONS") {
+    await route.fulfill({ status: 204, headers: corsHeaders });
+    return;
+  }
+  const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
+  if (path === "/auth/me") {
+    await route.fulfill({ json: { data: { user: { id: "account-1", username: "queue-layout-test", role: "QUEUE_MASTER" }, csrfToken: "test-token" } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/sync/snapshot") {
+    await route.fulfill({ json: { data: { snapshot: queueLayoutSnapshot(), cloudRevision: 1 } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/workspace/public-rankings") {
+    await route.fulfill({ json: { data: { current: null, archives: [] } }, headers: corsHeaders });
+    return;
+  }
+  await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
+}
+
 async function mockRankingApi(route: Route) {
   const corsHeaders = {
     "access-control-allow-origin": "http://127.0.0.1:3100",
@@ -211,6 +287,33 @@ async function mockRankingApi(route: Route) {
   await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
 }
 
+async function mockFeesApi(route: Route) {
+  const corsHeaders = {
+    "access-control-allow-origin": "http://127.0.0.1:3100",
+    "access-control-allow-credentials": "true",
+    "access-control-allow-headers": "content-type, x-csrf-token",
+    "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+  };
+  if (route.request().method() === "OPTIONS") {
+    await route.fulfill({ status: 204, headers: corsHeaders });
+    return;
+  }
+  const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
+  if (path === "/auth/me") {
+    await route.fulfill({ json: { data: { user: { id: "account-1", username: "fees-test", role: "QUEUE_MASTER" }, csrfToken: "test-token" } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/sync/snapshot") {
+    await route.fulfill({ json: { data: { snapshot: feesSnapshot(), cloudRevision: 1 } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/workspace/public-rankings") {
+    await route.fulfill({ json: { data: { current: null, archives: [] } }, headers: corsHeaders });
+    return;
+  }
+  await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
+}
+
 async function mockPublicRankingApi(route: Route) {
   const corsHeaders = { "access-control-allow-origin": "http://127.0.0.1:3100" };
   if (route.request().method() === "OPTIONS") {
@@ -225,6 +328,18 @@ async function mockPublicRankingApi(route: Route) {
       { rank: 2, playerKey: "zero-key", player: "Public Did Not Play", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0, pointsFor: 0, pointsAgainst: 0, pointDifferential: 0 },
     ];
     await route.fulfill({ json: { data: { sessionStartedAt: "2026-08-30T08:00:00.000Z", firstMatchStartedAt: "2026-08-30T08:10:00.000Z", state: "LIVE", serverTime: "2026-08-30T08:20:00.000Z", lastUpdatedAt: "2026-08-30T08:20:00.000Z", historyAvailable: true, rankings } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/public/rankings/public-token/players/played-key/history") {
+    await route.fulfill({ json: { data: {
+      player: { playerKey: "played-key", player: "Played Player" },
+      stats: {
+        averageDurationSeconds: 720,
+        mostPlayedPartner: { displayName: "A very long partner name that should wrap safely", count: 2 },
+        mostPlayedOpponent: { displayName: "Long opponent name", count: 2 },
+      },
+      matches: [{ matchKey: "match-1", completedAt: "2026-08-30T08:18:00.000Z", result: "WIN", winnerTeam: "A", teamA: ["Played Player", "A very long partner name that should wrap safely"], teamB: ["Long opponent name"], games: [{ gameNumber: 1, teamAScore: 21, teamBScore: 18, winnerTeam: "A" }] }],
+    } }, headers: corsHeaders });
     return;
   }
   await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
@@ -334,6 +449,85 @@ test.describe("responsive regressions", () => {
     expect(await page.locator(".live-action-label-compact:visible").count()).toBe(0);
   });
 
+  for (const viewport of [{ name: "mobile", width: 390, height: 844 }, { name: "desktop", width: 1440, height: 900 }] as const) {
+    test(`${viewport.name} Queue prioritizes check-in before management controls`, async ({ page }) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.route("**/api/v2/**", mockQueueApi);
+      await page.goto("/");
+      await page.getByRole("button", { name: "Queue" }).click();
+      await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();
+
+      await page.getByRole("button", { name: /Not checked in/ }).click();
+      const checkIn = page.getByRole("button", { name: "Check in", exact: true }).first();
+      await expect(checkIn).toBeVisible();
+      expect(await checkIn.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.top >= 0 && rect.bottom <= window.innerHeight;
+      })).toBe(true);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+      const sectionOrder = await page.locator("h2, h3, p").evaluateAll((nodes) => {
+        const labels = ["Build the next matchup.", "Synergy Teams", "End this session"];
+        return labels.map((label) => nodes.findIndex((node) => node.textContent?.trim() === label));
+      });
+      expect(sectionOrder[0]).toBeGreaterThanOrEqual(0);
+      expect(sectionOrder[1]).toBeGreaterThan(sectionOrder[0]!);
+      expect(sectionOrder[2]).toBeGreaterThan(sectionOrder[1]!);
+
+      await page.getByRole("button", { name: "End session", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "End this session?" })).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog", { name: "End this session?" })).toHaveCount(0);
+    });
+  }
+
+  for (const viewport of [{ name: "mobile", width: 390, height: 844 }, { name: "desktop", width: 1440, height: 900 }] as const) {
+    test(`${viewport.name} fees prioritize payment entry and keep fee details grouped`, async ({ page }) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.route("**/api/v2/**", mockFeesApi);
+      await page.goto("/");
+      await page.getByRole("button", { name: "Fees" }).click();
+      await expect(page.getByRole("heading", { name: "Log a payment." })).toBeVisible();
+      await expect(page.getByTestId("no-show-penalty-control")).toBeVisible();
+      await expect(page.getByText("Did not play / No-show penalties", { exact: true })).toBeVisible();
+
+      const sections = await page.locator("section").evaluateAll((nodes) => nodes.map((node) => node.textContent ?? ""));
+      const indexOf = (needle: string) => sections.findIndex((text) => text.includes(needle));
+      expect(indexOf("Log a payment.")).toBeLessThan(indexOf("Allocation"));
+      expect(indexOf("Players by payment method")).toBeLessThan(indexOf("Did not play / No-show penalties"));
+
+      const mainCards = await page.locator("[data-testid='log-payment-card'], [data-testid='fee-allocation-card']").evaluateAll((nodes) => nodes.map((node) => {
+        const rect = node.getBoundingClientRect();
+        return { left: rect.left, top: rect.top };
+      }));
+      expect(mainCards).toHaveLength(2);
+      expect(mainCards[0]!.top).toBeLessThanOrEqual(mainCards[1]!.top);
+      if (viewport.name === "desktop") expect(mainCards[0]!.left).toBeLessThan(mainCards[1]!.left);
+      if (viewport.name === "mobile") expect(mainCards[0]!.left).toBeCloseTo(mainCards[1]!.left, 0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+      await page.getByRole("button", { name: "Settings" }).click();
+      await expect(page.getByText("No-show penalty.", { exact: true })).toHaveCount(0);
+    });
+  }
+
+  test("fees preserve no-show penalty validation, save feedback, and disable behavior", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockFeesApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Fees" }).click();
+    const control = page.getByTestId("no-show-penalty-control");
+    const input = control.getByRole("spinbutton", { name: "Penalty amount (PHP)" });
+    const save = control.getByRole("button", { name: "Save", exact: true });
+    await input.fill("-1");
+    await save.click();
+    await expect(control.getByRole("alert")).toContainText("valid non-negative amount");
+    await input.fill("0");
+    await save.click();
+    await expect(page.getByText("No-show penalty updated.", { exact: true })).toBeVisible();
+    await expect(control.getByText("Disabled", { exact: true })).toBeVisible();
+  });
+
   test("signed-in rankings separate zero-game players without rank or history controls", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/v2/**", mockRankingApi);
@@ -347,13 +541,32 @@ test.describe("responsive regressions", () => {
     await expect(page.getByText("Did Not Play Player", { exact: true })).toHaveCount(1);
   });
 
+  test("signed-in ranking history shows duration and participant summaries", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    const playerRow = page.getByTestId("ranking-row-queue-1");
+    expect(await playerRow.count()).toBe(1);
+    await playerRow.click();
+    await expect(page.getByText("Avg duration", { exact: true })).toBeVisible();
+    await expect(page.getByText("5 min", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Player 2 (1)", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Player 3 (1)", { exact: true }).first()).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+
   test("public rankings show provisional records and compact no-game players", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/public-token");
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
-    await expect(page.getByText("Early Player", { exact: true })).toBeVisible();
-    await expect(page.getByText("1 games · 1W / 0L", { exact: true })).toBeVisible();
+    const earlyRow = page.getByRole("button").filter({ hasText: "Early Player" });
+    await expect(earlyRow).toHaveCount(1);
+    await expect(earlyRow).toContainText("Early Player");
+    await expect(page.getByText("1 games · 1W / 0L · 4 games to prize", { exact: true })).toBeVisible();
+    await expect(earlyRow.getByText("Provisional", { exact: true })).toBeVisible();
     await expect(page.getByText("100%", { exact: true })).toBeVisible();
     await expect(page.getByText(/Players need 5 completed games/i)).toHaveCount(0);
     await expect(page.getByText("Not yet eligible", { exact: true })).toHaveCount(0);
@@ -366,6 +579,28 @@ test.describe("responsive regressions", () => {
     await expect(section.locator("li")).toHaveCount(1);
     await expect(section.getByRole("button")).toHaveCount(0);
     await expect(page.getByText("Public Did Not Play", { exact: true })).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+
+  test("public ranking history shows player stats only after expanding a row", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await page.goto("/rankings/shared/public-token");
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    const playedRow = page.getByRole("button").filter({ hasText: "Played Player" });
+    expect(await playedRow.count()).toBe(1);
+    expect(await page.getByText("Avg duration", { exact: true }).count()).toBe(0);
+    await playedRow.click();
+    await expect(page.getByText("Avg duration", { exact: true })).toBeVisible();
+    await expect(page.getByText("12 min", { exact: true })).toBeVisible();
+    await expect(page.getByText("A very long partner name that should wrap safely (2)", { exact: true })).toBeVisible();
+    await expect(page.getByText("Long opponent name (2)", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const statCards = page.getByTestId("public-ranking-history-stats").locator(":scope > div");
+    expect(await statCards.count()).toBe(3);
+    const cardTops = await statCards.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().top)));
+    expect(new Set(cardTops).size).toBe(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 

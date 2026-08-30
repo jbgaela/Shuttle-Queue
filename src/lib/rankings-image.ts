@@ -21,7 +21,7 @@ export type RankingExportRow = {
   record: string;
   winRate: string;
   rankingScore?: string;
-  section: "RANKED" | "NOT_YET_ELIGIBLE" | "DID_NOT_PLAY";
+  section: "RANKED" | "DID_NOT_PLAY";
 };
 
 export type RankingExportOptions = { variant?: "prize" | "public" };
@@ -51,7 +51,7 @@ export function rankingExportRows(rankings: RankingExportSourceRow[], options: R
     return [
       ...ranked.map((ranking) => ({
         rank: ranking.rank,
-        player: ranking.player,
+        player: ranking.matchesPlayed < 5 || ranking.eligible === false ? `${ranking.player} (Provisional)` : ranking.player,
         games: ranking.matchesPlayed,
         record: `${ranking.wins}W / ${ranking.losses}L`,
         winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
@@ -67,25 +67,16 @@ export function rankingExportRows(rankings: RankingExportSourceRow[], options: R
       })),
     ];
   }
-  const { ranked, notYetEligible, didNotPlay } = partitionRankingRows(rankings);
+  const { ranked, didNotPlay } = partitionRankingRows(rankings);
   return [
     ...ranked.map((ranking) => ({
       rank: ranking.rank,
-      player: ranking.player,
+      player: ranking.matchesPlayed < 5 || ranking.eligible === false ? `${ranking.player} (Provisional)` : ranking.player,
       games: ranking.matchesPlayed,
       record: `${ranking.wins}W / ${ranking.losses}L`,
       winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
       rankingScore: ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined ? "—" : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
       section: "RANKED" as const,
-    })),
-    ...notYetEligible.map((ranking) => ({
-      rank: null,
-      player: ranking.player,
-      games: ranking.matchesPlayed,
-      record: `${ranking.wins}W / ${ranking.losses}L`,
-      winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,
-      rankingScore: ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined ? "—" : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
-      section: "NOT_YET_ELIGIBLE" as const,
     })),
     ...didNotPlay.map((ranking) => ({
       rank: null,
@@ -183,17 +174,15 @@ export function createRankingExportCanvas(rankings: RankingExportSourceRow[], da
   const publicVariant = options.variant === "public";
   const rows = rankingExportRows(rankings, options);
   const rankedRows = rows.filter((row) => row.section === "RANKED");
-  const notYetEligibleRows = rows.filter((row) => row.section === "NOT_YET_ELIGIBLE");
   const didNotPlayRows = rows.filter((row) => row.section === "DID_NOT_PLAY");
   const nameColumnWidth = publicVariant ? 500 : 530;
   context.font = NAME_FONT;
   const rowHeights = rankedRows.map((row) => Math.max(MIN_ROW_HEIGHT, wrapText(context, row.player, nameColumnWidth).length * 32 + ROW_PADDING * 2));
   const footerHeight = 72;
   const didNotPlayChips = publicVariant ? chipLayoutRows(context, didNotPlayRows.map((row) => row.player), IMAGE_WIDTH - HORIZONTAL_MARGIN * 2 - 48) : null;
-  const notYetEligibleSectionHeight = publicVariant ? 0 : notYetEligibleRows.length ? 40 + notYetEligibleRows.length * 56 : 0;
   const didNotPlaySectionHeight = publicVariant ? chipSectionHeight(didNotPlayChips!) : didNotPlayRows.length ? 40 + didNotPlayRows.length * 56 : 0;
   const rankedSectionHeight = rankedRows.length ? TABLE_HEADER_HEIGHT + rowHeights.reduce((total, height) => total + height, 0) : 90;
-  canvas.height = HEADER_HEIGHT + rankedSectionHeight + notYetEligibleSectionHeight + didNotPlaySectionHeight + footerHeight;
+  canvas.height = HEADER_HEIGHT + rankedSectionHeight + didNotPlaySectionHeight + footerHeight;
 
   context.fillStyle = "#f5f7f3";
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -221,6 +210,9 @@ export function createRankingExportCanvas(rankings: RankingExportSourceRow[], da
   context.font = "500 22px Arial";
   context.fillStyle = "#ffffff";
   context.fillText(formatRankingExportDate(date), HORIZONTAL_MARGIN, 174);
+  context.font = "500 17px Arial";
+  context.fillStyle = "#d8f1eb";
+  context.fillText("Ranks start after 1 completed game · prize eligibility after 5", HORIZONTAL_MARGIN, 200);
 
   const tableX = HORIZONTAL_MARGIN;
   const tableWidth = IMAGE_WIDTH - HORIZONTAL_MARGIN * 2;
@@ -279,27 +271,6 @@ export function createRankingExportCanvas(rankings: RankingExportSourceRow[], da
     context.textBaseline = "middle";
     context.fillText("No ranked players yet", tableX + 24, rowY + 38);
     rowY += 90;
-  }
-
-  if (notYetEligibleRows.length) {
-    context.font = "700 24px Arial";
-    context.fillStyle = "#102a2d";
-    context.textBaseline = "top";
-    context.fillText("Not yet eligible (5 games required)", tableX, rowY + 4);
-    rowY += 40;
-    notYetEligibleRows.forEach((row, index) => {
-      const rowHeight = 56;
-      context.fillStyle = index % 2 === 0 ? "#ffffff" : "#edf8f4";
-      context.fillRect(tableX, rowY, tableWidth, rowHeight);
-      context.font = NAME_FONT;
-      context.fillStyle = "#102a2d";
-      context.textBaseline = "middle";
-      context.fillText(row.player, tableX + 24, rowY + rowHeight / 2);
-      context.font = "500 18px Arial";
-      context.fillStyle = "#536a6d";
-      context.fillText(`${row.games}/5 games`, tableX + tableWidth - 170, rowY + rowHeight / 2);
-      rowY += rowHeight;
-    });
   }
 
   if (didNotPlayRows.length) {

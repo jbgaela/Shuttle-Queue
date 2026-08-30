@@ -212,8 +212,9 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
 }
 
 export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; effectiveSkillWeight?: number; effectiveSkillLevel?: SkillLevel; synergyTeamId?: string | null; status: QueuePlayerStatus; gamesPlayed: number; wins?: number; losses?: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
+export type MatchupAdvisory = { type: "LOW_SKILL_LONE_FEMALE"; queuePlayerId: string; displayName: string; skillLevel: "NEWBIE" | "BEGINNER" | "UPPER_BEGINNER" };
 export type MatchHistory = { partners: Map<string, Map<string, number>>; opponents: Map<string, Map<string, number>>; quartets: Map<string, number>; encounters?: Map<string, Map<string, number>>; recentPartners?: Map<string, Map<string, number>>; recentOpponents?: Map<string, Map<string, number>>; recentEncounters?: Map<string, Map<string, number>>; recentQuartets?: Map<string, number> };
-export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; explanation: Record<string, unknown> };
+export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; matchupAdvisory?: MatchupAdvisory | null; explanation: Record<string, unknown> };
 export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date; synergyTeams?: Array<Pick<DomainSynergyTeam, "id" | "queuePlayerIds">> };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
 export const MATCHMAKING_ALGORITHM = "v9-synergy-team-bounded-search";
@@ -288,6 +289,15 @@ export function validateSynergyLineup(teamA: MatchPlayer[], teamB: MatchPlayer[]
 }
 
 export const LONE_FEMALE_SKILL_LEVELS: SkillLevel[] = ["INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"];
+export const LOW_SKILL_LONE_FEMALE_LEVELS: MatchupAdvisory["skillLevel"][] = ["NEWBIE", "BEGINNER", "UPPER_BEGINNER"];
+export const lowSkillLoneFemaleAdvisory = (teamA: Array<{ id: string; displayName: string; gender: string; skillLevel: string }>, teamB: Array<{ id: string; displayName: string; gender: string; skillLevel: string }>): MatchupAdvisory | null => {
+  if (teamA.length !== 2 || teamB.length !== 2) return null;
+  const group = [...teamA, ...teamB];
+  const female = group.find((player) => player.gender === "FEMALE");
+  if (!female || group.filter((player) => player.gender === "FEMALE").length !== 1 || group.filter((player) => player.gender === "MALE").length !== 3) return null;
+  if (!LOW_SKILL_LONE_FEMALE_LEVELS.includes(female.skillLevel as MatchupAdvisory["skillLevel"])) return null;
+  return { type: "LOW_SKILL_LONE_FEMALE", queuePlayerId: female.id, displayName: female.displayName, skillLevel: female.skillLevel as MatchupAdvisory["skillLevel"] };
+};
 export const isQualifiedLoneFemaleGroup = (group: MatchPlayer[]) => group.length === 4 && group.filter((player) => player.gender === "FEMALE").length === 1 && group.filter((player) => player.gender === "MALE").length === 3 && group.some((player) => player.gender === "FEMALE" && LONE_FEMALE_SKILL_LEVELS.includes(effectiveLevelFor(player)));
 export const loneFemalePolicy = (teamA: MatchPlayer[], teamB: MatchPlayer[], mixedDoublesFallback = false) => {
   const group = [...teamA, ...teamB];
@@ -503,6 +513,7 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
       }
     }
   }
+  if (best) best.suggestion.matchupAdvisory = lowSkillLoneFemaleAdvisory(best.suggestion.teamA, best.suggestion.teamB);
   return best?.suggestion ?? null;
 }
 
@@ -583,6 +594,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
         teamBTotal,
         difference: Math.abs(teamATotal - teamBTotal),
         key: keyString,
+        matchupAdvisory: lowSkillLoneFemaleAdvisory(teamA, teamB),
         explanation: {
           algorithmVersion: MATCHMAKING_ALGORITHM,
           mode,
