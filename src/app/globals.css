@@ -255,6 +255,25 @@ header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color:
   scroll-padding-top: 1rem;
 }
 
+.synergy-teams-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.synergy-team-card,
+.synergy-team-member {
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 640px) {
+  .synergy-teams-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1280px) {
+  .synergy-teams-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 @media (min-width: 640px) {
   .fixed.inset-0.z-50 {
     padding-top: 7rem;

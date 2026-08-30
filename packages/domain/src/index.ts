@@ -387,10 +387,10 @@ export const isProhibitedGeneratedNewbieMatch = (teamA: MatchPlayer[], teamB: Ma
 };
 const hasNewbieCompatiblePartition = (group: MatchPlayer[]) => partitions(group).some(([teamA, teamB]) => !isProhibitedGeneratedNewbieMatch(teamA, teamB));
 const sameSynergyTeam = (first: MatchPlayer, second: MatchPlayer) => Boolean(first.synergyTeamId && first.synergyTeamId === second.synergyTeamId);
-const hasSynergyCompatiblePartition = (group: MatchPlayer[]) => partitions(group).some(([teamA, teamB]) => !group.some((player) => {
+const hasCompleteSynergyTeams = (group: MatchPlayer[]) => group.every((player) => !player.synergyTeamId || group.some((candidate) => candidate.id !== player.id && sameSynergyTeam(player, candidate)));
+const hasSynergyCompatiblePartition = (group: MatchPlayer[]) => hasCompleteSynergyTeams(group) && partitions(group).some(([teamA, teamB]) => !group.some((player) => {
   const partner = group.find((candidate) => candidate.id !== player.id && sameSynergyTeam(player, candidate));
-  if (!partner) return false;
-  return (teamA.includes(player) && teamB.includes(partner)) || (teamB.includes(player) && teamA.includes(partner));
+  return Boolean(partner && ((teamA.includes(player) && teamB.includes(partner)) || (teamB.includes(player) && teamA.includes(partner))));
 }));
 const compare = (a: (number[] | number | string)[], b: (number[] | number | string)[]) => { for (let i = 0; i < a.length; i += 1) { const left = a[i]; const right = b[i]; if (Array.isArray(left) && Array.isArray(right)) { for (let j = 0; j < Math.max(left.length, right.length); j += 1) { const result = (left[j] ?? 0) - (right[j] ?? 0); if (result) return result; } } else if (typeof left === "string" && typeof right === "string") { const result = left.localeCompare(right); if (result) return result; } else if (typeof left === "number" && typeof right === "number" && left !== right) return left - right; } return 0; };
 const restReadyAt = (lastMatchEndedAt: string | null, minimumRestMinutes: number, now: number) => { if (!lastMatchEndedAt || minimumRestMinutes <= 0) return now; return new Date(lastMatchEndedAt).getTime() + minimumRestMinutes * 60_000; };
@@ -398,7 +398,7 @@ const restReadyAt = (lastMatchEndedAt: string | null, minimumRestMinutes: number
 const MAX_MATCHMAKING_POOL = 40;
 const MAX_BOUNDED_GROUPS = 8_000;
 const matchmakingPlayerCompare = (a: MatchPlayer, b: MatchPlayer, previouslySkippedPlayerIds: Set<string>) => (b.manualPriority ?? 0) - (a.manualPriority ?? 0) || a.gamesPlayed - b.gamesPlayed || Number(a.latePenaltyState === "PENDING") - Number(b.latePenaltyState === "PENDING") || Number(previouslySkippedPlayerIds.has(b.id)) - Number(previouslySkippedPlayerIds.has(a.id)) || (a.queueEnteredAt ?? "").localeCompare(b.queueEnteredAt ?? "") || a.id.localeCompare(b.id);
-const diversePool = (players: MatchPlayer[], limit: number, previouslySkippedPlayerIds: Set<string>) => {
+const diversePool = (players: MatchPlayer[], limit: number, previouslySkippedPlayerIds: Set<string>, partnerSource = players) => {
   const sorted = [...players].sort((a, b) => matchmakingPlayerCompare(a, b, previouslySkippedPlayerIds));
   const selected: MatchPlayer[] = [];
   const selectedIds = new Set<string>();
@@ -416,14 +416,14 @@ const diversePool = (players: MatchPlayer[], limit: number, previouslySkippedPla
   const selectedById = new Set(selected.map((player) => player.id));
   for (const player of selected.slice()) {
     if (!player.synergyTeamId) continue;
-    const partner = players.find((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id);
+    const partner = partnerSource.find((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id);
     if (partner && !selectedById.has(partner.id)) { selected.push(partner); selectedById.add(partner.id); }
   }
   return selected;
 };
 const boundedEligiblePools = (eligible: MatchPlayer[], mode: MatchmakingMode, previouslySkippedPlayerIds: Set<string>) => {
   if (eligible.length <= MAX_MATCHMAKING_POOL) return [eligible];
-  if (mode === "MIXED_DOUBLES") return [(["MALE", "FEMALE"] as const).flatMap((gender) => diversePool(eligible.filter((player) => player.gender === gender), 20, previouslySkippedPlayerIds)).sort((a, b) => matchmakingPlayerCompare(a, b, previouslySkippedPlayerIds))];
+  if (mode === "MIXED_DOUBLES") return [[...new Map((["MALE", "FEMALE"] as const).flatMap((gender) => diversePool(eligible.filter((player) => player.gender === gender), 20, previouslySkippedPlayerIds, eligible)).map((player) => [player.id, player] as const)).values()].sort((a, b) => matchmakingPlayerCompare(a, b, previouslySkippedPlayerIds))];
   if (mode === "SAME_GENDER") return (["MALE", "FEMALE"] as const).map((gender) => diversePool(eligible.filter((player) => player.gender === gender), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
   if (mode === "SAME_SKILL") return (["NEWBIE", "BEGINNER", "UPPER_BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"] as const).map((skillLevel) => diversePool(eligible.filter((player) => effectiveLevelFor(player) === skillLevel), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
   return [diversePool(eligible, MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds)];
@@ -459,7 +459,7 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
   const rankedIds = new Set(ranked.map(({ player }) => player.id));
   const readyQualifiers = ranked.filter(({ player }) => eligible.some((candidate) => candidate.id === player.id));
   if (!readyQualifiers.length) return null;
-  const supports = diversePool(eligible.filter((player) => !rankedIds.has(player.id)), Math.max(0, MAX_MATCHMAKING_POOL - ranked.length), new Set());
+  const supports = diversePool(eligible.filter((player) => !rankedIds.has(player.id)), Math.max(0, MAX_MATCHMAKING_POOL - ranked.length), new Set(), eligible);
   const excluded = new Set(excludedKeys);
   const excludedPairs = new Set(excludedKeys.map((key) => key.split("|").flatMap((part) => part.split(",")).filter((id) => rankedIds.has(id)).sort().join(",")).filter(Boolean));
   const useFallback = readyQualifiers.length >= 3 && supports.length < 2;

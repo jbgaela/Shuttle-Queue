@@ -51,7 +51,7 @@ export function rankingExportRows(rankings: RankingExportSourceRow[], options: R
     return [
       ...ranked.map((ranking) => ({
         rank: ranking.rank,
-        player: ranking.matchesPlayed < 5 || ranking.eligible === false ? `${ranking.player} (Provisional)` : ranking.player,
+        player: ranking.player,
         games: ranking.matchesPlayed,
         record: `${ranking.wins}W / ${ranking.losses}L`,
         winRate: `${(ranking.winRateBasisPoints / 100).toFixed(0)}%`,

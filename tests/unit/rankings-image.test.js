@@ -61,14 +61,14 @@ test("private export keeps provisional players in the ranked table", () => {
   ]);
 });
 
-test("public export ranks under-five players and omits score and eligibility sections", () => {
+test("public export omits prize labels, score, and eligibility sections", () => {
   const rows = rankingExportRows([
     ranking({ player: "Short Sample", matchesPlayed: 2, wins: 2, losses: 0, winRateBasisPoints: 10000, eligible: false, gamesNeeded: 3 }),
     ranking({ player: "Qualified Sample", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000 }),
     ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
   ], { variant: "public" });
   assert.deepEqual(rows.map(({ player, rank, section }) => ({ player, rank, section })), [
-    { player: "Short Sample (Provisional)", rank: 1, section: "RANKED" },
+    { player: "Short Sample", rank: 1, section: "RANKED" },
     { player: "Qualified Sample", rank: 2, section: "RANKED" },
     { player: "No Games", rank: null, section: "DID_NOT_PLAY" },
   ]);

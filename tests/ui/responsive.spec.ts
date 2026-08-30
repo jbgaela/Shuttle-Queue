@@ -557,7 +557,7 @@ test.describe("responsive regressions", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 
-  test("public rankings show provisional records and compact no-game players", async ({ page }) => {
+  test("public rankings omit prize labels and keep compact no-game players", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/public-token");
@@ -566,7 +566,7 @@ test.describe("responsive regressions", () => {
     await expect(earlyRow).toHaveCount(1);
     await expect(earlyRow).toContainText("Early Player");
     await expect(page.getByText("1 games · 1W / 0L · 4 games to prize", { exact: true })).toBeVisible();
-    await expect(earlyRow.getByText("Provisional", { exact: true })).toBeVisible();
+    await expect(earlyRow.getByText("Provisional", { exact: true })).toHaveCount(0);
     await expect(page.getByText("100%", { exact: true })).toBeVisible();
     await expect(page.getByText(/Players need 5 completed games/i)).toHaveCount(0);
     await expect(page.getByText("Not yet eligible", { exact: true })).toHaveCount(0);
