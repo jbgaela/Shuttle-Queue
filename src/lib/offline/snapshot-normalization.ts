@@ -7,9 +7,19 @@ const skillWeights: Record<string, number> = { NEWBIE: 1, BEGINNER: 2, UPPER_BEG
  * Older offline records may omit fields that are nullable or have database defaults.
  */
 export function normalizeSnapshotForSync(snapshot: CloudSnapshotV2): CloudSnapshotV2 {
+  const queuePlayerIds = new Set(snapshot.queuePlayers.map((player) => player.id));
+  const claimedSynergyPlayers = new Set<string>();
+  const normalizedSynergyTeams = (snapshot.synergyTeams ?? []).filter((team) => {
+    const memberIds = (team as any)?.queuePlayerIds;
+    if (!Array.isArray(memberIds) || memberIds.length !== 2 || memberIds.some((id: unknown) => typeof id !== "string") || memberIds[0] === memberIds[1] || memberIds.some((id: string) => !queuePlayerIds.has(id)) || memberIds.some((id: string) => claimedSynergyPlayers.has(id))) return false;
+    memberIds.forEach((id: string) => claimedSynergyPlayers.add(id));
+    return true;
+  });
   return {
     ...snapshot,
-    settings: snapshot.settings ? { ...snapshot.settings, lateArrivalGraceMinutes: snapshot.settings.lateArrivalGraceMinutes ?? 10 } : null,
+    synergyTeams: normalizedSynergyTeams,
+    settings: snapshot.settings ? { ...snapshot.settings, lateArrivalGraceMinutes: snapshot.settings.lateArrivalGraceMinutes ?? 10, noShowPenaltyMinor: snapshot.settings.noShowPenaltyMinor ?? 0 } : null,
+    feeConfig: snapshot.feeConfig ? { ...snapshot.feeConfig, noShowPenaltyMinor: snapshot.feeConfig.noShowPenaltyMinor ?? 0 } : null,
     players: snapshot.players.map((player) => ({ ...player, skillWeight: skillWeights[player.skillLevel] ?? player.skillWeight })),
     queuePlayers: snapshot.queuePlayers.map((player) => ({
       ...player,

@@ -1,8 +1,38 @@
 export type ApiEnvelope<T> = { data: T; requestId?: string; meta?: unknown };
-const baseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v2").replace(/\/$/, "");
+const baseUrl = "/api/v2";
 let csrfTokenCache: string | null = null;
 let csrfRefreshPromise: Promise<string | null> | null = null;
 let publicSharingActive = typeof window !== "undefined" && (() => { try { return window.localStorage.getItem("bq-public-sharing-active") === "1"; } catch { return false; } })();
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details: unknown;
+  readonly requestId: string | undefined;
+
+  constructor(status: number, code: string, message: string, details?: unknown, requestId?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+    this.requestId = requestId;
+  }
+}
+
+const authRequiredListeners = new Set<() => void>();
+
+export function onAuthRequired(listener: () => void) {
+  authRequiredListeners.add(listener);
+  return () => { authRequiredListeners.delete(listener); };
+}
+
+function notifyAuthRequired(path: string) {
+  if (path === "/auth/login" || path === "/auth/logout") return;
+  for (const listener of authRequiredListeners) {
+    try { listener(); } catch { /* an auth boundary must not break the failed request */ }
+  }
+}
 
 export function setPublicSharingActive(value: boolean) {
   publicSharingActive = value;
@@ -50,6 +80,7 @@ async function refreshCsrfToken() {
     const authResponse = await fetch(`${baseUrl}/auth/me`, { credentials: "include", cache: "no-store" });
     const authPayload = await authResponse.json().catch(() => ({}));
     const freshToken = authPayload?.data?.csrfToken;
+    if (authResponse.status === 401 && authPayload?.error?.code === "AUTH_REQUIRED") notifyAuthRequired("/auth/me");
     if (!authResponse.ok || !freshToken) return null;
     saveCsrfToken(freshToken);
     return freshToken;
@@ -64,7 +95,9 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
     if (await local.hasLocalSnapshot()) return local.handleRequest(await local.currentAccountId(), path, init) as Promise<T>;
   }
   const csrfToken = readCsrfToken();
-  const response = await fetch(`${baseUrl}${path}`, { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}), ...(csrfToken ? { "x-csrf-token": csrfToken } : {}) } });
+  const requestInit: RequestInit = { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}), ...(csrfToken ? { "x-csrf-token": csrfToken } : {}) } };
+  if (path === "/auth/me" && !requestInit.cache) requestInit.cache = "no-store";
+  const response = await fetch(`${baseUrl}${path}`, requestInit);
   const payload = await response.json().catch(() => ({}));
   if (response.status === 403 && payload?.error?.code === "CSRF_INVALID" && allowCsrfResync && typeof window !== "undefined") {
     const freshToken = await refreshCsrfToken();
@@ -72,7 +105,18 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
       return request(path, init, false);
     }
   }
-  if (!response.ok) throw new Error(payload?.error?.message ?? "The request could not be completed.");
+  if (!response.ok) {
+    const errorPayload = payload?.error;
+    const apiError = new ApiError(
+      response.status,
+      typeof errorPayload?.code === "string" ? errorPayload.code : "HTTP_ERROR",
+      typeof errorPayload?.message === "string" ? errorPayload.message : "The request could not be completed.",
+      errorPayload?.details,
+      typeof payload?.requestId === "string" ? payload.requestId : undefined,
+    );
+    if (apiError.status === 401 && apiError.code === "AUTH_REQUIRED") notifyAuthRequired(path);
+    throw apiError;
+  }
   if (payload?.data?.csrfToken) saveCsrfToken(payload.data.csrfToken);
   const data = (payload as ApiEnvelope<T>).data;
   return (path.startsWith("/sync/") ? data : hydrateQueueFields(data));
@@ -90,7 +134,7 @@ export type SuggestionNoMatchCode = "NO_EXACT_STRENGTH_GAP" | "NO_UNDEFEATED_QUA
 export const api = {
   me: () => request<{ user: { id: string; username: string; role: AccountRole } }>("/auth/me"),
   settings: () => request<AccountSettings>("/settings"),
-  updateSettings: (body: { defaultLateArrivalCutoffTime?: string | null; minimumRestMinutes?: number; lateArrivalGraceMinutes?: number }, version?: number) => request<AccountSettings>("/settings", { method: "PATCH", ...(version === undefined ? {} : { headers: { "if-match": String(version) } }), body: JSON.stringify(body) }),
+  updateSettings: (body: { defaultLateArrivalCutoffTime?: string | null; minimumRestMinutes?: number; lateArrivalGraceMinutes?: number; noShowPenaltyMinor?: number }, version?: number) => request<AccountSettings>("/settings", { method: "PATCH", ...(version === undefined ? {} : { headers: { "if-match": String(version) } }), body: JSON.stringify(body) }),
   login: (username: string, password: string) => request<{ user: { id: string; username: string; role: AccountRole } }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   changePassword: (currentPassword: string, newPassword: string) => request<{ user: { id: string; username: string; role: AccountRole }; csrfToken: string; expiresAt: string }>("/auth/change-password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }),
   adminAccounts: () => request<AccountSummary[]>("/admin/accounts"),
@@ -115,6 +159,9 @@ export const api = {
   updatePlayer: (player: Player, body: { displayName: string; gender: "MALE" | "FEMALE"; skillLevel: string }) => request<Player>(`/players/${player.id}`, { method: "PATCH", ...(player.version === undefined ? {} : { headers: { "if-match": String(player.version) } }), body: JSON.stringify(body) }),
   addPlayers: (_workspaceId: string, playerIds: string[]) => request<QueuePlayer[]>("/queue/players", { method: "POST", body: JSON.stringify({ playerIds }) }),
   sessionPlayers: (_workspaceId: string) => request<QueuePlayer[]>("/queue/players"),
+  createSynergyTeam: (_workspaceId: string, queuePlayerIds: [string, string]) => request<SynergyTeam>("/queue/synergy-teams", { method: "POST", body: JSON.stringify({ queuePlayerIds }) }),
+  updateSynergyTeam: (_workspaceId: string, team: SynergyTeam, queuePlayerIds: [string, string]) => request<SynergyTeam>(`/queue/synergy-teams/${team.id}`, { method: "PATCH", headers: { "if-match": String(team.version) }, body: JSON.stringify({ queuePlayerIds }) }),
+  deleteSynergyTeam: (_workspaceId: string, team: SynergyTeam) => request<void>(`/queue/synergy-teams/${team.id}`, { method: "DELETE", headers: { "if-match": String(team.version) }, body: "{}" }),
   removeSessionPlayer: (_workspaceId: string, queuePlayerId: string) => request<void>(`/queue/players/${queuePlayerId}`, { method: "DELETE", body: "{}" }),
   queue: (_workspaceId: string) => request<QueueState>("/queue"),
   courts: (_workspaceId: string) => request<Court[]>("/courts"),
@@ -160,7 +207,7 @@ export const api = {
 
 export type AccountRole = "SUPER_ADMIN" | "QUEUE_MASTER";
 export type AccountStatus = "ACTIVE" | "DISABLED";
-export type AccountSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: number; minimumRestMinutes: number; lateArrivalGraceMinutes: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
+export type AccountSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: number; minimumRestMinutes: number; lateArrivalGraceMinutes: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; noShowPenaltyMinor: number; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
 export type AccountSummary = { id: string; username: string; role: AccountRole; status: AccountStatus; createdAt: string; updatedAt: string; lastLoginAt?: string | null; passwordChangedAt: string; version: number; playerCount: number; queuePlayerCount: number; sessionCount: number; courtCount?: number; matchCount?: number };
 export type AccountDeletionPreview = { accountId: string; playerCount: number; queuePlayerCount: number; sessionCount: number; courtCount: number; matchCount: number; participantCount: number; scoreRevisionCount: number; gameCount: number; paymentCount: number; feeConfigCount: number; auditCount: number; authSessionCount: number; idempotencyRecordCount: number };
 export type WorkspaceSummary = { id: string; name: string; sessionDate: string; startedAt: string; status: string; endedAt?: string | null; lateArrivalCutoffAt?: string | null; reclassifiedPlayerCount?: number; version: number; playerCount?: number; courtCount?: number; scoring: { pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: number }; feeConfig?: FeeConfig | null };
@@ -169,10 +216,11 @@ export type Player = { id: string; displayName: string; gender: "MALE" | "FEMALE
 export type PlayerDeletionBusyPlayer = { playerId: string; queuePlayerId: string; displayName: string; status: string };
 export type PlayerDeletionPreview = { playerIds: string[]; playerNames: string[]; busyPlayers: PlayerDeletionBusyPlayer[]; affectedMatchIds: string[]; affectedPaymentIds: string[]; otherParticipantPlayerIds: string[]; otherParticipantQueuePlayerIds?: string[] };
 export type PlayerDeletionResult = { deletedPlayerIds: string[]; affectedMatchCount: number; affectedPaymentCount: number; otherParticipantPlayerIds: string[] };
-export type QueuePlayer = { id: string; playerId?: string; displayName: string; gender: string; skillLevel: string; skillWeight: number; status: string; matchesPlayed: number; wins: number; losses: number; pointsFor?: number; pointsAgainst?: number; amountDueMinor?: number; manualPriority?: number; queueEnteredAt?: string | null; lastMatchEndedAt?: string | null; restEligibleAt?: string | null; checkedInAt?: string | null; checkedOutAt?: string | null; currentMatchId?: string | null; latePenaltyState: "PENDING" | "SERVED" | "WAIVED" | null; latePenaltyAppliedAt?: string | null; version?: number };
+export type QueuePlayer = { id: string; playerId?: string; displayName: string; gender: string; skillLevel: string; skillWeight: number; effectiveSkillLevel?: string; effectiveSkillWeight?: number; synergyTeamId?: string | null; synergyPartnerName?: string | null; status: string; matchesPlayed: number; wins: number; losses: number; pointsFor?: number; pointsAgainst?: number; amountDueMinor?: number; manualPriority?: number; queueEnteredAt?: string | null; lastMatchEndedAt?: string | null; restEligibleAt?: string | null; checkedInAt?: string | null; checkedOutAt?: string | null; currentMatchId?: string | null; latePenaltyState: "PENDING" | "SERVED" | "WAIVED" | null; latePenaltyAppliedAt?: string | null; version?: number };
 export type SessionPlayer = QueuePlayer;
+export type SynergyTeam = { id: string; queuePlayerIds: [string, string]; effectiveSkillLevel: string; effectiveSkillWeight: number; version: number; createdAt?: string; updatedAt?: string };
 export type UndefeatedChallengePlayer = { queuePlayerId: string; displayName: string; rank: number; matchesPlayed: number; wins: number; losses: number; status: string; ready: boolean; restEligibleAt?: string | null };
-export type QueueState = { inactive: SessionPlayer[]; waiting: SessionPlayer[]; queued: SessionPlayer[]; playing: SessionPlayer[]; resting: SessionPlayer[]; serverTime: string; minimumRestMinutes?: number; lateArrivalCutoffAt?: string | null; undefeatedChallenge?: { minimumMatches: number; rankLimit: number; players: UndefeatedChallengePlayer[] } };
+export type QueueState = { inactive: SessionPlayer[]; waiting: SessionPlayer[]; queued: SessionPlayer[]; playing: SessionPlayer[]; resting: SessionPlayer[]; serverTime: string; minimumRestMinutes?: number; lateArrivalCutoffAt?: string | null; synergyTeams?: SynergyTeam[]; undefeatedChallenge?: { minimumMatches: number; rankLimit: number; players: UndefeatedChallengePlayer[] } };
 export type Court = { id: string; name: string; status: "AVAILABLE" | "OCCUPIED" | "PAUSED" | "CLOSED"; displayOrder: number; currentMatchId?: string | null; version?: number };
 export type CourtDeletionResult = { deletedCourtIds: string[]; deletedCount: number; preservedHistoryMatchCount: number };
 export type Suggestion = { token: string; expiresAt: number; key: string; strengthGap?: 1 | 2 | 3; difference: number; teamATotal: number; teamBTotal: number; lateArrivalCutoffAt?: string | null; teamA: SessionPlayer[]; teamB: SessionPlayer[]; explanation: { challenge?: { selectedPlayerIds?: string[]; opposingPlayerIds?: string[]; qualifyingPlayers?: Array<{ id: string; displayName: string; rank: number; gamesPlayed: number; wins: number; losses: number }>; rotatedPair?: boolean; fallbackIncludedThird?: boolean; difficultyPolicy?: string }; searchStats?: { eligibleCount?: number; evaluatedCount?: number; bounded?: boolean }; repeatPenalties?: Record<string, number>; rest?: { minimumRestMinutes?: number; eligibleAt?: string }; lateArrival?: { minimumPending?: number; selectedPending?: number; preferenceApplied?: boolean }; skillDiversity?: { groupSpread?: number; partnerMix?: number }; fairness?: { minimumGames?: number; minimumGamesCount?: number; manualOverride?: boolean; previouslySkippedCount?: number; supportMinimumGames?: number; supportPending?: number }; partnerRotation?: { recentRepeats?: number; allTimeRepeats?: number; preservedTeamBalance?: boolean }; algorithmVersion?: string; cycleRestarted?: boolean } };
@@ -196,8 +244,8 @@ export type PublicRankingMatch = { matchKey: string; completedAt: string | null;
 export type PublicRankingPlayerHistoryPayload = { player: { playerKey: string; player: string }; matches: PublicRankingMatch[] };
 export type PublicRankingPublication = { id: string; sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL" | "REVOKED"; publishedAt: string; finalizedAt?: string | null; revokedAt?: string | null; version: number; token?: string };
 export type PublicRankingPublicationResponse = { current: PublicRankingPublication | null; archives: PublicRankingPublication[] };
-export type FeeConfig = { id: string; mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null; participationRule: string; frozenAt?: string | null; version: number };
+export type FeeConfig = { id: string; mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null; noShowPenaltyMinor: number; participationRule: string; frozenAt?: string | null; version: number };
 export type PaymentMethod = "CASH" | "EWALLET" | "OTHER";
-export type FeePlayer = { queuePlayerId: string; sessionPlayerId: string; displayName: string; dueMinor: number; collectedMinor: number; waivedMinor: number; outstandingMinor: number; status: "WAIVED" | "PAID" | "PARTIAL" | "UNPAID"; collectionByMethodMinor: Record<PaymentMethod, number> };
-export type FeeSummary = { config: FeeConfig | null; expectedMinor: number; collectedMinor: number; outstandingMinor: number; paymentCount: number; players: FeePlayer[] };
+export type FeePlayer = { queuePlayerId: string; sessionPlayerId: string; displayName: string; dueMinor: number; collectedMinor: number; waivedMinor: number; outstandingMinor: number; creditMinor: number; isNoShow: boolean; status: "WAIVED" | "PAID" | "PARTIAL" | "UNPAID" | "CREDIT"; collectionByMethodMinor: Record<PaymentMethod, number> };
+export type FeeSummary = { config: FeeConfig | null; expectedMinor: number; collectedMinor: number; outstandingMinor: number; creditMinor: number; noShowCount: number; paymentCount: number; players: FeePlayer[] };
 export type Payment = { id: string; queuePlayerId: string; sessionPlayerId: string; kind: "COLLECTION" | "REFUND" | "WAIVER" | "WAIVER_REVERSAL"; method?: "CASH" | "EWALLET" | "OTHER" | null; amountMinor: number; reference?: string | null; note?: string | null; occurredAt: string; createdAt: string };

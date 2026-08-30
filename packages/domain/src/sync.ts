@@ -1,3 +1,4 @@
+import { allocateFinalFeeAmounts } from "./fees.js";
 import type { CloudSnapshotV2, DomainMatch } from "./index.js";
 
 export type SyncClock = { at: string; deviceId: string; sequence: number };
@@ -6,7 +7,7 @@ export type SyncMetadata = { version: 3; records: Record<string, SyncRecordMetad
 export type CloudSnapshotV3 = Omit<CloudSnapshotV2, "schemaVersion"> & { schemaVersion: 3 };
 
 type Snapshot = CloudSnapshotV2 | CloudSnapshotV3;
-type CollectionName = "players" | "queuePlayers" | "courts" | "matches" | "payments" | "audits";
+type CollectionName = "players" | "queuePlayers" | "synergyTeams" | "courts" | "matches" | "payments" | "audits";
 type ClockMap = Record<string, SyncRecordMetadata>;
 
 const clone = <T,>(value: T): T => typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value)) as T;
@@ -16,14 +17,15 @@ const recordKey = (collection: string, id: string) => `${collection}/${id}`;
 const normalizedName = (value: string) => value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const collections: CollectionName[] = ["players", "queuePlayers", "courts", "matches", "payments", "audits"];
+const collections: CollectionName[] = ["players", "queuePlayers", "synergyTeams", "courts", "matches", "payments", "audits"];
+const collectionItems = (snapshot: Snapshot, collection: CollectionName) => snapshot[collection] ?? [];
 
 export function emptySyncMetadata(): SyncMetadata { return { version: 3, records: {} }; }
 
 export function seedSyncMetadata(snapshot: Snapshot, deviceId: string, at = new Date().toISOString()): SyncMetadata {
   const metadata = emptySyncMetadata();
   const clock = { at, deviceId, sequence: 0 };
-  for (const collection of collections) for (const item of snapshot[collection]) metadata.records[recordKey(collection, item.id)] = { clock };
+  for (const collection of collections) for (const item of collectionItems(snapshot, collection)) metadata.records[recordKey(collection, item.id)] = { clock };
   if (snapshot.settings) metadata.records["settings/main"] = { clock };
   metadata.records["workspace/main"] = { clock };
   if (snapshot.feeConfig) metadata.records["feeConfig/main"] = { clock };
@@ -49,8 +51,8 @@ export function stampSnapshotChanges(before: Snapshot, after: Snapshot, prior: S
   metadata.version = 3;
   const clock = { at, deviceId, sequence };
   for (const collection of collections) {
-    const previous = new Map(before[collection].map((item) => [item.id, item]));
-    const current = new Map(after[collection].map((item) => [item.id, item]));
+    const previous = new Map(collectionItems(before, collection).map((item) => [item.id, item]));
+    const current = new Map(collectionItems(after, collection).map((item) => [item.id, item]));
     for (const [id, item] of current) {
       const fields = changedFields(previous.get(id) as Record<string, unknown> | undefined, item as Record<string, unknown>);
       if (fields.length || !previous.has(id)) stampRecord(metadata, recordKey(collection, id), collection === "players" ? fields : [], clock);
@@ -95,6 +97,13 @@ function mergeMatch(local: DomainMatch, remote: DomainMatch, localMeta: SyncReco
   const games = revisions.map((revision) => ({ ...revision, games: [...new Map([...revision.games, ...(local.scoreRevisions.find((item) => item.id === revision.id)?.games ?? [])].map((item) => [item.id, item])).values()] }));
   return { ...chosen, participants, scoreRevisions: games };
 }
+const compareSynergyClock = (a: SyncClock | undefined, b: SyncClock | undefined) => { const left = a ? `${a.at}\u0000${a.sequence}` : ""; const right = b ? `${b.at}\u0000${b.sequence}` : ""; return left.localeCompare(right); };
+function normalizeSynergyTeams(snapshot: CloudSnapshotV3, metadata: SyncMetadata) {
+  const claimed = new Set<string>();
+  const queueIds = new Set(snapshot.queuePlayers.map((player) => player.id));
+  const valid = (snapshot.synergyTeams ?? []).filter((team) => Array.isArray(team.queuePlayerIds) && team.queuePlayerIds.length === 2 && team.queuePlayerIds[0] !== team.queuePlayerIds[1] && team.queuePlayerIds.every((id) => queueIds.has(id))).slice().sort((left, right) => compareSynergyClock(metadataFor(metadata, recordKey("synergyTeams", right.id)).clock, metadataFor(metadata, recordKey("synergyTeams", left.id)).clock) || right.version - left.version || left.id.localeCompare(right.id));
+  snapshot.synergyTeams = valid.filter((team) => { if (team.queuePlayerIds.some((id) => claimed.has(id))) return false; team.queuePlayerIds.forEach((id) => claimed.add(id)); return true; });
+}
 
 function isDeleted(meta: SyncRecordMetadata, recordMeta: SyncRecordMetadata) {
   return meta.tombstone && compareClock(meta.tombstone, recordMeta.clock) >= 0;
@@ -121,7 +130,17 @@ function rebuildDerivedState(snapshot: CloudSnapshotV3) {
   for (const match of snapshot.matches) for (const participant of match.participants) { if (match.status === "IN_PROGRESS") activeMatchByPlayer.set(participant.queuePlayerId, match.id); if (match.status === "QUEUED" && !queuedMatchByPlayer.has(participant.queuePlayerId)) queuedMatchByPlayer.set(participant.queuePlayerId, match.id); }
   for (const player of snapshot.queuePlayers) { const active = activeMatchByPlayer.get(player.id); const queued = queuedMatchByPlayer.get(player.id); if (active) { player.status = "PLAYING"; player.currentMatchId = active; } else if (queued) { player.status = "QUEUED"; player.currentMatchId = queued; } else if (player.status === "PLAYING" || player.status === "QUEUED") { player.status = "WAITING"; player.currentMatchId = null; } }
   for (const court of snapshot.courts) { const active = snapshot.matches.find((match) => match.status === "IN_PROGRESS" && match.courtId === court.id); court.currentMatchId = active?.id ?? null; if (court.status === "OCCUPIED" && !active) court.status = "AVAILABLE"; if (active && court.status === "AVAILABLE") court.status = "OCCUPIED"; }
-  if (snapshot.feeConfig) { const roster = snapshot.queuePlayers.slice().sort((a, b) => a.id.localeCompare(b.id)); const total = snapshot.feeConfig.expectedQueueCostMinor ?? 0; const base = roster.length ? Math.floor(total / roster.length) : 0; roster.forEach((player, index) => { player.amountDueMinor = snapshot.feeConfig?.mode === "FIXED_PER_PLAYER" ? snapshot.feeConfig.fixedAmountPerPlayerMinor ?? 0 : base + (index < total - (base * roster.length) ? 1 : 0); }); }
+  if (snapshot.feeConfig) {
+    const roster = snapshot.queuePlayers.filter((player) => snapshot.workspace.endedAt || Boolean(player.checkedInAt)).slice().sort((a, b) => a.id.localeCompare(b.id));
+    if (snapshot.workspace.endedAt) {
+      const allocations = allocateFinalFeeAmounts(snapshot.feeConfig, roster);
+      for (const player of roster) player.amountDueMinor = allocations.get(player.id) ?? 0;
+    } else {
+      const total = snapshot.feeConfig.expectedQueueCostMinor ?? 0;
+      const base = roster.length ? Math.floor(total / roster.length) : 0;
+      roster.forEach((player, index) => { player.amountDueMinor = snapshot.feeConfig?.mode === "FIXED_PER_PLAYER" ? snapshot.feeConfig.fixedAmountPerPlayerMinor ?? 0 : base + (index < total - (base * roster.length) ? 1 : 0); });
+    }
+  }
 }
 
 export function mergeSyncMetadata(local: SyncMetadata | undefined, remote: SyncMetadata | undefined): SyncMetadata {
@@ -150,8 +169,8 @@ export function mergeSyncSnapshots(local: Snapshot, remote: Snapshot, localMetad
   const result = clone(remote) as CloudSnapshotV3;
   result.schemaVersion = 3;
   for (const collection of collections) {
-    const left = new Map(local[collection].map((item) => [item.id, item]));
-    const right = new Map(remote[collection].map((item) => [item.id, item]));
+    const left = new Map(collectionItems(local, collection).map((item) => [item.id, item]));
+    const right = new Map(collectionItems(remote, collection).map((item) => [item.id, item]));
     const ids = new Set([...left.keys(), ...right.keys()]);
     (result as any)[collection] = [...ids].map((id) => {
       const key = recordKey(collection, id);
@@ -189,7 +208,9 @@ export function mergeSyncSnapshots(local: Snapshot, remote: Snapshot, localMetad
     result.queuePlayers = result.queuePlayers.filter((player) => !queueRemap.has(player.id));
     for (const match of result.matches) { for (const participant of match.participants) if (queueRemap.has(participant.queuePlayerId)) participant.queuePlayerId = queueRemap.get(participant.queuePlayerId)!; match.participants = [...new Map(match.participants.map((participant) => [participant.queuePlayerId, participant])).values()]; }
     for (const payment of result.payments) if (queueRemap.has(payment.queuePlayerId)) payment.queuePlayerId = queueRemap.get(payment.queuePlayerId)!;
+    for (const team of result.synergyTeams ?? []) team.queuePlayerIds = team.queuePlayerIds.map((id) => queueRemap.get(id) ?? id) as [string, string];
   }
+  normalizeSynergyTeams(result, metadata);
   const courtByName = new Map<string, string>();
   const courtRemap = new Map<string, string>();
   for (const court of result.courts.slice().sort((a, b) => a.id.localeCompare(b.id))) {

@@ -39,7 +39,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api, setPublicSharingActive, type AccountRole, type AccountSummary, type Court, type FeeSummary, type HistoryMatch, type Match, type Payment, type PaymentMethod, type Player, type PlayerDeletionPreview, type PlayerHistoryResponse, type PublicRankingPublication, type PublicRankingPublicationResponse, type QueuePlayer, type QueueState, type Ranking, type SessionPlayer, type SessionSummary, type Suggestion, type SuggestionNoMatchCode } from "@/lib/api";
+import { api, ApiError, onAuthRequired, setPublicSharingActive, type AccountRole, type AccountSummary, type Court, type FeeSummary, type HistoryMatch, type Match, type Payment, type PaymentMethod, type Player, type PlayerDeletionPreview, type PlayerHistoryResponse, type PublicRankingPublication, type PublicRankingPublicationResponse, type QueuePlayer, type QueueState, type Ranking, type SessionPlayer, type SessionSummary, type Suggestion, type SuggestionNoMatchCode, type SynergyTeam } from "@/lib/api";
 import { Badge, Button as UiButton, Card, Input, LoadingState, Select } from "@/components/ui";
 import { clearAccountData, confirmLocalReplacement, currentAccountId, downloadFromCloud, getMeta, hasSnapshot, retainedProfile, saveProfile, storageEstimate, syncAccount, type SyncPreview } from "@/lib/offline/repository";
 import { liveCourtStatusLabel, participantSkillLabel, playerGenderLabel } from "@/lib/live-court";
@@ -126,6 +126,14 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong. Please try again.";
 }
 
+function isAuthRequired(error: unknown) {
+  return error instanceof ApiError && error.status === 401 && error.code === "AUTH_REQUIRED";
+}
+
+function isOfflineFallbackError(error: unknown) {
+  return !(error instanceof ApiError) || error.status >= 500;
+}
+
 function statusTone(status: string): "teal" | "orange" | "gray" {
   if (["WAITING", "AVAILABLE", "ACTIVE"].includes(status)) return "teal";
   if (["PLAYING", "OCCUPIED", "QUEUED"].includes(status)) return "orange";
@@ -149,7 +157,12 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const login = useMutation({
-    mutationFn: () => api.login(username.trim(), password),
+    mutationFn: async () => {
+      const result = await api.login(username.trim(), password);
+      const verified = await api.me();
+      if (verified.user.id !== result.user.id) throw new Error("The signed-in account could not be verified.");
+      return { user: verified.user };
+    },
     onSuccess: (result) => { try { window.sessionStorage.removeItem("shuttle-queue-offline-signed-out"); } catch { /* ignore storage cleanup failures */ } onLoggedIn(result.user); toast.success("Welcome back."); },
   });
   return (
@@ -163,7 +176,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
         <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); login.mutate(); }}>
           <label className="block text-sm font-semibold">Username<Input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
           <label className="block text-sm font-semibold">Password<Input value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" type="password" required /></label>
-          {login.isError && <p className="rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{errorMessage(login.error)}</p>}
+          {login.isError && <p className="rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{isAuthRequired(login.error) ? "The server could not verify this login session. Check your connection and try again." : errorMessage(login.error)}</p>}
           <Button type="submit" className="w-full" loading={login.isPending}>Sign in</Button>
         </form>
       </Card>
@@ -171,26 +184,58 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
   );
 }
 
-function OfflineBootstrap({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+function SessionReauthenticationGate({ user, onAuthenticated, onSignOut }: { user: AuthUser; onAuthenticated: (user: AuthUser) => void; onSignOut: () => void }) {
+  const [password, setPassword] = useState("");
+  const login = useMutation({
+    mutationFn: async () => {
+      const result = await api.login(user.username, password);
+      const verified = await api.me();
+      if (verified.user.id !== user.id || result.user.id !== user.id) throw new Error("Sign in with the current account to continue.");
+      return verified.user;
+    },
+    onSuccess: (verified) => { setPassword(""); onAuthenticated(verified); toast.success("Session restored."); },
+  });
+  return <div className="fixed inset-0 z-50 grid items-end bg-[#102a2d]/45 p-0 sm:items-center sm:p-5"><div role="dialog" aria-modal="true" aria-labelledby="session-dialog-title" className="w-full rounded-t-3xl bg-white p-6 shadow-2xl sm:mx-auto sm:max-w-md sm:rounded-3xl"><div className="flex items-start gap-3"><div className="grid size-10 shrink-0 place-items-center rounded-2xl bg-[#fff0e4] text-[#a74646]"><AlertTriangle size={20} /></div><div><h2 id="session-dialog-title" className="font-semibold">Sign in to continue</h2><p className="mt-1 text-sm leading-6 text-[var(--muted)]">Your server session expired. Your downloaded queue and pending local changes are still safe; sign in to sync and continue.</p></div></div><form className="mt-5 space-y-3" onSubmit={(event) => { event.preventDefault(); login.mutate(); }}><label className="block text-sm font-semibold">Username<Input value={user.username} readOnly autoComplete="username" /></label><label className="block text-sm font-semibold">Password<Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required autoFocus /></label>{login.isError && <p role="alert" className="rounded-2xl bg-[#fff0e4] px-3 py-2 text-sm text-[#8d4824]">{isAuthRequired(login.error) ? "The new session could not be verified. Please try again." : errorMessage(login.error)}</p>}<div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="quiet" type="button" onClick={onSignOut} disabled={login.isPending}>Sign out</Button><Button type="submit" loading={login.isPending}>Sign in and continue</Button></div></form></div></div>;
+}
+
+function LogoutDialog({ pending, onKeep, onRemove, onClose }: { pending: boolean; onKeep: () => void; onRemove: () => void; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const listener = (event: KeyboardEvent) => { if (event.key === "Escape" && !pending) onClose(); };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, [onClose, pending]);
+  return <div className="fixed inset-0 z-50 grid items-end bg-[#102a2d]/45 p-0 sm:items-center sm:p-5"><div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="logout-dialog-title" className="w-full rounded-t-3xl bg-white p-6 shadow-2xl outline-none sm:mx-auto sm:max-w-md sm:rounded-3xl"><div className="flex items-start gap-3"><div className="grid size-10 shrink-0 place-items-center rounded-2xl bg-[#edf8f4] text-[var(--teal)]"><LogOut size={20} /></div><div><h2 id="logout-dialog-title" className="font-semibold">Sign out of Shuttle Queue?</h2><p className="mt-1 text-sm leading-6 text-[var(--muted)]">Keep downloaded data to preserve pending queue work and continue offline. Remove it only if this is a shared device.</p></div></div><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="quiet" disabled={pending} onClick={onClose}>Cancel</Button><Button variant="quiet" disabled={pending} onClick={onKeep}>Sign out and keep data</Button><Button variant="danger" loading={pending} onClick={onRemove}>Remove data and sign out</Button></div></div></div>;
+}
+
+function OfflineBootstrap({ user, onLogout, onSessionRequired }: { user: AuthUser; onLogout: () => void; onSessionRequired: () => void }) {
   const queryClient = useQueryClient();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => onAuthRequired(() => onSessionRequired()), [onSessionRequired]);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       await saveProfile({ accountId: user.id, username: user.username, role: user.role, updatedAt: new Date().toISOString() });
-      try { await syncAccount(user.id); queryClient.invalidateQueries(); } catch (reason) { if (!(await hasSnapshot(user.id))) { if (!cancelled) setError(errorMessage(reason)); return; } }
+      try { await syncAccount(user.id); queryClient.invalidateQueries(); } catch (reason) {
+        if (isAuthRequired(reason)) onSessionRequired();
+        else if (!(await hasSnapshot(user.id))) { if (!cancelled) setError(errorMessage(reason)); return; }
+      }
       if (!cancelled) setReady(true);
     })();
     return () => { cancelled = true; };
-  }, [user, queryClient]);
+  }, [user, queryClient, onSessionRequired]);
   useEffect(() => {
-    const attempt = () => { if (navigator.onLine) void syncAccount(user.id).then(() => queryClient.invalidateQueries()).catch(() => undefined); };
+    const attempt = () => {
+      if (!navigator.onLine) return;
+      void syncAccount(user.id).then(() => queryClient.invalidateQueries()).catch((reason) => { if (isAuthRequired(reason)) onSessionRequired(); });
+    };
     const onVisible = () => { if (document.visibilityState === "visible") attempt(); };
     window.addEventListener("online", attempt); document.addEventListener("visibilitychange", onVisible);
     const timer = window.setInterval(attempt, 60_000);
     return () => { window.removeEventListener("online", attempt); document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
-  }, [user.id, queryClient]);
+  }, [user.id, queryClient, onSessionRequired]);
   useEffect(() => {
     let shared = false;
     let cancelled = false;
@@ -511,7 +556,50 @@ function PlayerQueueRow({ player, sessionId, onChanged, onRemove, canRemove = tr
   const waive = useMutation({ mutationFn: () => api.waiveLatePenalty(sessionId, player.id, player.version), onSuccess: () => { onChanged(); toast.success(`${player.displayName}'s late penalty was waived.`); } });
   const action = player.status === "INACTIVE" || player.status === "CHECKED_OUT" ? { label: "Check in", intent: "checkIn" as const } : player.status === "WAITING" ? { label: "Rest", intent: "rest" as const } : player.status === "RESTING" ? { label: "Resume", intent: "resume" as const } : null;
   const canCheckOut = player.status === "WAITING" || player.status === "RESTING";
-  return <div className={`grid ${QUEUE_TABLE_GRID_COLUMNS} items-center gap-2 border-b border-[var(--line)] px-3 py-3 text-sm last:border-0 max-md:grid-cols-[minmax(0,1fr)_auto] max-md:gap-y-2`}><div className="flex min-w-0 items-start gap-2"><div className="shrink-0 pt-1"><input type="checkbox" aria-label={`Select ${player.displayName}`} checked={selected} disabled={disabled || bulkPending || !canSelectQueuePlayer(player)} onChange={(event) => onToggle?.(event.target.checked)} /></div><div className="min-w-0"><p className="truncate font-semibold">{player.displayName}</p><p className="text-xs text-[var(--muted)]">{player.gender === "MALE" ? "Male" : "Female"}</p><div className="mt-1"><LatePenaltyBadge state={player.latePenaltyState} />{restMessage(player) && <p className="mt-1 text-xs text-[#8d4824]">{restMessage(player)}</p>}</div></div></div><span className="text-xs text-[var(--muted)] max-md:hidden">{pretty(player.skillLevel)}</span><span className="text-xs text-[var(--muted)] max-md:hidden">{player.matchesPlayed}</span><span className="text-xs text-[var(--muted)] max-md:hidden">{waitMinutes(player)}</span><span className="max-md:justify-self-end"><StatusBadge status={player.status} /></span><span className="text-xs text-[var(--muted)] max-md:hidden">{player.wins}W / {player.losses}L</span><div className="flex flex-wrap justify-end gap-2 max-md:col-span-2 max-md:col-start-1 max-md:row-start-2 max-md:w-full max-md:border-t max-md:border-[var(--line)] max-md:pt-2">{canRemove && (player.status === "INACTIVE" || player.status === "CHECKED_OUT") && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={removePending} disabled={disabled || bulkPending || removePending || mutation.isPending || waive.isPending} aria-label={`Remove ${player.displayName} from queue`} title={`Remove ${player.displayName} from queue`} onClick={() => onRemove(player)}>Remove</Button>}{action && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={mutation.isPending} disabled={disabled || bulkPending || removePending || waive.isPending} onClick={() => mutation.mutate(action.intent)}>{action.label}</Button>}{canCheckOut && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={mutation.isPending} disabled={disabled || bulkPending || removePending || waive.isPending} onClick={() => mutation.mutate("checkOut")}>Check out</Button>}{player.latePenaltyState === "PENDING" && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={waive.isPending} disabled={disabled || bulkPending || removePending || mutation.isPending} onClick={() => { if (window.confirm(`Waive ${player.displayName}'s one-time late penalty?`)) waive.mutate(); }}>Waive</Button>}{(mutation.isError || waive.isError) && <p className="mt-1 w-full text-xs text-[#8d4824]">{errorMessage(mutation.error ?? waive.error)}</p>}</div></div>;
+  return <div className={`grid ${QUEUE_TABLE_GRID_COLUMNS} items-center gap-2 border-b border-[var(--line)] px-3 py-3 text-sm last:border-0 max-md:grid-cols-[minmax(0,1fr)_auto] max-md:gap-y-2`}><div className="flex min-w-0 items-start gap-2"><div className="shrink-0 pt-1"><input type="checkbox" aria-label={`Select ${player.displayName}`} checked={selected} disabled={disabled || bulkPending || !canSelectQueuePlayer(player)} onChange={(event) => onToggle?.(event.target.checked)} /></div><div className="min-w-0"><p className="truncate font-semibold">{player.displayName}</p><p className="text-xs text-[var(--muted)]">{player.gender === "MALE" ? "Male" : "Female"}</p>{player.synergyTeamId && <p className="mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full bg-[#edf8f4] px-2 py-0.5 text-[11px] font-semibold text-[var(--teal)]" title="Locked Synergy Team">Synergy · {player.synergyPartnerName ?? "locked partner"} · {pretty(player.effectiveSkillLevel ?? player.skillLevel)} ({player.effectiveSkillWeight ?? player.skillWeight})</p>}<div className="mt-1"><LatePenaltyBadge state={player.latePenaltyState} />{restMessage(player) && <p className="mt-1 text-xs text-[#8d4824]">{restMessage(player)}</p>}</div></div></div><span className="text-xs text-[var(--muted)] max-md:hidden">{pretty(player.skillLevel)}</span><span className="text-xs text-[var(--muted)] max-md:hidden">{player.matchesPlayed}</span><span className="text-xs text-[var(--muted)] max-md:hidden">{waitMinutes(player)}</span><span className="max-md:justify-self-end"><StatusBadge status={player.status} /></span><span className="text-xs text-[var(--muted)] max-md:hidden">{player.wins}W / {player.losses}L</span><div className="flex flex-wrap justify-end gap-2 max-md:col-span-2 max-md:col-start-1 max-md:row-start-2 max-md:w-full max-md:border-t max-md:border-[var(--line)] max-md:pt-2">{canRemove && (player.status === "INACTIVE" || player.status === "CHECKED_OUT") && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={removePending} disabled={disabled || bulkPending || removePending || mutation.isPending || waive.isPending} aria-label={`Remove ${player.displayName} from queue`} title={`Remove ${player.displayName} from queue`} onClick={() => onRemove(player)}>Remove</Button>}{action && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={mutation.isPending} disabled={disabled || bulkPending || removePending || waive.isPending} onClick={() => mutation.mutate(action.intent)}>{action.label}</Button>}{canCheckOut && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={mutation.isPending} disabled={disabled || bulkPending || removePending || waive.isPending} onClick={() => mutation.mutate("checkOut")}>Check out</Button>}{player.latePenaltyState === "PENDING" && <Button variant="quiet" className="whitespace-nowrap px-3 py-1.5 text-xs" loading={waive.isPending} disabled={disabled || bulkPending || removePending || mutation.isPending} onClick={() => { if (window.confirm(`Waive ${player.displayName}'s one-time late penalty?`)) waive.mutate(); }}>Waive</Button>}{(mutation.isError || waive.isError) && <p className="mt-1 w-full text-xs text-[#8d4824]">{errorMessage(mutation.error ?? waive.error)}</p>}</div></div>;
+}
+
+function SynergyTeamsCard({ sessionId, queue, ended, onChanged }: { sessionId: string; queue: QueueState; ended: boolean; onChanged: () => void }) {
+  const [editing, setEditing] = useState<SynergyTeam | null | undefined>(undefined);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const allPlayers = useMemo(() => [...queue.waiting, ...queue.resting, ...queue.inactive, ...queue.queued, ...queue.playing], [queue]);
+  const byId = useMemo(() => new Map(allPlayers.map((player) => [player.id, player])), [allPlayers]);
+  const teams = useMemo(() => queue.synergyTeams ?? [], [queue.synergyTeams]);
+  const paired = useMemo(() => new Set(teams.flatMap((team) => team.queuePlayerIds)), [teams]);
+  const candidates = useMemo(() => { const needle = search.trim().toLowerCase(); return allPlayers.filter((player) => !needle || `${player.displayName} ${player.skillLevel} ${player.status}`.toLowerCase().includes(needle)); }, [allPlayers, search]);
+  const create = useMutation({ mutationFn: () => { if (selected.length !== 2) throw new Error("Choose two queue players."); return api.createSynergyTeam(sessionId, selected as [string, string]); }, onSuccess: () => { setEditing(undefined); setSelected([]); setSearch(""); onChanged(); toast.success("Synergy Team created."); } });
+  const update = useMutation({ mutationFn: () => { if (!editing || selected.length !== 2) throw new Error("Choose two queue players."); return api.updateSynergyTeam(sessionId, editing, selected as [string, string]); }, onSuccess: () => { setEditing(undefined); setSelected([]); setSearch(""); onChanged(); toast.success("Synergy Team updated."); } });
+  const dissolve = useMutation({ mutationFn: (team: SynergyTeam) => api.deleteSynergyTeam(sessionId, team), onSuccess: () => { onChanged(); toast.success("Synergy Team dissolved."); } });
+  const pending = create.isPending || update.isPending;
+  useEffect(() => {
+    if (editing === undefined) return undefined;
+    dialogRef.current?.focus();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (!pending) { setEditing(undefined); setSelected([]); }
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href]")].filter((element) => !element.hasAttribute("disabled"));
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, [editing, pending]);
+  const openCreate = () => { setEditing(null); setSelected([]); setSearch(""); create.reset(); update.reset(); };
+  const openEdit = (team: SynergyTeam) => { setEditing(team); setSelected([...team.queuePlayerIds]); setSearch(""); create.reset(); update.reset(); };
+  const toggle = (player: SessionPlayer) => { if (player.status === "QUEUED" || player.status === "PLAYING") return; setSelected((current) => current.includes(player.id) ? current.filter((id) => id !== player.id) : current.length < 2 ? [...current, player.id] : [current[1]!, player.id]); };
+  const effectiveWeight = selected.reduce((max, id) => Math.max(max, byId.get(id)?.skillWeight ?? 0), 0);
+  const effectiveLevel = Object.entries({ NEWBIE: 1, BEGINNER: 2, UPPER_BEGINNER: 3, INTERMEDIATE: 4, UPPER_INTERMEDIATE: 5, ADVANCED: 6 }).find(([, value]) => value === effectiveWeight)?.[0];
+  return <Card className="synergy-teams-card"><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Session locks</p><h3 className="display mt-1 text-2xl">Synergy Teams</h3><p className="mt-1 max-w-2xl text-sm text-[var(--muted)]">Lock two players together for every future game. Their original skills stay unchanged; matchmaking uses the higher skill.</p></div><Button onClick={openCreate} disabled={ended || allPlayers.length < 2}><Plus size={16} /> Add team</Button></div>{teams.length === 0 ? <p className="mt-4 rounded-2xl bg-[#fbfdfb] px-4 py-3 text-sm text-[var(--muted)]">No locked pairs yet. Queue status actions remain individual.</p> : <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{teams.map((team) => { const first = byId.get(team.queuePlayerIds[0]); const second = byId.get(team.queuePlayerIds[1]); return <div key={team.id} className="rounded-2xl border border-[var(--line)] bg-[#fbfdfb] p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate font-semibold">{first?.displayName ?? "Unknown player"} <span className="text-[var(--muted)]">+</span> {second?.displayName ?? "Unknown player"}</p><p className="mt-1 text-xs text-[var(--muted)]">{first?.skillLevel ? pretty(first.skillLevel) : "—"} · {first?.status ?? "Unavailable"} <span className="mx-1">·</span> {second?.skillLevel ? pretty(second.skillLevel) : "—"} · {second?.status ?? "Unavailable"}</p></div><Badge tone="teal">{pretty(team.effectiveSkillLevel)} skill</Badge></div><div className="mt-3 flex items-center justify-between gap-2"><span className="text-xs text-[var(--muted)]">Matchmaking skill <strong className="text-[var(--ink)]">{team.effectiveSkillWeight}</strong></span><div className="flex gap-2"><Button variant="quiet" className="px-3 py-1.5 text-xs" disabled={ended || [first, second].some((player) => player?.status === "QUEUED" || player?.status === "PLAYING")} onClick={() => openEdit(team)}><Pencil size={14} /> Edit</Button><Button variant="quiet" className="px-3 py-1.5 text-xs" disabled={ended || dissolve.isPending || [first, second].some((player) => player?.status === "QUEUED" || player?.status === "PLAYING")} onClick={() => { if (window.confirm("Dissolve this Synergy Team?")) dissolve.mutate(team); }}><X size={14} /> Dissolve</Button></div></div></div>; })}</div>}
+    {editing !== undefined && <div className="fixed inset-0 z-50 grid items-end bg-[#102a2d]/45 p-0 sm:items-center sm:p-5"><div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="synergy-dialog-title" className="max-h-[90vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl outline-none sm:mx-auto sm:max-w-xl sm:rounded-3xl"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Synergy Team</p><h2 id="synergy-dialog-title" className="display mt-1 text-3xl">{editing ? "Edit locked pair" : "Create locked pair"}</h2></div><Button variant="quiet" className="px-3" onClick={() => { if (!pending) { setEditing(undefined); setSelected([]); } }} aria-label="Close Synergy Team dialog"><X size={18} /></Button></div><div className="mt-5 grid grid-cols-2 gap-2">{[0, 1].map((slot) => { const player = selected[slot] ? byId.get(selected[slot]!) : undefined; return <div key={slot} className="min-h-16 rounded-2xl border border-dashed border-[var(--line)] bg-[#fbfdfb] p-3"><p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">Member {slot + 1}</p><p className="mt-1 truncate text-sm font-semibold">{player?.displayName ?? "Choose below"}</p>{player && <p className="text-xs text-[var(--muted)]">{pretty(player.skillLevel)} · {player.status}</p>}</div>; })}</div><label className="mt-4 block text-sm font-semibold">Search session players<Input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name, status, or skill" /></label><div className="mt-3 max-h-56 space-y-2 overflow-y-auto">{candidates.map((player) => { const busy = player.status === "QUEUED" || player.status === "PLAYING"; const alreadyPaired = paired.has(player.id) && !selected.includes(player.id); return <button type="button" key={player.id} onClick={() => toggle(player)} disabled={busy || alreadyPaired} className={`focus-ring flex min-h-11 w-full items-center justify-between rounded-2xl border px-3 py-2 text-left ${selected.includes(player.id) ? "border-[var(--teal)] bg-[#edf8f4]" : "border-[var(--line)] bg-white"}`}><span className="min-w-0"><span className="block truncate text-sm font-semibold">{player.displayName}</span><span className="block text-xs text-[var(--muted)]">{pretty(player.skillLevel)} · {player.status}{busy ? " · Busy" : alreadyPaired ? " · Already paired" : ""}</span></span>{selected.includes(player.id) && <Check size={16} className="text-[var(--teal)]" />}</button>; })}</div>{selected.length === 2 && <p className="mt-4 rounded-2xl bg-[#edf8f4] px-3 py-2 text-sm">Matchmaking skill preview: <strong>{effectiveLevel ? pretty(effectiveLevel) : "—"} ({effectiveWeight})</strong></p>}{(create.isError || update.isError) && <p role="alert" className="mt-3 rounded-2xl bg-[#fff0e4] px-3 py-2 text-sm text-[#8d4824]">{errorMessage(create.error ?? update.error)}</p>}<div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="quiet" onClick={() => { setEditing(undefined); setSelected([]); }} disabled={pending}>Cancel</Button><Button onClick={() => editing ? update.mutate() : create.mutate()} disabled={selected.length !== 2 || pending}>{pending ? "Saving…" : editing ? "Save pair" : "Create pair"}</Button></div></div></div>}
+  </Card>;
 }
 
 function ManualPlayerPicker({ team, players, selectedIds, onSelect, onClose }: { team: "A" | "B"; players: SessionPlayer[]; selectedIds: Set<string>; onSelect: (player: SessionPlayer) => void; onClose: () => void }) {
@@ -580,7 +668,7 @@ function SuggestedPlayerPicker({
   const dialogRef = useRef<HTMLDivElement>(null);
   const eligible = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return players.filter((player) => player.status === "WAITING" && !selectedIds.has(player.id) && (!needle || `${player.displayName} ${player.gender} ${player.skillLevel}`.toLowerCase().includes(needle)));
+    return players.filter((player) => player.status === "WAITING" && !player.synergyTeamId && !selectedIds.has(player.id) && (!needle || `${player.displayName} ${player.gender} ${player.skillLevel}`.toLowerCase().includes(needle)));
   }, [players, search, selectedIds]);
   useEffect(() => {
     dialogRef.current?.focus();
@@ -609,8 +697,8 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   const [draft, setDraft] = useState<SuggestionDraft | null>(persisted.draft);
   const [editing, setEditing] = useState(persisted.editing);
   const [courtId, setCourtIdRaw] = useState(persisted.courtId);
-  const [manualTeamA, setManualTeamA] = useState<string[]>([]);
-  const [manualTeamB, setManualTeamB] = useState<string[]>([]);
+  const [manualTeamA, setManualTeamARaw] = useState<string[]>([]);
+  const [manualTeamB, setManualTeamBRaw] = useState<string[]>([]);
   const [pickerTarget, setPickerTarget] = useState<SuggestionPickerTarget | null>(null);
   const [suggestionScope, setSuggestionScope] = useState(persisted.suggestionScope);
   const [suggestionCycle, setSuggestionCycle] = useState<{ scope: string; keys: string[] }>(persisted.suggestionCycle);
@@ -682,6 +770,19 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   const suggest = useMutation({ mutationFn: () => api.suggestions(sessionId, suggestionApiMode(mode), suggestionStrengthGap(mode), excludedSuggestionKeys), onSuccess: (result) => { if (!result.suggestion) { setNoMatch(result.noMatch ?? null); const fallbackMode = result.noMatch?.code === "NO_EXACT_STRENGTH_GAP" ? nextTighterMatchMode(mode) : null; if (fallbackMode) { setMode(fallbackMode); setSuggestion(null); setDraft(null); setEditing(false); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setPickerTarget(null); setCourtIdRaw(""); toast.message(`${result.noMatch?.message ?? "No exact handicap lineup is available."} ${matchModeLabel(fallbackMode)} is selected; generate again to try it.`); } else toast.message(result.noMatch?.message ?? "No valid group is available yet."); return; } setNoMatch(null); const nextSuggestion = result.suggestion; setSuggestion(nextSuggestion); setDraft({ teamA: nextSuggestion.teamA.map((player) => player.id), teamB: nextSuggestion.teamB.map((player) => player.id) }); setSuggestionScope(cycleScope); setEditing(false); setPickerTarget(null); setCourtIdRaw(availableCourts[0]?.id ?? ""); setSuggestionCycle((current) => { const keys = result.cycleRestarted || current.scope !== cycleScope ? [] : current.keys; return { scope: cycleScope, keys: [...new Set([...keys, nextSuggestion.key])].slice(-50) }; }); }, onError: (error) => toast.error(errorMessage(error)) });
   const createSuggested = useMutation({ mutationFn: ({ startNow }: { startNow: boolean }) => { if (!suggestion || !draft || !draftReady) throw new Error(draftConstraintError ?? "Every selected player must still be waiting."); if (expired) throw new Error("This suggestion expired. Generate a new suggestion or continue in Manual mode."); if (startNow && !courtId) throw new Error("Select an available court first."); return api.createSuggestedMatch(sessionId, { teamA: draft.teamA, teamB: draft.teamB, suggestionToken: suggestion.token, suggestionAdjusted: isAdjusted, ...(startNow ? { courtId } : {}) }); }, onSuccess: (_match, variables) => { setSuggestion(null); setDraft(null); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setEditing(false); setPickerTarget(null); setCourtId(""); onChanged(); toast.success(variables.startNow ? "Match started." : "Match queued."); } });
   const [manualPickerTeam, setManualPickerTeam] = useState<SuggestionTeam | null>(null);
+  const expandManualPair = (ids: string[]) => {
+    const result = [...new Set(ids)];
+    for (const queuePlayerId of result.slice()) {
+      const team = (queue.synergyTeams ?? []).find((candidate) => candidate.queuePlayerIds.includes(queuePlayerId));
+      const partner = team?.queuePlayerIds.find((id) => id !== queuePlayerId);
+      if (partner && !result.includes(partner)) result.push(partner);
+    }
+    // A locked pair consumes two slots. Keep the prior selection if adding a
+    // pair would overflow a two-player side instead of creating a split pair.
+    return result.length <= 2 ? result : ids;
+  };
+  const setManualTeamA = (next: string[] | ((current: string[]) => string[])) => setManualTeamARaw((current) => expandManualPair(typeof next === "function" ? next(current) : next));
+  const setManualTeamB = (next: string[] | ((current: string[]) => string[])) => setManualTeamBRaw((current) => expandManualPair(typeof next === "function" ? next(current) : next));
   const selectedManualIds = useMemo(() => new Set([...manualTeamA, ...manualTeamB]), [manualTeamA, manualTeamB]);
   const manualReady = manualTeamA.length > 0 && manualTeamA.length === manualTeamB.length && [1, 2].includes(manualTeamA.length) && new Set([...manualTeamA, ...manualTeamB]).size === manualTeamA.length + manualTeamB.length && [...manualTeamA, ...manualTeamB].every((id) => ["WAITING", "PLAYING", "QUEUED", "RESTING"].includes(manualById.get(id)?.status ?? ""));
   const manualCanStart = manualReady && [...manualTeamA, ...manualTeamB].every((id) => { const player = manualById.get(id); return player?.status === "WAITING" && (!player.restEligibleAt || Date.parse(player.restEligibleAt) <= clock); });
@@ -691,8 +792,42 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged }: { sessionId: s
   const changeMode = (nextMode: string) => { if (nextMode === mode) return; if (isAdjusted && !window.confirm("Discard your edited lineup and generate in the new mode?")) return; setMode(nextMode); setNoMatch(null); setSuggestion(null); setDraft(null); setSuggestionScope(""); setSuggestionCycle({ scope: "", keys: [] }); setEditing(false); setPickerTarget(null); setCourtId(""); };
   const requestSuggestion = () => { if (isAdjusted && !window.confirm("Discard this edited lineup and generate another suggestion?")) return; suggest.mutate(); };
   const resetDraft = () => { if (!originalDraft) return; setDraft({ teamA: [...originalDraft.teamA], teamB: [...originalDraft.teamB] }); setNoMatch(null); setEditing(false); setPickerTarget(null); };
-  const replaceSlot = (player: SessionPlayer) => { if (!pickerTarget || !draft) return; setDraft((current) => { if (!current) return current; const next = { teamA: [...current.teamA], teamB: [...current.teamB] }; next[pickerTarget.team === "A" ? "teamA" : "teamB"][pickerTarget.slot] = player.id; return next; }); setPickerTarget(null); };
-  const swapSlots = (target: SuggestionPickerTarget) => { if (!pickerTarget || !draft) return; setDraft((current) => { if (!current) return current; const next = { teamA: [...current.teamA], teamB: [...current.teamB] }; const sourceKey = pickerTarget.team === "A" ? "teamA" : "teamB"; const targetKey = target.team === "A" ? "teamA" : "teamB"; const sourceId = next[sourceKey][pickerTarget.slot]; const targetId = next[targetKey][target.slot]; if (!sourceId || !targetId) return current; next[sourceKey][pickerTarget.slot] = targetId; next[targetKey][target.slot] = sourceId; return next; }); setPickerTarget(null); };
+  const replaceSlot = (player: SessionPlayer) => {
+    if (!pickerTarget || !draft) return;
+    setDraft((current) => {
+      if (!current) return current;
+      const sourceKey = pickerTarget.team === "A" ? "teamA" : "teamB";
+      const sourceId = current[sourceKey][pickerTarget.slot];
+      if (sourceId && getPlayer(sourceId)?.synergyTeamId) {
+        toast.message("Locked partners must be changed together in the Synergy Teams card.");
+        return current;
+      }
+      const next = { teamA: [...current.teamA], teamB: [...current.teamB] };
+      next[sourceKey][pickerTarget.slot] = player.id;
+      return next;
+    });
+    setPickerTarget(null);
+  };
+  const swapSlots = (target: SuggestionPickerTarget) => {
+    if (!pickerTarget || !draft) return;
+    setDraft((current) => {
+      if (!current) return current;
+      const sourceKey = pickerTarget.team === "A" ? "teamA" : "teamB";
+      const targetKey = target.team === "A" ? "teamA" : "teamB";
+      const sourceId = current[sourceKey][pickerTarget.slot];
+      const targetId = current[targetKey][target.slot];
+      if (!sourceId || !targetId) return current;
+      if (getPlayer(sourceId)?.synergyTeamId || getPlayer(targetId)?.synergyTeamId) {
+        toast.message("Locked partners cannot be split. Change the pair in the Synergy Teams card.");
+        return current;
+      }
+      const next = { teamA: [...current.teamA], teamB: [...current.teamB] };
+      next[sourceKey][pickerTarget.slot] = targetId;
+      next[targetKey][target.slot] = sourceId;
+      return next;
+    });
+    setPickerTarget(null);
+  };
   const transferToManual = () => { if (!draft || unavailableIds.length > 0) { toast.error("Replace unavailable players before continuing in Manual mode."); return; } setManualTeamA([...draft.teamA]); setManualTeamB([...draft.teamB]); setPanelMode("manual"); setSuggestion(null); setDraft(null); setEditing(false); setPickerTarget(null); setCourtId(""); };
   const renderSlot = (team: SuggestionTeam, slot: number) => { const id = draft?.[team === "A" ? "teamA" : "teamB"][slot]; const player = id ? getPlayer(id) : undefined; const unavailable = Boolean(id && !waitingById.has(id)); const content = <><span className="min-w-0 flex-1"><span className="block truncate font-semibold">{player?.displayName ?? "Player unavailable"}</span><span className="block truncate text-xs text-[var(--muted)]">{player ? `${playerDetails(player)} · ${player.matchesPlayed} games` : "No longer waiting"}</span></span>{editing && <ChevronDown size={15} className="shrink-0 text-[var(--muted)]" />}</>; return editing ? <button type="button" key={`${team}-${slot}`} className={`focus-ring flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left ${unavailable ? "border-[#d98964] bg-[#fffaf5]" : "border-[var(--line)] bg-white"}`} onClick={() => setPickerTarget({ team, slot })}>{content}</button> : <div key={`${team}-${slot}`} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${unavailable ? "border-[#d98964] bg-[#fffaf5]" : "border-[var(--line)] bg-white"}`}>{content}</div>; };
   const showSuggested = Boolean(suggestion && draft);
@@ -745,7 +880,8 @@ function QueueViewContent({ sessionId }: { sessionId: string }) {
 
 function QueueView({ sessionId }: { sessionId: string }) {
   const workspaceQuery = useQuery({ queryKey: ["workspace", sessionId], queryFn: api.workspace });
-  return <div className="space-y-5">{workspaceQuery.data && <EndSessionControl session={workspaceQuery.data} />}<QueueViewContent sessionId={sessionId} /></div>;
+  const queueQuery = useQuery({ queryKey: ["queue", sessionId], queryFn: () => api.queue(sessionId), refetchInterval: 8000 });
+  return <div className="space-y-5">{workspaceQuery.data && <EndSessionControl session={workspaceQuery.data} />}{queueQuery.data && <SynergyTeamsCard sessionId={sessionId} queue={queueQuery.data} ended={workspaceQuery.data?.status === "ENDED"} onChanged={() => { void queueQuery.refetch(); }} />}<QueueViewContent sessionId={sessionId} /></div>;
 }
 
 function EditPlayerDialog({ player, pending, error, onConfirm, onClose }: { player: Player; pending: boolean; error?: unknown; onConfirm: (body: { displayName: string; gender: "MALE" | "FEMALE"; skillLevel: string }) => void; onClose: () => void }) {
@@ -907,6 +1043,16 @@ function MinimumRestSettingsCard() {
   return <Card><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Player recovery</p><h3 className="display mt-1 text-3xl">Minimum rest time.</h3></div><Badge tone={Number(current) > 0 ? "teal" : "gray"}>{Number(current) > 0 ? `${current} min` : "No delay"}</Badge></div><p className="mt-3 text-sm leading-6 text-[var(--muted)]">Players become eligible exactly after this many minutes from the end of their last match. Queued matchups may wait, but an immediate start is blocked until everyone is ready.</p><div className="mt-4 flex max-w-sm items-end gap-3"><label className="block flex-1 text-sm font-semibold">Rest minutes<Input type="number" min={0} max={60} step={1} value={current} onChange={(event) => setValue(event.target.value)} /></label><Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button></div>{save.isError && <p role="alert" className="mt-3 text-xs text-[#8d4824]">{errorMessage(save.error)}</p>}</Card>;
 }
 
+function NoShowPenaltySettingsCard({ sessionId }: { sessionId: string }) {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const [value, setValue] = useState<string | undefined>(undefined);
+  const current = value ?? String((settingsQuery.data?.noShowPenaltyMinor ?? 0) / 100);
+  const save = useMutation({ mutationFn: () => { const amountMinor = Math.round(Number(current) * 100); if (!Number.isFinite(amountMinor) || amountMinor < 0 || amountMinor > 2_000_000_000) throw new Error("No-show penalty must be a valid non-negative amount."); return api.updateSettings({ noShowPenaltyMinor: amountMinor }, settingsQuery.data?.version); }, onSuccess: (updated) => { setValue(String(updated.noShowPenaltyMinor / 100)); queryClient.setQueryData(["settings"], updated); queryClient.invalidateQueries({ queryKey: ["fees", sessionId] }); queryClient.invalidateQueries({ queryKey: ["workspace", sessionId] }); queryClient.invalidateQueries({ queryKey: ["workspace"] }); toast.success("No-show penalty updated."); } });
+  if (settingsQuery.isPending) return <LoadingState label="Loading no-show penalty settings" />;
+  return <Card><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--teal)]">Attendance fees</p><h3 className="display mt-1 text-3xl">No-show penalty.</h3></div><Badge tone={Number(current) > 0 ? "orange" : "gray"}>{Number(current) > 0 ? current : "Disabled"}</Badge></div><p className="mt-3 text-sm leading-6 text-[var(--muted)]">At session end, every rostered player with zero completed matches is marked “Did not play” and owes this amount instead of the normal fee. Enter 0 to disable the charge. Ended-session charges remain frozen.</p><div className="mt-4 flex max-w-sm items-end gap-3"><label className="block flex-1 text-sm font-semibold">Penalty amount ({settingsQuery.data?.currencyCode ?? "PHP"})<Input type="number" min={0} step="0.01" inputMode="decimal" value={current} onChange={(event) => setValue(event.target.value)} placeholder="0.00" /></label><Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button></div>{save.isError && <p role="alert" className="mt-3 text-xs text-[#8d4824]">{errorMessage(save.error)}</p>}</Card>;
+}
+
 function SessionSettingsControls({ session, sessionId, accountId, onReset, onDeleted }: { session: SessionSummary; sessionId: string; accountId?: string; onReset: (session: SessionSummary) => void; onDeleted: () => void }) {
   const queryClient = useQueryClient();
   const [confirmAction, setConfirmAction] = useState<"reset" | "delete" | null>(null);
@@ -953,7 +1099,7 @@ function SuperAdminSettings({ user }: { user: AuthUser }) {
 }
 
 function SettingsView(props: { session: SessionSummary; sessionId: string; user: AuthUser; onReset: (session: SessionSummary) => void; onDeleted: () => void }) {
-  return <div className="space-y-5"><h2 className="sr-only">Offline settings</h2><OfflineSyncPanel accountId={props.user.id} /><AccountSecuritySettings />{props.user.role === "SUPER_ADMIN" && <SuperAdminSettings user={props.user} />}<MinimumRestSettingsCard /><LateArrivalSettingsCard session={props.session} sessionId={props.sessionId} /><EndSessionControl session={props.session} /><QueueSettingsControls session={props.session} onReset={props.onReset} /></div>;
+  return <div className="space-y-5"><h2 className="sr-only">Offline settings</h2><OfflineSyncPanel accountId={props.user.id} /><AccountSecuritySettings />{props.user.role === "SUPER_ADMIN" && <SuperAdminSettings user={props.user} />}<MinimumRestSettingsCard /><NoShowPenaltySettingsCard sessionId={props.sessionId} /><LateArrivalSettingsCard session={props.session} sessionId={props.sessionId} /><EndSessionControl session={props.session} /><QueueSettingsControls session={props.session} onReset={props.onReset} /></div>;
 }
 
 function formatHistoryDuration(seconds: number | null) {
@@ -998,15 +1144,26 @@ function FeesView({ sessionId }: { sessionId: string }) {
   const payments = paymentsQuery.data ?? EMPTY_PAYMENTS;
   const currency = fee?.config?.currencyCode ?? "PHP";
   const checkedInIds = useMemo(() => new Set((sessionPlayersQuery.data ?? []).filter((player) => Boolean(player.checkedInAt)).map((player) => player.id)), [sessionPlayersQuery.data]);
-  const payablePlayers = useMemo(() => (fee?.players ?? []).filter((player) => checkedInIds.has(feePlayerId(player)) && player.outstandingMinor > 0), [fee, checkedInIds]);
+  const payablePlayers = useMemo(() => (fee?.players ?? []).filter((player) => (player.isNoShow || checkedInIds.has(feePlayerId(player))) && player.outstandingMinor > 0), [fee, checkedInIds]);
+  const noShowPlayers = useMemo(() => (fee?.players ?? []).filter((player) => player.isNoShow), [fee]);
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!fee) return;
     const nextMode = fee.config?.mode ?? "FIXED_PER_PLAYER";
     setMode(nextMode);
-    setConfigAmount(String(((nextMode === "EQUAL_SPLIT" ? fee.config?.expectedSessionCostMinor : fee.config?.fixedAmountPerPlayerMinor) ?? 0) / 100));
-    if (!payablePlayers.some((player) => feePlayerId(player) === selectedPlayerId)) setSelectedPlayerId(payablePlayers[0] ? feePlayerId(payablePlayers[0]) : "");
+    setConfigAmount(String(((nextMode === "EQUAL_SPLIT" ? fee.config?.expectedSessionCostMinor ?? fee.config?.expectedQueueCostMinor : fee.config?.fixedAmountPerPlayerMinor) ?? 0) / 100));
+    if (!payablePlayers.some((player) => feePlayerId(player) === selectedPlayerId)) {
+      const next = payablePlayers[0];
+      setSelectedPlayerId(next ? feePlayerId(next) : "");
+      setPaymentAmount(next ? String(next.outstandingMinor / 100) : "");
+    }
   }, [fee, payablePlayers, selectedPlayerId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    const player = payablePlayers.find((item) => feePlayerId(item) === selectedPlayerId);
+    if (player) setPaymentAmount(String(player.outstandingMinor / 100));
+  }, [payablePlayers, selectedPlayerId]);
   /* eslint-enable react-hooks/set-state-in-effect */
   const refresh = () => { queryClient.invalidateQueries({ queryKey: ["fees", sessionId] }); queryClient.invalidateQueries({ queryKey: ["payments", sessionId] }); queryClient.invalidateQueries({ queryKey: ["sessionPlayers", sessionId] }); };
   const configure = useMutation({ mutationFn: () => { const amountMinor = Math.round(Number(configAmount) * 100); if (!Number.isFinite(amountMinor) || amountMinor < 0) throw new Error("Enter a valid non-negative amount."); return api.updateFeeConfig(sessionId, mode === "FIXED_PER_PLAYER" ? { mode, fixedAmountPerPlayerMinor: amountMinor } : { mode, expectedSessionCostMinor: amountMinor }); }, onSuccess: (result) => { queryClient.setQueryData(["fees", sessionId], result.summary); refresh(); toast.success("Fee allocation updated."); } });
@@ -1023,10 +1180,11 @@ function FeesView({ sessionId }: { sessionId: string }) {
       {fee && <Badge tone={fee.outstandingMinor === 0 ? "teal" : "orange"}>{formatMoney(fee.outstandingMinor, currency)} outstanding</Badge>}
     </div>
     {feeQuery.isError || paymentsQuery.isError || sessionPlayersQuery.isError ? <p role="alert" className="rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{errorMessage(feeQuery.error ?? paymentsQuery.error ?? sessionPlayersQuery.error)}</p> : <>
-      <div className="grid gap-3 sm:grid-cols-4">{[["Expected", fee?.expectedMinor ?? 0], ["Collected", fee?.collectedMinor ?? 0], ["Outstanding", fee?.outstandingMinor ?? 0], ["Payments", fee?.paymentCount ?? 0]].map(([label, value]) => <Card key={String(label)} className="p-4"><p className="text-xs uppercase tracking-[0.12em] text-[var(--muted)]">{label}</p><p className="mt-2 text-xl font-semibold">{label === "Payments" ? value : formatMoney(Number(value), currency)}</p></Card>)}</div>
+      <div className="grid gap-3 sm:grid-cols-5">{[["Expected", fee?.expectedMinor ?? 0], ["Collected", fee?.collectedMinor ?? 0], ["Outstanding", fee?.outstandingMinor ?? 0], ["Credit", fee?.creditMinor ?? 0], ["Payments", fee?.paymentCount ?? 0]].map(([label, value]) => <Card key={String(label)} className="p-4"><p className="text-xs uppercase tracking-[0.12em] text-[var(--muted)]">{label}</p><p className="mt-2 text-xl font-semibold">{label === "Payments" ? value : formatMoney(Number(value), currency)}</p></Card>)}</div>
+      {noShowPlayers.length > 0 && <Card className="overflow-hidden border-[#f1c5b5] p-0"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] bg-[#fffaf7] px-4 py-3"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[#a85b2b]">Attendance charges</p><p className="font-semibold">Did not play / No-show penalties</p><p className="mt-1 text-xs text-[var(--muted)]">{fee?.noShowCount ?? noShowPlayers.length} rostered player{noShowPlayers.length === 1 ? "" : "s"} finished with no completed matches.</p></div><Badge tone="orange">{noShowPlayers.length}</Badge></div><div>{noShowPlayers.map((player) => <div key={feePlayerId(player)} className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-3 last:border-0"><div><p className="font-semibold">{player.displayName}</p><p className="text-xs text-[var(--muted)]">Penalty {formatMoney(player.dueMinor, currency)} · Collected {formatMoney(player.collectedMinor, currency)} · Outstanding {formatMoney(player.outstandingMinor, currency)} · Credit {formatMoney(player.creditMinor, currency)}</p><p className="mt-1 text-xs font-semibold text-[var(--muted)]">Payment status: {player.dueMinor === 0 ? "No charge" : pretty(player.status)}</p></div></div>)}</div></Card>}
       <Card className="p-4"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--teal)]">Payment method filter</p><p className="mt-1 text-sm text-[var(--muted)]">Filter the player summary and ledger together.</p></div><div className="flex flex-wrap gap-2" role="group" aria-label="Filter payments by method">{FEE_PAYMENT_FILTERS.map(([label, value]) => <button key={value} type="button" aria-pressed={paymentFilter === value} className={"focus-ring rounded-full border px-3 py-2 text-sm font-semibold transition " + (paymentFilter === value ? "border-[var(--teal)] bg-[var(--teal)] text-white" : "border-[var(--line)] bg-white text-[var(--muted)] hover:border-[var(--teal)] hover:text-[var(--ink)]")} onClick={() => setPaymentFilter(value)}>{label}</button>)}</div></div></Card>
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <Card><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--teal)]">Allocation</p><h3 className="display mt-1 text-3xl">Set the current queue fee.</h3><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Amounts are stored in minor currency units and allocated only to checked-in players.</p></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="block text-sm font-semibold">Fee mode<Select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}><option value="FIXED_PER_PLAYER">Fixed per player</option><option value="EQUAL_SPLIT">Equal split</option></Select></label><label className="block text-sm font-semibold">{mode === "EQUAL_SPLIT" ? "Expected queue total" : "Amount per player"}<Input inputMode="decimal" value={configAmount} onChange={(event) => setConfigAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" /></label></div>{configure.isError && <p role="alert" className="mt-3 rounded-2xl bg-[#fff0e4] px-3 py-2 text-sm text-[#8d4824]">{errorMessage(configure.error)}</p>}<Button className="mt-4" onClick={() => configure.mutate()} disabled={configure.isPending}>{configure.isPending ? "Saving…" : "Save allocation"}</Button><div className="mt-7 border-t border-[var(--line)] pt-5"><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">By method</p><div className="mt-3 grid gap-2 sm:grid-cols-3">{([["Cash", "CASH"], ["E-wallet", "EWALLET"], ["Other", "OTHER"]] as const).map(([label, method]) => <div key={method} className="rounded-2xl bg-[#f7faf8] p-3"><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 font-semibold">{formatMoney(collectionByMethod(method), currency)}</p></div>)}</div></div></Card>
+        <Card><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--teal)]">Allocation</p><h3 className="display mt-1 text-3xl">Set the current queue fee.</h3><p className="mt-2 text-sm leading-6 text-[var(--muted)]">Active-session amounts are stored in minor currency units and allocated only to checked-in players. Finalization adds the configured no-show penalty for every rostered player who did not play.</p></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="block text-sm font-semibold">Fee mode<Select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}><option value="FIXED_PER_PLAYER">Fixed per player</option><option value="EQUAL_SPLIT">Equal split</option></Select></label><label className="block text-sm font-semibold">{mode === "EQUAL_SPLIT" ? "Expected queue total" : "Amount per player"}<Input inputMode="decimal" value={configAmount} onChange={(event) => setConfigAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" /></label></div>{configure.isError && <p role="alert" className="mt-3 rounded-2xl bg-[#fff0e4] px-3 py-2 text-sm text-[#8d4824]">{errorMessage(configure.error)}</p>}<Button className="mt-4" onClick={() => configure.mutate()} disabled={configure.isPending}>{configure.isPending ? "Saving…" : "Save allocation"}</Button><div className="mt-7 border-t border-[var(--line)] pt-5"><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">By method</p><div className="mt-3 grid gap-2 sm:grid-cols-3">{([["Cash", "CASH"], ["E-wallet", "EWALLET"], ["Other", "OTHER"]] as const).map(([label, method]) => <div key={method} className="rounded-2xl bg-[#f7faf8] p-3"><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 font-semibold">{formatMoney(collectionByMethod(method), currency)}</p></div>)}</div></div></Card>
         <Card><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--orange)]">Record</p><h3 className="display mt-1 text-3xl">Log a payment.</h3><div className="mt-5 space-y-3"><label className="block text-sm font-semibold">Player<Select value={selectedPlayerId} onChange={(event) => setSelectedPlayerId(event.target.value)}><option value="">Select player</option>{payablePlayers.map((player) => <option key={feePlayerId(player)} value={feePlayerId(player)}>{player.displayName} · due {formatMoney(player.outstandingMinor, currency)}</option>)}</Select></label><label className="block text-sm font-semibold">Entry type<Select value={paymentKind} onChange={(event) => setPaymentKind(event.target.value as typeof paymentKind)}><option value="COLLECTION">Collection</option><option value="WAIVER">Waiver</option></Select></label>{paymentKind === "COLLECTION" && <label className="block text-sm font-semibold">Method<Select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as typeof paymentMethod)}><option value="CASH">Cash</option><option value="EWALLET">E-wallet</option><option value="OTHER">Other</option></Select></label>}<label className="block text-sm font-semibold">Amount<Input inputMode="decimal" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" /></label>{collect.isError && <p role="alert" className="rounded-2xl bg-[#fff0e4] px-3 py-2 text-sm text-[#8d4824]">{errorMessage(collect.error)}</p>}<Button className="w-full" onClick={() => collect.mutate()} disabled={collect.isPending || !payablePlayers.length}>{collect.isPending ? "Recording…" : paymentKind === "COLLECTION" ? "Record collection" : "Record waiver"}</Button></div></Card>
       </div>
       <Card className="overflow-hidden p-0"><div className="border-b border-[var(--line)] px-4 py-3"><p className="font-semibold">Players by payment method</p><p className="mt-1 text-xs text-[var(--muted)]">{filteredPlayers.length} player{filteredPlayers.length === 1 ? "" : "s"} with {filterLabel}</p></div>{filteredPlayers.length === 0 ? <p className="p-4 text-sm text-[var(--muted)]">No players have a matching collection yet.</p> : <div>{filteredPlayers.map((player) => { const total = collectionTotal(player); const amount = paymentFilter === "ALL" ? total : player.collectionByMethodMinor[paymentFilter as PaymentMethod]; return <div key={feePlayerId(player)} className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-3 last:border-0"><div><p className="font-semibold">{player.displayName}</p><p className="text-xs text-[var(--muted)]">{formatMoney(amount, currency)} collected{paymentFilter !== "ALL" ? " via " + paymentFilterLabel(paymentFilter) : ""}</p></div><div className="flex flex-wrap justify-end gap-1.5">{paymentFilter === "ALL" ? FEE_PAYMENT_FILTERS.slice(1).map(([label, method]) => player.collectionByMethodMinor[method as PaymentMethod] > 0 ? <Badge key={method} tone="gray">{label}: {formatMoney(player.collectionByMethodMinor[method as PaymentMethod], currency)}</Badge> : null) : <Badge tone="teal">{paymentFilterLabel(paymentFilter)}</Badge>}</div></div>; })}</div>}</Card>
@@ -1151,6 +1309,9 @@ export default function HomePage() {
   const [authPhase, setAuthPhase] = useState<AuthPhase>("checking");
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [retainedUser, setRetainedUser] = useState<AuthUser | null>(null);
+  const [sessionRequired, setSessionRequired] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const queryClient = useQueryClient();
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1163,26 +1324,44 @@ export default function HomePage() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false, enabled: authPhase === "ready" && !authUser });
   useEffect(() => {
     if (authPhase !== "ready" || authUser || !me.isError) return;
+    if (!isOfflineFallbackError(me.error)) return;
     let cancelled = false;
     void retainedProfile().then((profile) => {
       if (!cancelled && profile) setRetainedUser({ id: profile.accountId, username: profile.username, role: profile.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : "QUEUE_MASTER" });
     });
     return () => { cancelled = true; };
-  }, [authPhase, authUser, me.isError]);
-  const user = authPhase === "signedOut" ? null : authUser ?? me.data?.user ?? retainedUser;
-  const handleLogout = async () => {
-    const remove = window.confirm("Sign out now? Select OK to remove downloaded data from this browser, or Cancel to keep it for offline access.");
-    try { window.sessionStorage.setItem("shuttle-queue-offline-signed-out", "1"); } catch { /* ignore storage access failures */ }
-    setAuthPhase("signedOut");
-    setAuthUser(null);
+  }, [authPhase, authUser, me.isError, me.error]);
+  const offlineUser = isOfflineFallbackError(me.error) ? retainedUser : null;
+  const verifiedUser = me.isError ? null : me.data?.user;
+  const user = authPhase === "signedOut" ? null : authUser ?? verifiedUser ?? offlineUser;
+  const handleSessionRequired = useCallback(() => setSessionRequired(true), []);
+  const handleReauthenticated = useCallback((nextUser: AuthUser) => {
+    setSessionRequired(false);
+    setAuthUser(nextUser);
     setRetainedUser(null);
-    await queryClient.cancelQueries().catch(() => undefined);
-    if (remove && user) await clearAccountData(user.id).catch(() => undefined);
-    try { await api.logout(); } catch { /* offline sign-out is local until reconnect */ }
-    queryClient.clear();
+    void queryClient.invalidateQueries();
+  }, [queryClient]);
+  const handleLogout = async (remove: boolean) => {
+    if (!user) return;
+    setLoggingOut(true);
+    const currentUser = user;
+    try {
+      try { window.sessionStorage.setItem("shuttle-queue-offline-signed-out", "1"); } catch { /* ignore storage access failures */ }
+      setAuthPhase("signedOut");
+      setAuthUser(null);
+      setRetainedUser(null);
+      setSessionRequired(false);
+      await queryClient.cancelQueries().catch(() => undefined);
+      if (remove) await clearAccountData(currentUser.id).catch(() => undefined);
+      try { await api.logout(); } catch { /* offline sign-out is local until reconnect */ }
+      queryClient.clear();
+    } finally {
+      setLogoutOpen(false);
+      setLoggingOut(false);
+    }
   };
   if (authPhase === "checking") return <LoadingState variant="fullPage" label="Loading Shuttle Queue" />;
   if (authPhase === "ready" && !user && me.isPending && !me.isFetched) return <LoadingState variant="fullPage" label="Loading Shuttle Queue" />;
-  if (!user) return <LoginScreen onLoggedIn={(nextUser) => { setAuthPhase("ready"); setAuthUser(nextUser); setRetainedUser(null); }} />;
-  return <OfflineBootstrap user={user} onLogout={handleLogout} />;
+  if (!user) return <LoginScreen onLoggedIn={(nextUser) => { setAuthPhase("ready"); setAuthUser(nextUser); setRetainedUser(null); setSessionRequired(false); }} />;
+  return <><OfflineBootstrap user={user} onLogout={() => setLogoutOpen(true)} onSessionRequired={handleSessionRequired} />{sessionRequired && <SessionReauthenticationGate user={user} onAuthenticated={handleReauthenticated} onSignOut={() => setLogoutOpen(true)} />}{logoutOpen && <LogoutDialog pending={loggingOut} onKeep={() => void handleLogout(false)} onRemove={() => void handleLogout(true)} onClose={() => { if (!loggingOut) setLogoutOpen(false); }} />}</>;
 }

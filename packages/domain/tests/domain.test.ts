@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPlayerDeletion, isProhibitedGeneratedNewbieMatch, previewPlayerDeletion, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateMixedDoublesLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
+import { allocateFinalFeeAmounts, applyPlayerDeletion, isProhibitedGeneratedNewbieMatch, previewPlayerDeletion, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateMixedDoublesLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
+test("allocates finalized no-show penalties", () => {
+  const players = [{ id: "played", matchesPlayed: 3 }, { id: "absent", matchesPlayed: 0 }, { id: "never-checked-in", matchesPlayed: 0 }];
+  assert.deepEqual(Object.fromEntries(allocateFinalFeeAmounts({ mode: "FIXED_PER_PLAYER", fixedAmountPerPlayerMinor: 100, expectedQueueCostMinor: 0, noShowPenaltyMinor: 25 }, players)), { absent: 25, "never-checked-in": 25, played: 100 });
+  assert.deepEqual(Object.fromEntries(allocateFinalFeeAmounts({ mode: "EQUAL_SPLIT", fixedAmountPerPlayerMinor: null, expectedQueueCostMinor: 300, noShowPenaltyMinor: 50 }, players)), { absent: 50, "never-checked-in": 50, played: 200 });
+  assert.deepEqual(Object.fromEntries(allocateFinalFeeAmounts({ mode: "EQUAL_SPLIT", fixedAmountPerPlayerMinor: null, expectedQueueCostMinor: 100, noShowPenaltyMinor: 60 }, [{ id: "a", matchesPlayed: 0 }, { id: "b", matchesPlayed: 0 }])), { a: 60, b: 60 });
+  assert.deepEqual(Object.fromEntries(allocateFinalFeeAmounts({ mode: "EQUAL_SPLIT", fixedAmountPerPlayerMinor: null, expectedQueueCostMinor: 101, noShowPenaltyMinor: 0 }, [{ id: "c", matchesPlayed: 1 }, { id: "a", matchesPlayed: 1 }, { id: "b", matchesPlayed: 1 }])), { a: 34, b: 34, c: 33 });
+});
+
 
 const skillLevelForWeight = (weight: number): MatchPlayer["skillLevel"] => (["NEWBIE", "BEGINNER", "UPPER_BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"] as const)[weight - 1] ?? "ADVANCED";
 

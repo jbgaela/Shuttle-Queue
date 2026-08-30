@@ -1,6 +1,6 @@
 import type { QueuePlayer, QueueState } from "./api";
 
-type WaitingQueue = Pick<QueueState, "waiting" | "lateArrivalCutoffAt" | "serverTime">;
+type WaitingQueue = Pick<QueueState, "waiting" | "lateArrivalCutoffAt" | "serverTime" | "synergyTeams">;
 
 /** Return the rest state that can affect matchmaking without including clock drift. */
 export function queuePlayerReadiness(player: Pick<QueuePlayer, "restEligibleAt">, serverTime: string) {
@@ -36,6 +36,6 @@ export function matchmakingWaitingFingerprint(queue: WaitingQueue) {
     ])
     .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
 
-  return JSON.stringify([queue.lateArrivalCutoffAt ?? null, players]);
+  const teams = (queue.synergyTeams ?? []).map((team) => [team.id, ...team.queuePlayerIds, team.version, team.effectiveSkillWeight]).sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  return JSON.stringify([queue.lateArrivalCutoffAt ?? null, players, teams]);
 }
-

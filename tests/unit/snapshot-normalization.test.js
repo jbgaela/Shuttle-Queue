@@ -38,11 +38,13 @@ test("preserves populated queue-player values", () => {
 });
 
 test("defaults the account grace duration for older snapshots", () => {
-  const original = { ...incompleteSnapshot([]), settings: { id: "settings", pointsToWin: 31, winBy: 1, scoreCap: null, bestOf: 1, minimumRestMinutes: 0, defaultFeeMode: "FIXED_PER_PLAYER", defaultFixedFeeMinor: null, currencyCode: "PHP", timeZone: "Asia/Manila", defaultLateArrivalCutoffTime: null, version: 1 } };
+  const original = { ...incompleteSnapshot([]), settings: { id: "settings", pointsToWin: 31, winBy: 1, scoreCap: null, bestOf: 1, minimumRestMinutes: 0, defaultFeeMode: "FIXED_PER_PLAYER", defaultFixedFeeMinor: null, currencyCode: "PHP", timeZone: "Asia/Manila", defaultLateArrivalCutoffTime: null, version: 1 }, feeConfig: { id: "fee", mode: "FIXED_PER_PLAYER", currencyCode: "PHP", fixedAmountPerPlayerMinor: 100, expectedQueueCostMinor: 0, participationRule: "ALL_ACTIVE", frozenAt: null, version: 1 } };
   const normalized = normalizeSnapshotForSync(original);
 
   assert.equal(original.settings.lateArrivalGraceMinutes, undefined);
   assert.equal(normalized.settings.lateArrivalGraceMinutes, 10);
+  assert.equal(normalized.settings.noShowPenaltyMinor, 0);
+  assert.equal(normalized.feeConfig.noShowPenaltyMinor, 0);
 });
 
 test("repairs stale skill weights from the skill level", () => {

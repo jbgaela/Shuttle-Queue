@@ -48,6 +48,13 @@ export type DomainQueuePlayer = {
   version: number;
 };
 
+export type DomainSynergyTeam = {
+  id: string;
+  queuePlayerIds: [string, string];
+  createdAt: string;
+  version: number;
+};
+
 export type MatchParticipant = { id: string; matchId: string; queuePlayerId: string; team: TeamSide; teamSlot: number; priorQueueEnteredAt?: string | null; displayName?: string };
 export type MatchGame = { id: string; scoreRevisionId: string; gameNumber: number; teamAScore: number; teamBScore: number; winnerTeam: TeamSide };
 export type MatchScoreRevision = { id: string; matchId: string; revisionNumber: number; winnerTeam: TeamSide; reason?: string | null; supersedesRevisionId?: string | null; createdAt?: string; games: MatchGame[] };
@@ -55,8 +62,8 @@ export type DomainMatch = { id: string; courtId?: string | null; courtIdSnapshot
 
 export type DomainCourt = { id: string; name: string; normalizedName: string; displayOrder: number; status: CourtStatus; currentMatchId?: string | null; closedAt?: string | null; version: number };
 export type DomainWorkspace = { startedAt: string; endedAt?: string | null; lateArrivalCutoffAt?: string | null; matchmakingAlgorithm: string; matchmakingRevision: number; version: number };
-export type DomainSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: 1 | 3; minimumRestMinutes: number; lateArrivalGraceMinutes?: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
-export type DomainFeeConfig = { id: string; mode: string; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; participationRule: string; frozenAt?: string | null; version: number };
+export type DomainSettings = { id: string; pointsToWin: number; winBy: number; scoreCap: number | null; bestOf: 1 | 3; minimumRestMinutes: number; lateArrivalGraceMinutes?: number; defaultFeeMode: string; defaultFixedFeeMinor?: number | null; noShowPenaltyMinor?: number; currencyCode: string; timeZone: string; defaultLateArrivalCutoffTime?: string | null; version: number };
+export type DomainFeeConfig = { id: string; mode: string; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; noShowPenaltyMinor?: number; participationRule: string; frozenAt?: string | null; version: number };
 export type DomainPayment = { id: string; queuePlayerId: string; kind: string; method?: string | null; amountMinor: number; reference?: string | null; note?: string | null; reversalOfPaymentId?: string | null; recordedById: string; occurredAt: string; createdAt: string };
 export type DomainAudit = { id: string; action: string; entityType: string; entityId: string; reason?: string | null; beforeJson?: unknown; afterJson?: unknown; requestId: string; createdAt: string };
 
@@ -67,6 +74,7 @@ export type CloudSnapshotV2 = {
   workspace: DomainWorkspace;
   players: DomainPlayer[];
   queuePlayers: DomainQueuePlayer[];
+  synergyTeams?: DomainSynergyTeam[];
   courts: DomainCourt[];
   matches: DomainMatch[];
   feeConfig: DomainFeeConfig | null;
@@ -103,6 +111,8 @@ const allocateEqualSplit = (total: number, ids: string[]) => {
   return new Map(ids.map((idValue, index) => [idValue, base + (index < remainder ? 1 : 0)]));
 };
 
+export { allocateFinalFeeAmounts } from "./fees.js";
+
 const SESSION_PLAYER_NOT_REMOVABLE_MESSAGE = "Only inactive or checked-out players without match or payment history can be removed from this session.";
 
 export function removeSessionPlayer(snapshot: CloudSnapshotV2, queuePlayerId: string) {
@@ -113,6 +123,7 @@ export function removeSessionPlayer(snapshot: CloudSnapshotV2, queuePlayerId: st
   if (snapshot.matches.some((match) => match.participants.some((participant) => participant.queuePlayerId === queuePlayerId)) || snapshot.payments.some((payment) => payment.queuePlayerId === queuePlayerId)) throw new Error(SESSION_PLAYER_NOT_REMOVABLE_MESSAGE);
   const next = snapshotClone(snapshot);
   next.queuePlayers = next.queuePlayers.filter((player) => player.id !== queuePlayerId);
+  next.synergyTeams = (next.synergyTeams ?? []).filter((team) => !team.queuePlayerIds.includes(queuePlayerId));
   next.workspace.matchmakingRevision += 1;
   next.workspace.version += 1;
   if (next.feeConfig?.mode === "EQUAL_SPLIT") {
@@ -187,6 +198,7 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
   const removedPaymentIds = new Set(next.payments.filter((payment) => selectedQueuePlayerIds.has(payment.queuePlayerId)).map((payment) => payment.id));
   next.payments = next.payments.filter((payment) => !removedPaymentIds.has(payment.id) && !(payment.reversalOfPaymentId && removedPaymentIds.has(payment.reversalOfPaymentId)));
   next.queuePlayers = next.queuePlayers.filter((player) => !selectedIds.has(player.playerId));
+  next.synergyTeams = (next.synergyTeams ?? []).filter((team) => !team.queuePlayerIds.some((idValue) => selectedQueuePlayerIds.has(idValue)));
   next.players = next.players.filter((player) => !selectedIds.has(player.id));
   next.workspace.matchmakingRevision += 1;
   next.workspace.version += 1;
@@ -199,12 +211,12 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
   return { snapshot: next, impact };
 }
 
-export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; status: QueuePlayerStatus; gamesPlayed: number; wins?: number; losses?: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
+export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; effectiveSkillWeight?: number; effectiveSkillLevel?: SkillLevel; synergyTeamId?: string | null; status: QueuePlayerStatus; gamesPlayed: number; wins?: number; losses?: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
 export type MatchHistory = { partners: Map<string, Map<string, number>>; opponents: Map<string, Map<string, number>>; quartets: Map<string, number>; encounters?: Map<string, Map<string, number>>; recentPartners?: Map<string, Map<string, number>>; recentOpponents?: Map<string, Map<string, number>>; recentEncounters?: Map<string, Map<string, number>>; recentQuartets?: Map<string, number> };
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; explanation: Record<string, unknown> };
-export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date };
+export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date; synergyTeams?: Array<Pick<DomainSynergyTeam, "id" | "queuePlayerIds">> };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
-export const MATCHMAKING_ALGORITHM = "v8-strict-mixed-bounded-search";
+export const MATCHMAKING_ALGORITHM = "v9-synergy-team-bounded-search";
 
 export const skillWeights: Record<SkillLevel, number> = {
   NEWBIE: 1,
@@ -217,8 +229,66 @@ export const skillWeights: Record<SkillLevel, number> = {
 
 export const skillWeight = (level: SkillLevel) => skillWeights[level];
 
+const effectiveWeightFor = (player: MatchPlayer) => player.effectiveSkillWeight ?? player.skillWeight;
+const effectiveLevelFor = (player: MatchPlayer) => player.effectiveSkillLevel ?? player.skillLevel;
+
+function applySynergyTeams(players: MatchPlayer[], teams: MatchmakingOptions["synergyTeams"] = []) {
+  const byId = new Map(players.map((player) => [player.id, player]));
+  const teamByPlayer = new Map<string, { id: string; queuePlayerIds: [string, string] }>();
+  for (const team of teams ?? []) {
+    if (!team || !Array.isArray(team.queuePlayerIds) || team.queuePlayerIds.length !== 2 || team.queuePlayerIds[0] === team.queuePlayerIds[1]) continue;
+    const [firstId, secondId] = team.queuePlayerIds;
+    if (!byId.has(firstId) || !byId.has(secondId) || teamByPlayer.has(firstId) || teamByPlayer.has(secondId)) continue;
+    const pair = [firstId, secondId] as [string, string];
+    teamByPlayer.set(firstId, { id: team.id, queuePlayerIds: pair });
+    teamByPlayer.set(secondId, { id: team.id, queuePlayerIds: pair });
+  }
+  const enriched = players.map((player) => {
+    const team = teamByPlayer.get(player.id);
+    if (!team) return player;
+    const partnerId = team.queuePlayerIds.find((id) => id !== player.id);
+    const partner = partnerId ? byId.get(partnerId) : undefined;
+    const highWeight = Math.max(player.skillWeight, partner?.skillWeight ?? player.skillWeight);
+    const highLevel = (Object.entries(skillWeights).find(([, weight]) => weight === highWeight)?.[0] ?? player.skillLevel) as SkillLevel;
+    return { ...player, synergyTeamId: team.id, effectiveSkillWeight: highWeight, effectiveSkillLevel: highLevel };
+  });
+  const grouped = new Map<string, MatchPlayer[]>();
+  for (const player of enriched) if (player.synergyTeamId) grouped.set(player.synergyTeamId, [...(grouped.get(player.synergyTeamId) ?? []), player]);
+  for (const members of grouped.values()) {
+    const latestQueueTime = members.map((member) => member.queueEnteredAt ? new Date(member.queueEnteredAt).getTime() : Number.MIN_SAFE_INTEGER).reduce((max, value) => Math.max(max, value), Number.MIN_SAFE_INTEGER);
+    const highestGames = Math.max(...members.map((member) => member.gamesPlayed));
+    for (const member of members) { member.gamesPlayed = highestGames; member.queueEnteredAt = latestQueueTime === Number.MIN_SAFE_INTEGER ? null : new Date(latestQueueTime).toISOString(); }
+  }
+  return enriched;
+}
+
+export function validateSynergyLineup(teamA: MatchPlayer[], teamB: MatchPlayer[], teams: MatchmakingOptions["synergyTeams"] = []) {
+  const selected = new Map([...teamA, ...teamB].map((player) => [player.id, teamA.includes(player) ? "A" : "B"]));
+  const byId = new Map([...teamA, ...teamB].map((player) => [player.id, player]));
+  for (const team of teams ?? []) {
+    if (!team || !Array.isArray(team.queuePlayerIds) || team.queuePlayerIds.length !== 2 || team.queuePlayerIds[0] === team.queuePlayerIds[1]) return "Synergy teams must contain exactly two distinct players.";
+    const [firstId, secondId] = team.queuePlayerIds;
+    const firstSide = selected.get(firstId);
+    const secondSide = selected.get(secondId);
+    if (firstSide === undefined && secondSide === undefined) continue;
+    if (firstSide === undefined || secondSide === undefined) return "A locked Synergy Team must include both players.";
+    if (firstSide !== secondSide) return "Synergy Team partners must stay on the same side.";
+    if (!byId.has(firstId) || !byId.has(secondId)) return "A Synergy Team member is unavailable.";
+    const first = byId.get(firstId)!;
+    const second = byId.get(secondId)!;
+    const effectiveSkillWeight = Math.max(first.skillWeight, second.skillWeight);
+    const effectiveSkillLevel = (Object.entries(skillWeights).find(([, weight]) => weight === effectiveSkillWeight)?.[0] ?? first.skillLevel) as SkillLevel;
+    for (const member of [first, second]) {
+      member.synergyTeamId = team.id;
+      member.effectiveSkillWeight = effectiveSkillWeight;
+      member.effectiveSkillLevel = effectiveSkillLevel;
+    }
+  }
+  return null;
+}
+
 export const LONE_FEMALE_SKILL_LEVELS: SkillLevel[] = ["INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"];
-export const isQualifiedLoneFemaleGroup = (group: MatchPlayer[]) => group.length === 4 && group.filter((player) => player.gender === "FEMALE").length === 1 && group.filter((player) => player.gender === "MALE").length === 3 && group.some((player) => player.gender === "FEMALE" && LONE_FEMALE_SKILL_LEVELS.includes(player.skillLevel));
+export const isQualifiedLoneFemaleGroup = (group: MatchPlayer[]) => group.length === 4 && group.filter((player) => player.gender === "FEMALE").length === 1 && group.filter((player) => player.gender === "MALE").length === 3 && group.some((player) => player.gender === "FEMALE" && LONE_FEMALE_SKILL_LEVELS.includes(effectiveLevelFor(player)));
 export const loneFemalePolicy = (teamA: MatchPlayer[], teamB: MatchPlayer[], mixedDoublesFallback = false) => {
   const group = [...teamA, ...teamB];
   const qualifyingFemale = isQualifiedLoneFemaleGroup(group) ? group.find((player) => player.gender === "FEMALE") : undefined;
@@ -244,9 +314,9 @@ export const isProhibitedGeneratedGenderMatch = (teamA: MatchPlayer[], teamB: Ma
 export const validateBalancedLineup = (teamA: MatchPlayer[], teamB: MatchPlayer[], strengthGap: number) => {
   const group = [...teamA, ...teamB];
   if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set(group.map((player) => player.id)).size !== group.length) return "Choose unique players with equal team sizes for singles or doubles.";
-  const spread = Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight));
+  const spread = Math.max(...group.map((player) => effectiveWeightFor(player))) - Math.min(...group.map((player) => effectiveWeightFor(player)));
   if (spread > strengthGap) return `Handicap matchups require a player strength spread of at most ${strengthGap}.`;
-  const teamDifference = Math.abs(teamA.reduce((sum, player) => sum + player.skillWeight, 0) - teamB.reduce((sum, player) => sum + player.skillWeight, 0));
+  const teamDifference = Math.abs(teamA.reduce((sum, player) => sum + effectiveWeightFor(player), 0) - teamB.reduce((sum, player) => sum + effectiveWeightFor(player), 0));
   if (teamDifference !== strengthGap) return `Handicap matchups require team strength totals to differ by exactly ${strengthGap}.`;
   return null;
 };
@@ -295,16 +365,23 @@ const partnerCount = (history: MatchHistory, a: string, b: string, recent: boole
 const quartetKey = (players: MatchPlayer[]) => players.map((player) => player.id).sort().join(":");
 const forEachCombination = <T,>(items: T[], size: number, callback: (selected: T[]) => void) => { const walk = (start: number, selected: T[]) => { if (selected.length === size) { callback([...selected]); return; } for (let index = start; index <= items.length - (size - selected.length); index += 1) { selected.push(items[index]!); walk(index + 1, selected); selected.pop(); } }; walk(0, []); };
 const partitions = <T,>(players: T[]) => { const [a, b, c, d] = players; return [[[a, b], [c, d]], [[a, c], [b, d]], [[a, d], [b, c]]] as [T[], T[]][]; };
-const isAllowedNewbiePartner = (player: MatchPlayer) => player.skillLevel === "BEGINNER" || player.skillLevel === "UPPER_BEGINNER";
+const isAllowedNewbiePartner = (player: MatchPlayer) => effectiveLevelFor(player) === "BEGINNER" || effectiveLevelFor(player) === "UPPER_BEGINNER";
 export const isProhibitedGeneratedNewbieMatch = (teamA: MatchPlayer[], teamB: MatchPlayer[]) => {
   if (teamA.length !== 2 || teamB.length !== 2) return false;
   return [teamA, teamB].some((team) => team.some((player) => {
     if (player.skillLevel !== "NEWBIE") return false;
     const partner = team.find((candidate) => candidate.id !== player.id);
+    if (partner?.synergyTeamId && partner.synergyTeamId === player.synergyTeamId) return false;
     return !partner || !isAllowedNewbiePartner(partner);
   }));
 };
 const hasNewbieCompatiblePartition = (group: MatchPlayer[]) => partitions(group).some(([teamA, teamB]) => !isProhibitedGeneratedNewbieMatch(teamA, teamB));
+const sameSynergyTeam = (first: MatchPlayer, second: MatchPlayer) => Boolean(first.synergyTeamId && first.synergyTeamId === second.synergyTeamId);
+const hasSynergyCompatiblePartition = (group: MatchPlayer[]) => partitions(group).some(([teamA, teamB]) => !group.some((player) => {
+  const partner = group.find((candidate) => candidate.id !== player.id && sameSynergyTeam(player, candidate));
+  if (!partner) return false;
+  return (teamA.includes(player) && teamB.includes(partner)) || (teamB.includes(player) && teamA.includes(partner));
+}));
 const compare = (a: (number[] | number | string)[], b: (number[] | number | string)[]) => { for (let i = 0; i < a.length; i += 1) { const left = a[i]; const right = b[i]; if (Array.isArray(left) && Array.isArray(right)) { for (let j = 0; j < Math.max(left.length, right.length); j += 1) { const result = (left[j] ?? 0) - (right[j] ?? 0); if (result) return result; } } else if (typeof left === "string" && typeof right === "string") { const result = left.localeCompare(right); if (result) return result; } else if (typeof left === "number" && typeof right === "number" && left !== right) return left - right; } return 0; };
 const restReadyAt = (lastMatchEndedAt: string | null, minimumRestMinutes: number, now: number) => { if (!lastMatchEndedAt || minimumRestMinutes <= 0) return now; return new Date(lastMatchEndedAt).getTime() + minimumRestMinutes * 60_000; };
 
@@ -316,7 +393,7 @@ const diversePool = (players: MatchPlayer[], limit: number, previouslySkippedPla
   const selected: MatchPlayer[] = [];
   const selectedIds = new Set<string>();
   const buckets = new Map<string, MatchPlayer[]>();
-  for (const player of sorted) { const key = `${player.gender}:${player.skillLevel}`; const bucket = buckets.get(key) ?? []; bucket.push(player); buckets.set(key, bucket); }
+  for (const player of sorted) { const key = `${player.gender}:${effectiveLevelFor(player)}`; const bucket = buckets.get(key) ?? []; bucket.push(player); buckets.set(key, bucket); }
   for (const key of [...buckets.keys()].sort()) {
     for (const player of buckets.get(key)!.slice(0, 2)) {
       if (selected.length >= limit) break;
@@ -326,13 +403,19 @@ const diversePool = (players: MatchPlayer[], limit: number, previouslySkippedPla
     if (selected.length >= limit) break;
   }
   for (const player of sorted) { if (selected.length >= limit) break; if (!selectedIds.has(player.id)) selected.push(player); }
+  const selectedById = new Set(selected.map((player) => player.id));
+  for (const player of selected.slice()) {
+    if (!player.synergyTeamId) continue;
+    const partner = players.find((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id);
+    if (partner && !selectedById.has(partner.id)) { selected.push(partner); selectedById.add(partner.id); }
+  }
   return selected;
 };
 const boundedEligiblePools = (eligible: MatchPlayer[], mode: MatchmakingMode, previouslySkippedPlayerIds: Set<string>) => {
   if (eligible.length <= MAX_MATCHMAKING_POOL) return [eligible];
   if (mode === "MIXED_DOUBLES") return [(["MALE", "FEMALE"] as const).flatMap((gender) => diversePool(eligible.filter((player) => player.gender === gender), 20, previouslySkippedPlayerIds)).sort((a, b) => matchmakingPlayerCompare(a, b, previouslySkippedPlayerIds))];
   if (mode === "SAME_GENDER") return (["MALE", "FEMALE"] as const).map((gender) => diversePool(eligible.filter((player) => player.gender === gender), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
-  if (mode === "SAME_SKILL") return (["NEWBIE", "BEGINNER", "UPPER_BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"] as const).map((skillLevel) => diversePool(eligible.filter((player) => player.skillLevel === skillLevel), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
+  if (mode === "SAME_SKILL") return (["NEWBIE", "BEGINNER", "UPPER_BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"] as const).map((skillLevel) => diversePool(eligible.filter((player) => effectiveLevelFor(player) === skillLevel), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
   return [diversePool(eligible, MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds)];
 };
 
@@ -359,7 +442,9 @@ const combinationValues = (players: MatchPlayer[], size: number) => {
 function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistory, excludedKeys: string[], options: MatchmakingOptions): Suggestion | null {
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
-  const eligible = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const eligibleCandidates = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const eligibleIds = new Set(eligibleCandidates.map((player) => player.id));
+  const eligible = eligibleCandidates.filter((player) => !player.synergyTeamId || players.some((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id && eligibleIds.has(candidate.id)));
   const ranked = undefeatedChallengePlayers(players);
   const rankedIds = new Set(ranked.map(({ player }) => player.id));
   const readyQualifiers = ranked.filter(({ player }) => eligible.some((candidate) => candidate.id === player.id));
@@ -375,7 +460,7 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
       : combinationValues(readyQualifiers.map(({ player }) => player), 2);
   const supportSize = qualifierSets[0]?.length === 1 ? 3 : useFallback ? 1 : 2;
   if (supports.length < supportSize) return null;
-  const supportGroups = combinationValues(supports, supportSize).filter((group) => qualifierSets.some((qualifierSet) => hasNewbieCompatiblePartition([...qualifierSet, ...group])));
+  const supportGroups = combinationValues(supports, supportSize).filter((group) => qualifierSets.some((qualifierSet) => hasNewbieCompatiblePartition([...qualifierSet, ...group]) && hasSynergyCompatiblePartition([...qualifierSet, ...group])));
   if (!supportGroups.length) return null;
   const minimumSupportGames = supportGroups.reduce((minimum, group) => Math.min(minimum, ...group.map(gamesFor)), Number.POSITIVE_INFINITY);
   const fairSupportExists = supportGroups.some((group) => Math.max(...group.map(gamesFor)) <= minimumSupportGames + 1);
@@ -387,28 +472,30 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
     const pairHistory = qualifierSet.length > 1 ? Math.max(...qualifierSet.flatMap((player, index) => qualifierSet.slice(index + 1).map((other) => pairCount(history, player.id, other.id, true)))) : 0;
     for (const supportGroup of supportGroups) {
       const group = [...qualifierSet, ...supportGroup];
+      if (!hasSynergyCompatiblePartition(group)) continue;
       const supportGames = supportGroup.map(gamesFor).sort((a, b) => a - b);
       if (fairSupportExists && Math.max(...supportGames) > minimumSupportGames + 1) continue;
       const supportPending = supportGroup.filter((player) => player.latePenaltyState === "PENDING").length;
       const supportPriority = [...supportGroup].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b);
       const supportQueueAge = Math.max(...supportGroup.map((player) => new Date(player.queueEnteredAt!).getTime()));
-      const recentPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => pairCount(history, player.id, other.id, true)));
-      const allPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => pairCount(history, player.id, other.id, false)));
+      const recentPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, true)));
+      const allPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, false)));
       for (const [teamA, teamB] of partitions([...group].sort((a, b) => a.id.localeCompare(b.id)))) {
+        if (teamA.some((player) => teamB.some((candidate) => sameSynergyTeam(player, candidate)))) continue;
         if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
         const teamAQualifiers = teamA.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
         const teamBQualifiers = teamB.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
         if (qualifierSet.length > 1 && (!teamAQualifiers.length || !teamBQualifiers.length)) continue;
-        const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
-        const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
+        const teamATotal = teamA.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
+        const teamBTotal = teamB.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
         const teamDifference = Math.abs(teamATotal - teamBTotal);
         const qualifierTeam = teamAQualifiers.length ? teamA : teamB;
         const opponentTeam = teamAQualifiers.length ? teamB : teamA;
-        const challengeAdvantage = opponentTeam.reduce((sum, player) => sum + player.skillWeight, 0) - qualifierTeam.reduce((sum, player) => sum + player.skillWeight, 0);
+        const challengeAdvantage = opponentTeam.reduce((sum, player) => sum + effectiveWeightFor(player), 0) - qualifierTeam.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
         if (qualifierSet.length === 1 && challengeAdvantage <= 0) continue;
         const qualifierPartner = qualifierSet.length === 1 ? qualifierTeam.find((player) => !qualifierSet.some((candidate) => candidate.id === player.id)) : undefined;
         const pairRotation = qualifierSet.length > 1 && !pairWasExcluded ? 0 : 1;
-        const key: (number[] | number | string)[] = [pairRotation, pairHistory, supportPriority, supportGames, supportPending, supportQueueAge, isQualifiedLoneFemaleGroup(group) ? 0 : 1, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner?.skillWeight ?? 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];
+        const key: (number[] | number | string)[] = [pairRotation, pairHistory, supportPriority, supportGames, supportPending, supportQueueAge, isQualifiedLoneFemaleGroup(group) ? 0 : 1, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner ? effectiveWeightFor(qualifierPartner) : 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];
         const keyString = challengeGroupKey(teamA, teamB);
         if (excluded.has(keyString)) continue;
         const suggestion: Suggestion = { mode: "UNDEFEATED_CHALLENGE", teamA, teamB, teamATotal, teamBTotal, difference: teamDifference, key: keyString, explanation: { algorithmVersion: MATCHMAKING_ALGORITHM, mode: "UNDEFEATED_CHALLENGE", searchStats: { eligibleCount: eligible.length, evaluatedCount: ranked.length + supports.length, bounded: supports.length < eligible.filter((player) => !rankedIds.has(player.id)).length }, loneFemalePolicy: loneFemalePolicy(teamA, teamB), rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() }, challenge: { minimumMatches: 4, rankLimit: 3, qualifyingPlayers: ranked.map(({ player, rank }) => ({ id: player.id, displayName: player.displayName, rank, gamesPlayed: gamesFor(player), wins: winsFor(player), losses: lossesFor(player) })), selectedPlayerIds: qualifierSet.map((player) => player.id), opposingPlayerIds: qualifierSet.length > 1 ? qualifierSet.map((player) => player.id) : [], pairKey, rotatedPair: pairRotation === 1, fallbackIncludedThird: useFallback, difficultyPolicy: qualifierSet.length === 1 ? "WEAKER_TEAM_FAIR_QUEUE" : "QUALIFIED_PLAYERS_OPPOSED" }, teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: teamDifference }, repeatPenalties: { recentPairCount: recentPairs.filter(Boolean).length, recentPairTotal: recentPairs.reduce((sum, value) => sum + value, 0), allTimePairCount: allPairs.filter(Boolean).length, allTimePairTotal: allPairs.reduce((sum, value) => sum + value, 0) }, fairness: { supportMinimumGames: minimumSupportGames, supportPending } } };
@@ -420,11 +507,14 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
 }
 
 export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, history: MatchHistory, excludedKeys: string[] = [], options: MatchmakingOptions = {}): Suggestion | null {
-  if (mode === "UNDEFEATED_CHALLENGE") return suggestUndefeatedChallenge(players, history, excludedKeys, options);
+  const preparedPlayers = applySynergyTeams(players, options.synergyTeams);
+  if (mode === "UNDEFEATED_CHALLENGE") return suggestUndefeatedChallenge(preparedPlayers, history, excludedKeys, options);
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
   const strengthGap = mode === "BALANCED" ? options.strengthGap ?? DEFAULT_BALANCED_STRENGTH_GAP : undefined;
-  const eligible = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const eligibleCandidates = preparedPlayers.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const eligibleIds = new Set(eligibleCandidates.map((player) => player.id));
+  const eligible = eligibleCandidates.filter((player) => !player.synergyTeamId || preparedPlayers.some((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id && eligibleIds.has(candidate.id)));
   if (eligible.length < 4) return null;
   const excluded = new Set(excludedKeys);
   const previousSuggestionPlayerIds = new Set(
@@ -436,7 +526,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   const searchPools = boundedEligiblePools(eligible, mode, previouslySkippedPlayerIds);
   const searchPlayers = searchPools.flat();
   const boundedSearch = eligible.length > MAX_MATCHMAKING_POOL;
-  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && !isMixedDoublesGroup(group)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => player.skillWeight)).size !== 1) return false; if (group.some((player) => player.skillLevel === "NEWBIE") && !hasNewbieCompatiblePartition(group)) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight)) <= strengthGap!; };
+  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); if (!hasSynergyCompatiblePartition(group)) return false; if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && !isMixedDoublesGroup(group)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => effectiveWeightFor(player))).size !== 1) return false; if (group.some((player) => player.skillLevel === "NEWBIE") && !hasNewbieCompatiblePartition(group)) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => effectiveWeightFor(player))) - Math.min(...group.map((player) => effectiveWeightFor(player))) <= strengthGap!; };
   const candidateGroups: MatchPlayer[][] = [];
   let candidateMinimumGames = Number.POSITIVE_INFINITY;
   for (const pool of searchPools) {
@@ -458,24 +548,25 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   for (const group of candidateGroups) {
     if (!hasManualOverride && fairExists && Math.max(...group.map((player) => player.gamesPlayed)) > candidateMinimumGames + 1) continue;
     const sorted = [...group].sort((a, b) => a.id.localeCompare(b.id));
-    const skillSpread = Math.max(...group.map((player) => player.skillWeight)) - Math.min(...group.map((player) => player.skillWeight));
-    const recentPairValues = group.flatMap((player, i) => group.slice(i + 1).map((other) => pairCount(history, player.id, other.id, true)));
-    const allPairValues = group.flatMap((player, i) => group.slice(i + 1).map((other) => pairCount(history, player.id, other.id, false)));
+    const skillSpread = Math.max(...group.map((player) => effectiveWeightFor(player))) - Math.min(...group.map((player) => effectiveWeightFor(player)));
+    const recentPairValues = group.flatMap((player, i) => group.slice(i + 1).map((other) => sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, true)));
+    const allPairValues = group.flatMap((player, i) => group.slice(i + 1).map((other) => sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, false)));
     const recentQuartetRepeats = history.recentQuartets?.get(quartetKey(group)) ?? 0;
     const allQuartetRepeats = history.quartets.get(quartetKey(group)) ?? 0;
     for (const [teamA, teamB] of partitions(sorted)) {
       const qualifiedLoneFemale = isQualifiedLoneFemaleGroup(group);
       const standardMixedDoubles = isStandardMixedDoublesLineup(teamA, teamB);
       if (mode === "MIXED_DOUBLES" && !standardMixedDoubles) continue;
+      if (teamA.some((player) => teamB.some((candidate) => sameSynergyTeam(player, candidate)))) continue;
       if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
-      const teamATotal = teamA.reduce((sum, player) => sum + player.skillWeight, 0);
-      const teamBTotal = teamB.reduce((sum, player) => sum + player.skillWeight, 0);
+      const teamATotal = teamA.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
+      const teamBTotal = teamB.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
       if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) !== strengthGap!) continue;
       const keyString = `${teamA.map((player) => player.id).sort().join(",")}|${teamB.map((player) => player.id).sort().join(",")}`;
       if (excluded.has(keyString)) continue;
-      const recentPartners = partnerCount(history, teamA[0]!.id, teamA[1]!.id, true) + partnerCount(history, teamB[0]!.id, teamB[1]!.id, true);
-      const allPartners = partnerCount(history, teamA[0]!.id, teamA[1]!.id, false) + partnerCount(history, teamB[0]!.id, teamB[1]!.id, false);
-      const partnerMix = Math.abs(teamA[0]!.skillWeight - teamA[1]!.skillWeight) + Math.abs(teamB[0]!.skillWeight - teamB[1]!.skillWeight);
+      const recentPartners = (sameSynergyTeam(teamA[0]!, teamA[1]!) ? 0 : partnerCount(history, teamA[0]!.id, teamA[1]!.id, true)) + (sameSynergyTeam(teamB[0]!, teamB[1]!) ? 0 : partnerCount(history, teamB[0]!.id, teamB[1]!.id, true));
+      const allPartners = (sameSynergyTeam(teamA[0]!, teamA[1]!) ? 0 : partnerCount(history, teamA[0]!.id, teamA[1]!.id, false)) + (sameSynergyTeam(teamB[0]!, teamB[1]!) ? 0 : partnerCount(history, teamB[0]!.id, teamB[1]!.id, false));
+      const partnerMix = (sameSynergyTeam(teamA[0]!, teamA[1]!) ? 0 : Math.abs(effectiveWeightFor(teamA[0]!) - effectiveWeightFor(teamA[1]!))) + (sameSynergyTeam(teamB[0]!, teamB[1]!) ? 0 : Math.abs(effectiveWeightFor(teamB[0]!) - effectiveWeightFor(teamB[1]!)));
       const lowestGames = group.filter((player) => player.gamesPlayed === candidateMinimumGames).length;
       const previouslySkippedCount = group.filter((player) => previouslySkippedPlayerIds.has(player.id)).length;
       const pendingCount = group.filter((player) => player.latePenaltyState === "PENDING").length;
@@ -500,6 +591,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
           strengthGap: strengthGap ?? null,
           rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() },
           teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: Math.abs(teamATotal - teamBTotal) },
+          synergy: { teamIds: [...new Set(group.flatMap((player) => player.synergyTeamId ? [player.synergyTeamId] : []))], effectiveSkillWeights: group.filter((player) => player.synergyTeamId).map((player) => ({ id: player.id, weight: effectiveWeightFor(player) })) },
           skillDiversity: { groupSpread: skillSpread, partnerMix },
           repeatPenalties: {
             recentPairCount: recentPairValues.filter(Boolean).length,

@@ -1,5 +1,6 @@
 export {
   applyPlayerDeletion,
+  allocateFinalFeeAmounts,
   historyDurationSeconds,
   normalizeText,
   removeSessionPlayer,
@@ -14,6 +15,7 @@ export {
   isMixedDoublesGroup,
   isStandardMixedDoublesLineup,
   validateMixedDoublesLineup,
+  validateSynergyLineup,
   MATCHMAKING_ALGORITHM,
   emptySyncMetadata,
   mergeSyncSnapshots,
@@ -34,6 +36,7 @@ export type {
   DomainPayment,
   DomainPlayer,
   DomainQueuePlayer,
+  DomainSynergyTeam,
   DomainSettings,
   DomainWorkspace,
   MatchGame,
