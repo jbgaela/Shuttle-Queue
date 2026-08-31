@@ -206,11 +206,12 @@ function rankingSnapshot() {
   return snapshot;
 }
 
-const rankingApiState = { cloudWorkspaceReads: 0, publishedVersions: [] as string[], startedAt: "", cloudVersion: 9 as number | null, cloudStartedAt: null as string | null, publishConflictsRemaining: 0, requestOrder: [] as string[] };
+const rankingApiState = { cloudWorkspaceReads: 0, publishedVersions: [] as string[], publishedBodyVersions: [] as Array<number | null>, startedAt: "", cloudVersion: 9 as number | null, cloudStartedAt: null as string | null, publishConflictsRemaining: 0, requestOrder: [] as string[] };
 
 function resetRankingApiState() {
   rankingApiState.cloudWorkspaceReads = 0;
   rankingApiState.publishedVersions = [];
+  rankingApiState.publishedBodyVersions = [];
   rankingApiState.startedAt = "";
   rankingApiState.cloudVersion = 9;
   rankingApiState.cloudStartedAt = null;
@@ -311,6 +312,8 @@ async function mockRankingApi(route: Route) {
   if (path === "/workspace/public-rankings/publish" && route.request().method() === "POST") {
     rankingApiState.requestOrder.push("publish");
     rankingApiState.publishedVersions.push(route.request().headers()["if-match"] ?? "");
+    const body = route.request().postDataJSON() as { version?: unknown } | null;
+    rankingApiState.publishedBodyVersions.push(typeof body?.version === "number" ? body.version : null);
     if (rankingApiState.publishConflictsRemaining > 0) {
       rankingApiState.publishConflictsRemaining -= 1;
       rankingApiState.cloudVersion = 10;
@@ -592,7 +595,8 @@ test.describe("responsive regressions", () => {
     await page.getByRole("button", { name: "Publish this session" }).click();
     await expect(page.getByText("Public rankings link is ready.", { exact: true })).toBeVisible();
     expect(rankingApiState.cloudWorkspaceReads).toBeGreaterThan(0);
-    expect(rankingApiState.publishedVersions).toEqual(["9"]);
+    expect(rankingApiState.publishedVersions).toEqual(['"9"']);
+    expect(rankingApiState.publishedBodyVersions).toEqual([9]);
     expect(rankingApiState.requestOrder.indexOf("workspace")).toBeLessThan(rankingApiState.requestOrder.indexOf("publish"));
   });
 
@@ -606,7 +610,8 @@ test.describe("responsive regressions", () => {
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     await page.getByRole("button", { name: "Publish this session" }).click();
     await expect(page.getByText("Public rankings link is ready.", { exact: true })).toBeVisible();
-    expect(rankingApiState.publishedVersions).toEqual(["9", "10"]);
+    expect(rankingApiState.publishedVersions).toEqual(['"9"', '"10"']);
+    expect(rankingApiState.publishedBodyVersions).toEqual([9, 10]);
   });
 
   test("publishing stops when the cloud session changes", async ({ page }) => {

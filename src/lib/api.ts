@@ -197,7 +197,7 @@ export const api = {
   playerHistory: (_workspaceId: string, queuePlayerId: string, page = 1, pageSize = 15) => request<PlayerHistoryResponse>(`/queue/players/${queuePlayerId}/history?page=${page}&pageSize=${pageSize}`),
   rankings: (_workspaceId: string) => request<RankingPayload>("/rankings"),
   publicRankingPublications: () => request<PublicRankingPublicationResponse>("/workspace/public-rankings"),
-  publishPublicRankings: (version: number) => request<PublicRankingPublication>("/workspace/public-rankings/publish", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }),
+  publishPublicRankings: (version: number) => requestOnline<PublicRankingPublication>("/workspace/public-rankings/publish", { method: "POST", headers: { "if-match": `"${version}"` }, body: JSON.stringify({ version }) }),
   revokePublicRankings: (publication: PublicRankingPublication) => request<PublicRankingPublication>(`/workspace/public-rankings/${publication.id}/revoke`, { method: "POST", headers: { "if-match": String(publication.version) }, body: "{}" }),
   publicRankings: (token: string) => publicRequest<PublicRankingPayload>(token),
   publicRankingPlayerHistory: (token: string, playerKey: string) => publicRequest<PublicRankingPlayerHistoryPayload>(token, `/players/${encodeURIComponent(playerKey)}/history`),
