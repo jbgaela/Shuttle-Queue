@@ -1450,7 +1450,25 @@ function RankingsSharingControls({ session }: { session: SessionSummary }) {
   const [optimisticPublication, setOptimisticPublication] = useState<PublicRankingPublication | null>(null);
   const publicationsQuery = useQuery({ queryKey: ["publicRankingPublications"], queryFn: api.publicRankingPublications, retry: false, refetchInterval: 30_000 });
   useEffect(() => { if (publicationsQuery.isSuccess) setPublicSharingActive(Boolean(visiblePublicRankingPublication(publicationsQuery.data, optimisticPublication))); }, [publicationsQuery.data, publicationsQuery.isSuccess, optimisticPublication]);
-  const publish = useMutation({ mutationFn: async () => { await syncAccount(await currentAccountId(), "manual"); return api.publishPublicRankings(session.version); }, onSuccess: (publication) => { setOptimisticPublication(publication); setPublicSharingActive(true); queryClient.setQueryData<PublicRankingPublicationResponse>(["publicRankingPublications"], (previous) => publishedPublicRankingState(previous, publication)); window.dispatchEvent(new Event("shuttle-queue-public-sharing")); void queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] }); void queryClient.invalidateQueries({ queryKey: ["workspace"] }); toast.success("Public rankings link is ready."); }, onError: (error) => toast.error(errorMessage(error)) });
+  const refreshAfterPublishError = () => { void queryClient.invalidateQueries({ queryKey: ["workspace"] }); void queryClient.invalidateQueries({ queryKey: ["rankings"] }); void queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] }); };
+  const publish = useMutation({
+    mutationFn: async () => {
+      await syncAccount(await currentAccountId(), "manual");
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const cloudWorkspace = await api.cloudWorkspace();
+        if (cloudWorkspace.startedAt !== session.startedAt) throw new Error("This queue session changed on another device. Refresh the page before publishing rankings.");
+        if (!Number.isInteger(cloudWorkspace.version)) throw new Error("The current queue version could not be verified. Refresh the page and try again.");
+        try {
+          return await api.publishPublicRankings(cloudWorkspace.version);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.code !== "VERSION_CONFLICT" || attempt === 1) throw error;
+        }
+      }
+      throw new Error("The current queue version could not be verified. Refresh the page and try again.");
+    },
+    onSuccess: (publication) => { setOptimisticPublication(publication); setPublicSharingActive(true); queryClient.setQueryData<PublicRankingPublicationResponse>(["publicRankingPublications"], (previous) => publishedPublicRankingState(previous, publication)); window.dispatchEvent(new Event("shuttle-queue-public-sharing")); void queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] }); void queryClient.invalidateQueries({ queryKey: ["workspace"] }); toast.success("Public rankings link is ready."); },
+    onError: (error) => { if (error instanceof ApiError && (error.code === "VERSION_CONFLICT" || error.code === "VERSION_REQUIRED")) refreshAfterPublishError(); else if (error instanceof Error && error.message.startsWith("This queue session changed")) refreshAfterPublishError(); toast.error(errorMessage(error)); },
+  });
   const revoke = useMutation({ mutationFn: (publication: PublicRankingPublication) => api.revokePublicRankings(publication), onSuccess: (publication) => { setOptimisticPublication(null); setPublicSharingActive(false); queryClient.setQueryData<PublicRankingPublicationResponse>(["publicRankingPublications"], (previous) => revokedPublicRankingState(previous, publication)); window.dispatchEvent(new Event("shuttle-queue-public-sharing")); void queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] }); toast.success("Public rankings link revoked."); }, onError: (error) => toast.error(errorMessage(error)) });
   const current = visiblePublicRankingPublication(publicationsQuery.data, optimisticPublication);
   const archives = publicationsQuery.data?.archives ?? [];

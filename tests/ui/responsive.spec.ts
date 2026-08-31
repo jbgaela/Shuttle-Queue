@@ -206,6 +206,25 @@ function rankingSnapshot() {
   return snapshot;
 }
 
+const rankingApiState = { cloudWorkspaceReads: 0, publishedVersions: [] as string[], startedAt: "", cloudVersion: 9 as number | null, cloudStartedAt: null as string | null, publishConflictsRemaining: 0, requestOrder: [] as string[] };
+
+function resetRankingApiState() {
+  rankingApiState.cloudWorkspaceReads = 0;
+  rankingApiState.publishedVersions = [];
+  rankingApiState.startedAt = "";
+  rankingApiState.cloudVersion = 9;
+  rankingApiState.cloudStartedAt = null;
+  rankingApiState.publishConflictsRemaining = 0;
+  rankingApiState.requestOrder = [];
+}
+
+function rankingApiSnapshot() {
+  const snapshot = rankingSnapshot() as any;
+  rankingApiState.startedAt ||= snapshot.workspace.startedAt;
+  snapshot.workspace.startedAt = rankingApiState.startedAt;
+  return snapshot;
+}
+
 async function mockLiveApi(route: Route) {
   const corsHeaders = {
     "access-control-allow-origin": "http://127.0.0.1:3100",
@@ -264,7 +283,7 @@ async function mockRankingApi(route: Route) {
   const corsHeaders = {
     "access-control-allow-origin": "http://127.0.0.1:3100",
     "access-control-allow-credentials": "true",
-    "access-control-allow-headers": "content-type, x-csrf-token",
+    "access-control-allow-headers": "content-type, x-csrf-token, if-match",
     "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
   };
   if (route.request().method() === "OPTIONS") {
@@ -277,7 +296,29 @@ async function mockRankingApi(route: Route) {
     return;
   }
   if (path === "/sync/snapshot") {
-    await route.fulfill({ json: { data: { snapshot: rankingSnapshot(), cloudRevision: 1 } }, headers: corsHeaders });
+    const snapshot = rankingApiSnapshot();
+    delete snapshot.workspace.version;
+    await route.fulfill({ json: { data: { snapshot, cloudRevision: 1 } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/workspace" && route.request().method() === "GET") {
+    rankingApiState.requestOrder.push("workspace");
+    rankingApiState.cloudWorkspaceReads += 1;
+    const snapshot = rankingApiSnapshot();
+    await route.fulfill({ json: { data: { ...snapshot.workspace, id: "workspace", name: "Current queue", sessionDate: snapshot.workspace.startedAt, startedAt: rankingApiState.cloudStartedAt ?? snapshot.workspace.startedAt, status: "ACTIVE", scoring: { pointsToWin: 21, winBy: 2, scoreCap: null, bestOf: 1 }, version: rankingApiState.cloudVersion } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/workspace/public-rankings/publish" && route.request().method() === "POST") {
+    rankingApiState.requestOrder.push("publish");
+    rankingApiState.publishedVersions.push(route.request().headers()["if-match"] ?? "");
+    if (rankingApiState.publishConflictsRemaining > 0) {
+      rankingApiState.publishConflictsRemaining -= 1;
+      rankingApiState.cloudVersion = 10;
+      await route.fulfill({ status: 409, json: { error: { code: "VERSION_CONFLICT", message: "The data changed on another device." } }, headers: corsHeaders });
+      return;
+    }
+    const snapshot = rankingApiSnapshot();
+    await route.fulfill({ json: { data: { id: "publication-1", sessionStartedAt: snapshot.workspace.startedAt, state: "LIVE", publishedAt: new Date().toISOString(), version: 1, token: "published-token" } }, headers: corsHeaders, status: 201 });
     return;
   }
   if (path === "/workspace/public-rankings") {
@@ -539,6 +580,59 @@ test.describe("responsive regressions", () => {
     await expect(section).toContainText("Did Not Play Player");
     await expect(section.getByRole("button")).toHaveCount(0);
     await expect(page.getByText("Did Not Play Player", { exact: true })).toHaveCount(1);
+  });
+
+  test("publishing uses the authoritative cloud workspace version", async ({ page }) => {
+    resetRankingApiState();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    await page.getByRole("button", { name: "Publish this session" }).click();
+    await expect(page.getByText("Public rankings link is ready.", { exact: true })).toBeVisible();
+    expect(rankingApiState.cloudWorkspaceReads).toBeGreaterThan(0);
+    expect(rankingApiState.publishedVersions).toEqual(["9"]);
+    expect(rankingApiState.requestOrder.indexOf("workspace")).toBeLessThan(rankingApiState.requestOrder.indexOf("publish"));
+  });
+
+  test("publishing retries once when the cloud workspace changes", async ({ page }) => {
+    resetRankingApiState();
+    rankingApiState.publishConflictsRemaining = 1;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    await page.getByRole("button", { name: "Publish this session" }).click();
+    await expect(page.getByText("Public rankings link is ready.", { exact: true })).toBeVisible();
+    expect(rankingApiState.publishedVersions).toEqual(["9", "10"]);
+  });
+
+  test("publishing stops when the cloud session changes", async ({ page }) => {
+    resetRankingApiState();
+    rankingApiState.cloudStartedAt = "2026-01-01T00:00:00.000Z";
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    await page.getByRole("button", { name: "Publish this session" }).click();
+    await expect(page.locator("main").getByRole("alert")).toContainText("session changed on another device");
+    expect(rankingApiState.publishedVersions).toEqual([]);
+  });
+
+  test("publishing stops when the cloud version is invalid", async ({ page }) => {
+    resetRankingApiState();
+    rankingApiState.cloudVersion = null;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    await page.getByRole("button", { name: "Publish this session" }).click();
+    await expect(page.locator("main").getByRole("alert")).toContainText("version could not be verified");
+    expect(rankingApiState.publishedVersions).toEqual([]);
   });
 
   test("signed-in ranking history shows duration and participant summaries", async ({ page }) => {

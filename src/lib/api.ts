@@ -89,11 +89,7 @@ async function refreshCsrfToken() {
   try { return await refresh; } finally { if (csrfRefreshPromise === refresh) csrfRefreshPromise = null; }
 }
 
-export async function request<T>(path: string, init?: RequestInit, allowCsrfResync = true): Promise<T> {
-  if (typeof window !== "undefined" && !path.startsWith("/auth/") && !path.startsWith("/sync/") && !path.startsWith("/admin/") && !path.startsWith("/workspace/public-rankings")) {
-    const local = await import("./offline/repository");
-    if (await local.hasLocalSnapshot()) return local.handleRequest(await local.currentAccountId(), path, init) as Promise<T>;
-  }
+async function requestOnline<T>(path: string, init?: RequestInit, allowCsrfResync = true): Promise<T> {
   const csrfToken = readCsrfToken();
   const requestInit: RequestInit = { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}), ...(csrfToken ? { "x-csrf-token": csrfToken } : {}) } };
   if (path === "/auth/me" && !requestInit.cache) requestInit.cache = "no-store";
@@ -102,7 +98,7 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   if (response.status === 403 && payload?.error?.code === "CSRF_INVALID" && allowCsrfResync && typeof window !== "undefined") {
     const freshToken = await refreshCsrfToken();
     if (freshToken) {
-      return request(path, init, false);
+      return requestOnline(path, init, false);
     }
   }
   if (!response.ok) {
@@ -120,6 +116,14 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   if (payload?.data?.csrfToken) saveCsrfToken(payload.data.csrfToken);
   const data = (payload as ApiEnvelope<T>).data;
   return (path.startsWith("/sync/") ? data : hydrateQueueFields(data));
+}
+
+export async function request<T>(path: string, init?: RequestInit, allowCsrfResync = true): Promise<T> {
+  if (typeof window !== "undefined" && !path.startsWith("/auth/") && !path.startsWith("/sync/") && !path.startsWith("/admin/") && !path.startsWith("/workspace/public-rankings")) {
+    const local = await import("./offline/repository");
+    if (await local.hasLocalSnapshot()) return local.handleRequest(await local.currentAccountId(), path, init) as Promise<T>;
+  }
+  return requestOnline(path, init, allowCsrfResync);
 }
 
 async function publicRequest<T>(token: string, suffix = ""): Promise<T> {
@@ -145,6 +149,7 @@ export const api = {
   deleteAccount: (id: string, confirmationUsername: string, currentPassword: string, version: number) => request<void>(`/admin/accounts/${id}`, { method: "DELETE", headers: { "if-match": String(version) }, body: JSON.stringify({ confirmationUsername, currentPassword }) }),
   logout: async () => { try { if (typeof navigator !== "undefined" && !navigator.onLine) return; return await request<void>("/auth/logout", { method: "POST" }); } finally { csrfTokenCache = null; if (typeof window !== "undefined") { try { window.sessionStorage.removeItem("bq-csrf-token"); } catch { /* ignore storage cleanup failures */ } } } },
   workspace: async () => { const value = await request<WorkspaceSummary>("/workspace"); return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ACTIVE" }; },
+  cloudWorkspace: async () => { const value = await requestOnline<WorkspaceSummary>("/workspace"); return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ACTIVE" }; },
   endQueue: async (version: number) => { await syncBeforePublicSessionFinalization(); const value = await request<WorkspaceSummary>("/workspace/end", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }); if (publicSharingActive && typeof navigator !== "undefined" && navigator.onLine) { const local = await import("./offline/repository"); void local.syncAccount(await local.currentAccountId(), "background").catch(() => undefined); } return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ENDED" }; },
   startFreshQueue: async (version: number) => { await syncBeforePublicSessionFinalization(); const value = await request<WorkspaceSummary>("/workspace/start-fresh", { method: "POST", headers: { "if-match": String(version) }, body: "{}" }); if (publicSharingActive && typeof navigator !== "undefined" && navigator.onLine) { const local = await import("./offline/repository"); void local.syncAccount(await local.currentAccountId(), "background").catch(() => undefined); } return { ...value, id: "workspace", name: "Current queue", sessionDate: value.startedAt, status: value.status ?? "ACTIVE" }; },
   sessions: async () => [await api.workspace()],
