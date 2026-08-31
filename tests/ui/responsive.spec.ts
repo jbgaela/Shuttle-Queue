@@ -206,12 +206,16 @@ function rankingSnapshot() {
   return snapshot;
 }
 
-const rankingApiState = { cloudWorkspaceReads: 0, publishedVersions: [] as string[], publishedBodyVersions: [] as Array<number | null>, startedAt: "", cloudVersion: 9 as number | null, cloudStartedAt: null as string | null, publishConflictsRemaining: 0, requestOrder: [] as string[] };
+const rankingApiState = { cloudWorkspaceReads: 0, publishedVersions: [] as string[], publishedBodyVersions: [] as Array<number | null>, revokedRequests: [] as Array<{ id: string; header: string; bodyVersion: number | null }>, revokePublications: false, revokeFailure: null as "VERSION_REQUIRED" | "VERSION_CONFLICT" | null, revokedPublicationIds: [] as string[], startedAt: "", cloudVersion: 9 as number | null, cloudStartedAt: null as string | null, publishConflictsRemaining: 0, requestOrder: [] as string[] };
 
 function resetRankingApiState() {
   rankingApiState.cloudWorkspaceReads = 0;
   rankingApiState.publishedVersions = [];
   rankingApiState.publishedBodyVersions = [];
+  rankingApiState.revokedRequests = [];
+  rankingApiState.revokePublications = false;
+  rankingApiState.revokeFailure = null;
+  rankingApiState.revokedPublicationIds = [];
   rankingApiState.startedAt = "";
   rankingApiState.cloudVersion = 9;
   rankingApiState.cloudStartedAt = null;
@@ -224,6 +228,17 @@ function rankingApiSnapshot() {
   rankingApiState.startedAt ||= snapshot.workspace.startedAt;
   snapshot.workspace.startedAt = rankingApiState.startedAt;
   return snapshot;
+}
+
+function rankingPublications() {
+  if (!rankingApiState.revokePublications) return { current: null, archives: [] };
+  const sessionStartedAt = rankingApiSnapshot().workspace.startedAt;
+  const current = { id: "publication-current", sessionStartedAt, state: "LIVE", publishedAt: sessionStartedAt, version: 7, token: "current-token" };
+  const archive = { id: "publication-archive", sessionStartedAt: "2026-01-01T00:00:00.000Z", state: "FINAL", publishedAt: "2026-01-01T00:01:00.000Z", finalizedAt: "2026-01-01T02:00:00.000Z", version: 3, token: "archive-token" };
+  return {
+    current: rankingApiState.revokedPublicationIds.includes(current.id) ? null : current,
+    archives: rankingApiState.revokedPublicationIds.includes(archive.id) ? [] : [archive],
+  };
 }
 
 async function mockLiveApi(route: Route) {
@@ -324,8 +339,23 @@ async function mockRankingApi(route: Route) {
     await route.fulfill({ json: { data: { id: "publication-1", sessionStartedAt: snapshot.workspace.startedAt, state: "LIVE", publishedAt: new Date().toISOString(), version: 1, token: "published-token" } }, headers: corsHeaders, status: 201 });
     return;
   }
+  if (path.startsWith("/workspace/public-rankings/") && path.endsWith("/revoke") && route.request().method() === "POST") {
+    const id = path.split("/")[3] ?? "";
+    const body = route.request().postDataJSON() as { version?: unknown } | null;
+    rankingApiState.revokedRequests.push({ id, header: route.request().headers()["if-match"] ?? "", bodyVersion: typeof body?.version === "number" ? body.version : null });
+    if (rankingApiState.revokeFailure) {
+      const code = rankingApiState.revokeFailure;
+      rankingApiState.revokeFailure = null;
+      await route.fulfill({ status: 409, json: { error: { code, message: code === "VERSION_CONFLICT" ? "The data changed on another device." : "The current public rankings link version is required." } }, headers: corsHeaders });
+      return;
+    }
+    rankingApiState.revokedPublicationIds.push(id);
+    const publication = id === "publication-current" ? rankingPublications().current : { id, sessionStartedAt: "2026-01-01T00:00:00.000Z", state: "REVOKED", publishedAt: "2026-01-01T00:01:00.000Z", revokedAt: new Date().toISOString(), version: 4 };
+    await route.fulfill({ status: 200, json: { data: { ...(publication ?? {}), id, state: "REVOKED", revokedAt: new Date().toISOString(), version: id === "publication-current" ? 8 : 4 } }, headers: corsHeaders });
+    return;
+  }
   if (path === "/workspace/public-rankings") {
-    await route.fulfill({ json: { data: { current: null, archives: [] } }, headers: corsHeaders });
+    await route.fulfill({ json: { data: rankingPublications() }, headers: corsHeaders });
     return;
   }
   await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
@@ -638,6 +668,53 @@ test.describe("responsive regressions", () => {
     await page.getByRole("button", { name: "Publish this session" }).click();
     await expect(page.locator("main").getByRole("alert")).toContainText("version could not be verified");
     expect(rankingApiState.publishedVersions).toEqual([]);
+  });
+
+  test("revoking a current public link uses the confirmation modal and both version transports", async ({ page }) => {
+    resetRankingApiState();
+    rankingApiState.revokePublications = true;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    const revokeButton = page.getByRole("button", { name: "Revoke" }).first();
+    await revokeButton.focus();
+    await revokeButton.click();
+    const dialog = page.getByRole("dialog", { name: "Revoke this public rankings link?" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("immediately lose access");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(revokeButton).toBeFocused();
+    await revokeButton.click();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await revokeButton.click();
+    await dialog.getByRole("button", { name: "Revoke link" }).click();
+    await expect(page.getByText("Public rankings link revoked.", { exact: true })).toBeVisible();
+    expect(rankingApiState.revokedRequests).toEqual([{ id: "publication-current", header: '"7"', bodyVersion: 7 }]);
+  });
+
+  test("revoking an archived public link keeps a live current link and refreshes conflicts", async ({ page }) => {
+    resetRankingApiState();
+    rankingApiState.revokePublications = true;
+    rankingApiState.revokeFailure = "VERSION_CONFLICT";
+    await page.setViewportSize({ width: 744, height: 1133 });
+    await page.route("**/api/v2/**", mockRankingApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Rankings" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+    const revokeButtons = page.getByRole("button", { name: "Revoke" });
+    await expect(revokeButtons).toHaveCount(2);
+    await revokeButtons.nth(1).click();
+    const dialog = page.getByRole("dialog", { name: "Revoke this archived public rankings link?" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Revoke link" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText(/This public rankings link changed on another device\. Review the refreshed sharing controls/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke" })).toHaveCount(2);
+    expect(rankingApiState.revokedRequests).toEqual([{ id: "publication-archive", header: '"3"', bodyVersion: 3 }]);
   });
 
   test("signed-in ranking history shows duration and participant summaries", async ({ page }) => {
