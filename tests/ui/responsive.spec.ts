@@ -134,6 +134,21 @@ function queueLayoutSnapshot() {
   return snapshot;
 }
 
+function guidedQueueLayoutSnapshot() {
+  const snapshot = queueLayoutSnapshot() as any;
+  const waiting = snapshot.queuePlayers.filter((player: any) => player.status === "WAITING");
+  const guided = ["NEWBIE", "BEGINNER", "INTERMEDIATE", "INTERMEDIATE"];
+  guided.forEach((skillLevel, index) => {
+    const player = waiting[index];
+    if (!player) return;
+    player.skillLevel = skillLevel;
+    player.skillWeight = skillLevel === "NEWBIE" ? 1 : skillLevel === "BEGINNER" ? 2 : 4;
+    const profile = snapshot.players.find((candidate: any) => candidate.id === player.playerId);
+    if (profile) { profile.skillLevel = skillLevel; profile.skillWeight = player.skillWeight; }
+  });
+  return snapshot;
+}
+
 function feesSnapshot() {
   const snapshot = liveSnapshot() as any;
   const endedAt = new Date(Date.now() - 60_000).toISOString();
@@ -207,6 +222,7 @@ function rankingSnapshot() {
 }
 
 const rankingApiState = { cloudWorkspaceReads: 0, publishedVersions: [] as string[], publishedBodyVersions: [] as Array<number | null>, revokedRequests: [] as Array<{ id: string; header: string; bodyVersion: number | null }>, revokePublications: false, revokeFailure: null as "VERSION_REQUIRED" | "VERSION_CONFLICT" | null, revokedPublicationIds: [] as string[], startedAt: "", cloudVersion: 9 as number | null, cloudStartedAt: null as string | null, publishConflictsRemaining: 0, requestOrder: [] as string[] };
+const guidedUiState = { suggestionRequests: 0, matchCreationRequests: 0 };
 
 function resetRankingApiState() {
   rankingApiState.cloudWorkspaceReads = 0;
@@ -268,7 +284,8 @@ async function mockLiveApi(route: Route) {
   await route.fulfill({ status: 404, json: { error: { message: "Unexpected test request" } }, headers: corsHeaders });
 }
 
-async function mockQueueApi(route: Route) {
+async function mockQueueApi(route: Route, maybeSnapshotFactory?: unknown) {
+  const snapshotFactory = typeof maybeSnapshotFactory === "function" ? maybeSnapshotFactory as () => any : queueLayoutSnapshot;
   const corsHeaders = {
     "access-control-allow-origin": "http://127.0.0.1:3100",
     "access-control-allow-credentials": "true",
@@ -285,7 +302,21 @@ async function mockQueueApi(route: Route) {
     return;
   }
   if (path === "/sync/snapshot") {
-    await route.fulfill({ json: { data: { snapshot: queueLayoutSnapshot(), cloudRevision: 1 } }, headers: corsHeaders });
+    await route.fulfill({ json: { data: { snapshot: snapshotFactory(), cloudRevision: 1 } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/suggestions" && route.request().method() === "POST") {
+    guidedUiState.suggestionRequests += 1;
+    const snapshot = snapshotFactory();
+    const waiting = snapshot.queuePlayers.filter((player: any) => player.status === "WAITING");
+    const selected = [waiting[0], waiting[1], waiting[2], waiting[3]].filter(Boolean);
+    const view = (player: any) => ({ ...player, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel, effectiveSkillLevel: player.skillLevel, effectiveSkillWeight: player.skillWeight });
+    await route.fulfill({ json: { data: { cycleRestarted: false, suggestion: { token: "signed-guided-test-token", expiresAt: Date.now() + 300000, key: `${selected[0]?.id},${selected[2]?.id}|${selected[1]?.id},${selected[3]?.id}`, difference: 0, teamATotal: (selected[0]?.skillWeight ?? 0) + (selected[2]?.skillWeight ?? 0), teamBTotal: (selected[1]?.skillWeight ?? 0) + (selected[3]?.skillWeight ?? 0), lateArrivalCutoffAt: null, matchupAdvisory: null, teamA: [view(selected[0]), view(selected[2])], teamB: [view(selected[1]), view(selected[3])], explanation: { guided: { learnerSkillLevels: ["NEWBIE", "BEGINNER"], guideSkillLevels: ["INTERMEDIATE"], learnerIds: [selected[0]?.id, selected[1]?.id], guideIds: [selected[2]?.id, selected[3]?.id] }, searchStats: { eligibleCount: 4, evaluatedCount: 1, bounded: false } } } } }, headers: corsHeaders });
+    return;
+  }
+  if (path === "/matches" && route.request().method() === "POST") {
+    guidedUiState.matchCreationRequests += 1;
+    await route.fulfill({ status: 201, json: { data: { id: "created-match", status: "QUEUED", participants: [] } }, headers: corsHeaders });
     return;
   }
   if (path === "/workspace/public-rankings") {
@@ -496,6 +527,24 @@ test.describe("tablet Live court layout", () => {
 });
 
 test.describe("responsive regressions", () => {
+  test("Guided availability banner requests one lineup without creating a match", async ({ page }) => {
+    guidedUiState.suggestionRequests = 0;
+    guidedUiState.matchCreationRequests = 0;
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await page.route("**/api/v2/**", (route) => mockQueueApi(route, guidedQueueLayoutSnapshot));
+    await page.goto("/");
+    await page.getByRole("button", { name: "Queue" }).click();
+    await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();
+    const banner = page.getByRole("region", { name: "Guided matchup available" });
+    await expect(banner).toBeVisible();
+    await expect(page.getByText("A Guided matchup is ready.")).toHaveCount(1);
+    await banner.getByRole("button", { name: "Generate Guided lineup" }).click();
+    await expect(page.getByRole("heading", { name: "Make the next match." })).toBeVisible();
+    await expect(page.getByText("Guided", { exact: true }).last()).toBeVisible();
+    expect(guidedUiState.suggestionRequests).toBe(0);
+    expect(guidedUiState.matchCreationRequests).toBe(0);
+  });
+
   test("mobile keeps one column and full action labels", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/v2/**", mockLiveApi);

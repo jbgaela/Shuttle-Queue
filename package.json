@@ -14,7 +14,7 @@
     "start": "next start",
     "typecheck": "npm run build:domain && tsc -p tsconfig.json --noEmit",
     "lint": "eslint src tests playwright.config.ts next.config.ts --ext .ts,.tsx",
-    "test": "node --test",
+    "test": "npm run build:domain && node --test packages/domain/dist/tests/*.test.js tests/unit/**/*.test.js",
     "test:unit": "node --test tests/unit/**/*.test.js",
     "test:domain": "npm run build:domain && node --test packages/domain/dist/tests/*.test.js",
     "test:responsive": "playwright test tests/ui/responsive.spec.ts --workers=1",

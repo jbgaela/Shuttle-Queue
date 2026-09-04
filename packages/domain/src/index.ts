@@ -5,7 +5,7 @@ export type LatePenaltyState = "PENDING" | "SERVED" | "WAIVED";
 export type CourtStatus = "AVAILABLE" | "OCCUPIED" | "PAUSED" | "CLOSED";
 export type MatchStatus = "QUEUED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
 export type MatchSource = "MANUAL" | "AUTOMATIC" | "MANUAL_ADJUSTED";
-export type MatchmakingMode = "OPEN" | "SAME_SKILL" | "BALANCED" | "SAME_GENDER" | "MIXED_DOUBLES" | "UNDEFEATED_CHALLENGE";
+export type MatchmakingMode = "OPEN" | "SAME_SKILL" | "BALANCED" | "SAME_GENDER" | "MIXED_DOUBLES" | "GUIDED" | "UNDEFEATED_CHALLENGE";
 export type TeamSide = "A" | "B";
 
 export type ScoreInput = { teamAScore: number; teamBScore: number };
@@ -212,12 +212,15 @@ export function applyPlayerDeletion(snapshot: CloudSnapshotV2, playerIds: string
 }
 
 export type MatchPlayer = { id: string; displayName: string; gender: Gender; skillWeight: number; skillLevel: SkillLevel; effectiveSkillWeight?: number; effectiveSkillLevel?: SkillLevel; synergyTeamId?: string | null; status: QueuePlayerStatus; gamesPlayed: number; wins?: number; losses?: number; queueEnteredAt: string | null; lastMatchEndedAt: string | null; manualPriority: number; latePenaltyState?: LatePenaltyState | null };
+export type GuidedLineupPlayer = Pick<MatchPlayer, "id" | "skillLevel">;
+export type GuidedAvailabilityReason = "NO_GUIDED_COMPOSITION" | "REST_REQUIRED" | "NO_VALID_GROUP";
+export type GuidedAvailabilitySummary = { available: boolean; reason: GuidedAvailabilityReason | null; waitingLearnerCount: number; waitingGuideCount: number; readyLearnerCount: number; readyGuideCount: number; nextEligibleAt: string | null };
 export type MatchupAdvisory = { type: "LOW_SKILL_LONE_FEMALE"; queuePlayerId: string; displayName: string; skillLevel: "NEWBIE" | "BEGINNER" | "UPPER_BEGINNER" };
 export type MatchHistory = { partners: Map<string, Map<string, number>>; opponents: Map<string, Map<string, number>>; quartets: Map<string, number>; encounters?: Map<string, Map<string, number>>; recentPartners?: Map<string, Map<string, number>>; recentOpponents?: Map<string, Map<string, number>>; recentEncounters?: Map<string, Map<string, number>>; recentQuartets?: Map<string, number> };
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; matchupAdvisory?: MatchupAdvisory | null; explanation: Record<string, unknown> };
 export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date; synergyTeams?: Array<Pick<DomainSynergyTeam, "id" | "queuePlayerIds">> };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
-export const MATCHMAKING_ALGORITHM = "v9-synergy-team-bounded-search";
+export const MATCHMAKING_ALGORITHM = "v11-guided-matchmaking-optimized-search";
 
 export const skillWeights: Record<SkillLevel, number> = {
   NEWBIE: 1,
@@ -320,6 +323,26 @@ export const isProhibitedGeneratedGenderMatch = (teamA: MatchPlayer[], teamB: Ma
   teamA.length === 2 && teamB.length === 2
   && ((teamA.every((player) => player.gender === "FEMALE") && teamB.every((player) => player.gender === "MALE"))
     || (teamA.every((player) => player.gender === "MALE") && teamB.every((player) => player.gender === "FEMALE")));
+
+export type GuidedPlayerRole = "LEARNER" | "GUIDE";
+export const GUIDED_LEARNER_SKILL_LEVELS: SkillLevel[] = ["NEWBIE", "BEGINNER"];
+export const GUIDED_GUIDE_SKILL_LEVELS: SkillLevel[] = ["INTERMEDIATE"];
+export const guidedPlayerRole = (player: Pick<MatchPlayer, "skillLevel">): GuidedPlayerRole | null =>
+  GUIDED_LEARNER_SKILL_LEVELS.includes(player.skillLevel) ? "LEARNER" : GUIDED_GUIDE_SKILL_LEVELS.includes(player.skillLevel) ? "GUIDE" : null;
+export const buildGuidedExplanation = (players: ReadonlyArray<GuidedLineupPlayer>) => ({
+  learnerSkillLevels: [...GUIDED_LEARNER_SKILL_LEVELS],
+  guideSkillLevels: [...GUIDED_GUIDE_SKILL_LEVELS],
+  learnerIds: players.filter((player) => guidedPlayerRole(player) === "LEARNER").map((player) => player.id),
+  guideIds: players.filter((player) => guidedPlayerRole(player) === "GUIDE").map((player) => player.id),
+});
+export const validateGuidedLineup = (teamA: ReadonlyArray<GuidedLineupPlayer>, teamB: ReadonlyArray<GuidedLineupPlayer>) => {
+  if (teamA.length !== 2 || teamB.length !== 2) return "Guided matchups require two players per team.";
+  const group = [...teamA, ...teamB];
+  if (new Set(group.map((player) => player.id)).size !== group.length) return "Guided matchups require four unique players.";
+  if (group.filter((player) => guidedPlayerRole(player) === "LEARNER").length !== 2 || group.filter((player) => guidedPlayerRole(player) === "GUIDE").length !== 2) return "Guided matchups require two Newbie/Beginner learners and two Intermediate guides.";
+  if (![teamA, teamB].every((team) => team.some((player) => guidedPlayerRole(player) === "LEARNER") && team.some((player) => guidedPlayerRole(player) === "GUIDE"))) return "Guided matchups require one learner and one Intermediate guide on each team.";
+  return null;
+};
 
 export const validateBalancedLineup = (teamA: MatchPlayer[], teamB: MatchPlayer[], strengthGap: number) => {
   const group = [...teamA, ...teamB];
@@ -424,9 +447,159 @@ const diversePool = (players: MatchPlayer[], limit: number, previouslySkippedPla
 const boundedEligiblePools = (eligible: MatchPlayer[], mode: MatchmakingMode, previouslySkippedPlayerIds: Set<string>) => {
   if (eligible.length <= MAX_MATCHMAKING_POOL) return [eligible];
   if (mode === "MIXED_DOUBLES") return [[...new Map((["MALE", "FEMALE"] as const).flatMap((gender) => diversePool(eligible.filter((player) => player.gender === gender), 20, previouslySkippedPlayerIds, eligible)).map((player) => [player.id, player] as const)).values()].sort((a, b) => matchmakingPlayerCompare(a, b, previouslySkippedPlayerIds))];
+  if (mode === "GUIDED") { const learners = diversePool(eligible.filter((player) => guidedPlayerRole(player) === "LEARNER"), 20, previouslySkippedPlayerIds, eligible); const guides = diversePool(eligible.filter((player) => guidedPlayerRole(player) === "GUIDE"), 20, previouslySkippedPlayerIds, eligible); return [[...new Map([...learners, ...guides].map((player) => [player.id, player] as const)).values()].sort((a, b) => matchmakingPlayerCompare(a, b, previouslySkippedPlayerIds))]; }
   if (mode === "SAME_GENDER") return (["MALE", "FEMALE"] as const).map((gender) => diversePool(eligible.filter((player) => player.gender === gender), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
   if (mode === "SAME_SKILL") return (["NEWBIE", "BEGINNER", "UPPER_BEGINNER", "INTERMEDIATE", "UPPER_INTERMEDIATE", "ADVANCED"] as const).map((skillLevel) => diversePool(eligible.filter((player) => effectiveLevelFor(player) === skillLevel), MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds));
   return [diversePool(eligible, MAX_MATCHMAKING_POOL, previouslySkippedPlayerIds)];
+};
+type GuidedTeam = [MatchPlayer, MatchPlayer];
+type GuidedSearchContext = {
+  waitingLearners: MatchPlayer[];
+  waitingGuides: MatchPlayer[];
+  readyLearners: MatchPlayer[];
+  readyGuides: MatchPlayer[];
+  freeLearners: MatchPlayer[];
+  freeGuides: MatchPlayer[];
+  lockedTeams: GuidedTeam[];
+  blockedIds: Set<string>;
+  summary: GuidedAvailabilitySummary;
+  witness: [MatchPlayer[], MatchPlayer[]] | null;
+};
+const guidedReady = (player: MatchPlayer, minimumRestMinutes: number, now: number) => player.status === "WAITING" && Boolean(player.queueEnteredAt) && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now;
+const guidedPartitionIsValid = (teamA: MatchPlayer[], teamB: MatchPlayer[], synergyTeams?: MatchmakingOptions["synergyTeams"]) =>
+  !validateGuidedLineup(teamA, teamB)
+  && !isProhibitedGeneratedGenderMatch(teamA, teamB)
+  && !teamA.some((player) => teamB.some((candidate) => sameSynergyTeam(player, candidate)))
+  && !validateSynergyLineup(teamA, teamB, synergyTeams);
+const guidedGroupWitness = (group: MatchPlayer[], synergyTeams?: MatchmakingOptions["synergyTeams"]): [MatchPlayer[], MatchPlayer[]] | null => {
+  if (group.length !== 4 || group.filter((player) => guidedPlayerRole(player) === "LEARNER").length !== 2 || group.filter((player) => guidedPlayerRole(player) === "GUIDE").length !== 2) return null;
+  for (const [teamA, teamB] of partitions(group)) if (guidedPartitionIsValid(teamA, teamB, synergyTeams)) return [teamA, teamB];
+  return null;
+};
+const buildGuidedSearchContext = (players: MatchPlayer[], options: MatchmakingOptions = {}): GuidedSearchContext => {
+  const now = options.now ? new Date(options.now).getTime() : Date.now();
+  const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
+  const waitingLearners = players.filter((player) => player.status === "WAITING" && Boolean(player.queueEnteredAt) && guidedPlayerRole(player) === "LEARNER");
+  const waitingGuides = players.filter((player) => player.status === "WAITING" && Boolean(player.queueEnteredAt) && guidedPlayerRole(player) === "GUIDE");
+  const readyLearners = waitingLearners.filter((player) => guidedReady(player, minimumRestMinutes, now));
+  const readyGuides = waitingGuides.filter((player) => guidedReady(player, minimumRestMinutes, now));
+  const readyIds = new Set([...readyLearners, ...readyGuides].map((player) => player.id));
+  const byId = new Map(players.map((player) => [player.id, player]));
+  const blockedIds = new Set<string>();
+  const lockedTeams: GuidedTeam[] = [];
+  const seenTeamIds = new Set<string>();
+  const seenPlayerIds = new Set<string>();
+  for (const team of options.synergyTeams ?? []) {
+    if (!team || !Array.isArray(team.queuePlayerIds) || team.queuePlayerIds.length !== 2 || team.queuePlayerIds[0] === team.queuePlayerIds[1] || seenTeamIds.has(team.id)) continue;
+    seenTeamIds.add(team.id);
+    const [firstId, secondId] = team.queuePlayerIds;
+    if (seenPlayerIds.has(firstId) || seenPlayerIds.has(secondId)) continue;
+    seenPlayerIds.add(firstId);
+    seenPlayerIds.add(secondId);
+    const first = byId.get(firstId);
+    const second = byId.get(secondId);
+    if (!first && !second) continue;
+    if (!first || !second || !readyIds.has(firstId) || !readyIds.has(secondId)) {
+      if (first) blockedIds.add(first.id);
+      if (second) blockedIds.add(second.id);
+      continue;
+    }
+    const firstRole = guidedPlayerRole(first);
+    const secondRole = guidedPlayerRole(second);
+    if (!firstRole || !secondRole || firstRole === secondRole) {
+      blockedIds.add(first.id);
+      blockedIds.add(second.id);
+      continue;
+    }
+    lockedTeams.push(firstRole === "LEARNER" ? [first, second] : [second, first]);
+    blockedIds.add(first.id);
+    blockedIds.add(second.id);
+  }
+  const freeLearners = readyLearners.filter((player) => !blockedIds.has(player.id));
+  const freeGuides = readyGuides.filter((player) => !blockedIds.has(player.id));
+  const nextEligibleTimes = [...waitingLearners, ...waitingGuides]
+    .map((player) => restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now))
+    .filter((eligibleAt) => eligibleAt > now)
+    .map((eligibleAt) => eligibleAt);
+  const waitingCountsSufficient = waitingLearners.length >= 2 && waitingGuides.length >= 2;
+  const readyCountsSufficient = readyLearners.length >= 2 && readyGuides.length >= 2;
+  const summaryBase = {
+    waitingLearnerCount: waitingLearners.length,
+    waitingGuideCount: waitingGuides.length,
+    readyLearnerCount: readyLearners.length,
+    readyGuideCount: readyGuides.length,
+    nextEligibleAt: nextEligibleTimes.length ? new Date(Math.min(...nextEligibleTimes)).toISOString() : null,
+  };
+  const context: GuidedSearchContext = { waitingLearners, waitingGuides, readyLearners, readyGuides, freeLearners, freeGuides, lockedTeams, blockedIds, summary: { available: false, reason: "NO_VALID_GROUP", ...summaryBase }, witness: null };
+  const findWitness = (): [MatchPlayer[], MatchPlayer[]] | null => {
+    for (let first = 0; first < lockedTeams.length; first += 1) for (let second = first + 1; second < lockedTeams.length; second += 1) {
+      const group = [...lockedTeams[first]!, ...lockedTeams[second]!];
+      const witness = guidedGroupWitness(group, options.synergyTeams);
+      if (witness) return witness;
+    }
+    const learnerRepresentatives = ["MALE", "FEMALE"].flatMap((gender) => freeLearners.filter((player) => player.gender === gender).slice(0, 2));
+    const lockedGuideRepresentatives = ["MALE", "FEMALE"].flatMap((gender) => freeGuides.filter((player) => player.gender === gender).slice(0, 2));
+    for (const locked of lockedTeams) {
+      for (const learner of learnerRepresentatives) for (const guide of lockedGuideRepresentatives) {
+        const witness = guidedGroupWitness([...locked, learner, guide], options.synergyTeams);
+        if (witness) return witness;
+      }
+    }
+    const guideRepresentatives = ["MALE", "FEMALE"].flatMap((gender) => freeGuides.filter((player) => player.gender === gender).slice(0, 2));
+    for (let learnerIndex = 0; learnerIndex < freeLearners.length - 1; learnerIndex += 1) for (let secondLearnerIndex = learnerIndex + 1; secondLearnerIndex < freeLearners.length; secondLearnerIndex += 1) {
+      const learners = [freeLearners[learnerIndex]!, freeLearners[secondLearnerIndex]!];
+      for (let guideIndex = 0; guideIndex < guideRepresentatives.length - 1; guideIndex += 1) for (let secondGuideIndex = guideIndex + 1; secondGuideIndex < guideRepresentatives.length; secondGuideIndex += 1) {
+        const witness = guidedGroupWitness([...learners, guideRepresentatives[guideIndex]!, guideRepresentatives[secondGuideIndex]!], options.synergyTeams);
+        if (witness) return witness;
+      }
+    }
+    return null;
+  };
+  context.witness = waitingCountsSufficient && readyCountsSufficient ? findWitness() : null;
+  context.summary = { ...summaryBase, available: Boolean(context.witness), reason: !waitingCountsSufficient ? "NO_GUIDED_COMPOSITION" : !readyCountsSufficient ? "REST_REQUIRED" : context.witness ? null : "NO_VALID_GROUP" };
+  return context;
+};
+export const evaluateGuidedAvailability = (players: MatchPlayer[], options: MatchmakingOptions = {}): GuidedAvailabilitySummary => buildGuidedSearchContext(applySynergyTeams(players, options.synergyTeams), options).summary;
+export const isGuidedMatchAvailable = (players: MatchPlayer[], options: MatchmakingOptions = {}) => evaluateGuidedAvailability(players, options).available;
+
+type GuidedCandidateResult = { groups: MatchPlayer[][]; evaluatedCount: number; bounded: boolean };
+const guidedCandidateGroups = (context: GuidedSearchContext, previouslySkippedPlayerIds: Set<string>, boundedSearch: boolean, synergyTeams?: MatchmakingOptions["synergyTeams"]): GuidedCandidateResult => {
+  const learnerPool = boundedSearch ? diversePool(context.freeLearners, 20, previouslySkippedPlayerIds, context.freeLearners) : [...context.freeLearners];
+  const guidePool = boundedSearch ? diversePool(context.freeGuides, 20, previouslySkippedPlayerIds, context.freeGuides) : [...context.freeGuides];
+  const lockedPool = boundedSearch ? context.lockedTeams.slice(0, 20) : context.lockedTeams;
+  const groups: MatchPlayer[][] = [];
+  const keys = new Set<string>();
+  let evaluatedCount = 0;
+  let bounded = false;
+  const push = (group: MatchPlayer[]) => {
+    evaluatedCount += 1;
+    const witness = guidedGroupWitness(group, synergyTeams);
+    if (!witness) return;
+    const key = quartetKey(group);
+    if (keys.has(key)) return;
+    keys.add(key);
+    groups.push(group);
+    if (boundedSearch && groups.length >= MAX_BOUNDED_GROUPS) bounded = true;
+  };
+  if (context.witness) push([...context.witness[0], ...context.witness[1]]);
+  if (!bounded) for (let first = 0; first < lockedPool.length; first += 1) for (let second = first + 1; second < lockedPool.length; second += 1) {
+    push([...lockedPool[first]!, ...lockedPool[second]!]);
+    if (bounded) break;
+  }
+  if (!bounded) for (const locked of lockedPool) {
+    for (const learner of learnerPool) for (const guide of guidePool) {
+      push([...locked, learner, guide]);
+      if (bounded) break;
+    }
+    if (bounded) break;
+  }
+  if (!bounded) forEachCombination(learnerPool, 2, (learners) => {
+    if (bounded) return;
+    forEachCombination(guidePool, 2, (guides) => {
+      if (!bounded) push([...learners, ...guides]);
+    });
+  });
+  return { groups, evaluatedCount, bounded };
 };
 
 const winsFor = (player: MatchPlayer) => player.wins ?? 0;
@@ -523,7 +696,10 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
   const strengthGap = mode === "BALANCED" ? options.strengthGap ?? DEFAULT_BALANCED_STRENGTH_GAP : undefined;
-  const eligibleCandidates = preparedPlayers.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const guidedContext = mode === "GUIDED" ? buildGuidedSearchContext(preparedPlayers, options) : null;
+  const eligibleCandidates = mode === "GUIDED"
+    ? [...(guidedContext?.readyLearners ?? []), ...(guidedContext?.readyGuides ?? [])]
+    : preparedPlayers.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
   const eligibleIds = new Set(eligibleCandidates.map((player) => player.id));
   const eligible = eligibleCandidates.filter((player) => !player.synergyTeamId || preparedPlayers.some((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id && eligibleIds.has(candidate.id)));
   if (eligible.length < 4) return null;
@@ -537,18 +713,30 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
   const searchPools = boundedEligiblePools(eligible, mode, previouslySkippedPlayerIds);
   const searchPlayers = searchPools.flat();
   const boundedSearch = eligible.length > MAX_MATCHMAKING_POOL;
-  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); if (!hasSynergyCompatiblePartition(group)) return false; if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && !isMixedDoublesGroup(group)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => effectiveWeightFor(player))).size !== 1) return false; if (group.some((player) => player.skillLevel === "NEWBIE") && !hasNewbieCompatiblePartition(group)) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => effectiveWeightFor(player))) - Math.min(...group.map((player) => effectiveWeightFor(player))) <= strengthGap!; };
+  const validGroup = (group: MatchPlayer[]) => { const genders = new Set(group.map((player) => player.gender)); if (!hasSynergyCompatiblePartition(group)) return false; if (mode === "GUIDED" && (group.filter((player) => guidedPlayerRole(player) === "LEARNER").length !== 2 || group.filter((player) => guidedPlayerRole(player) === "GUIDE").length !== 2)) return false; if (mode === "SAME_GENDER" && genders.size !== 1) return false; if (mode === "MIXED_DOUBLES" && !isMixedDoublesGroup(group)) return false; if (mode === "SAME_SKILL" && new Set(group.map((player) => effectiveWeightFor(player))).size !== 1) return false; if (mode !== "GUIDED" && group.some((player) => player.skillLevel === "NEWBIE") && !hasNewbieCompatiblePartition(group)) return false; return mode !== "BALANCED" || Math.max(...group.map((player) => effectiveWeightFor(player))) - Math.min(...group.map((player) => effectiveWeightFor(player))) <= strengthGap!; };
   const candidateGroups: MatchPlayer[][] = [];
   let candidateMinimumGames = Number.POSITIVE_INFINITY;
-  for (const pool of searchPools) {
-    let enumeratedGroups = 0;
-    forEachCombination(pool, 4, (group) => {
-      if (boundedSearch && enumeratedGroups >= MAX_BOUNDED_GROUPS) return;
-      enumeratedGroups += 1;
-      if (!validGroup(group)) return;
-      candidateGroups.push(group);
-      candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed));
-    });
+  let evaluatedGroups = 0;
+  let boundedGroups = false;
+  if (mode === "GUIDED" && guidedContext) {
+    const guidedCandidates = guidedCandidateGroups(guidedContext, previouslySkippedPlayerIds, boundedSearch, options.synergyTeams);
+    candidateGroups.push(...guidedCandidates.groups);
+    evaluatedGroups = guidedCandidates.evaluatedCount;
+    boundedGroups = guidedCandidates.bounded;
+    for (const group of candidateGroups) candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed));
+  } else {
+    for (const pool of searchPools) {
+      let enumeratedGroups = 0;
+      forEachCombination(pool, 4, (group) => {
+        if (boundedSearch && enumeratedGroups >= MAX_BOUNDED_GROUPS) return;
+        enumeratedGroups += 1;
+        evaluatedGroups += 1;
+        if (!validGroup(group)) return;
+        candidateGroups.push(group);
+        candidateMinimumGames = Math.min(candidateMinimumGames, ...group.map((player) => player.gamesPlayed));
+      });
+      boundedGroups = boundedGroups || (boundedSearch && enumeratedGroups >= MAX_BOUNDED_GROUPS);
+    }
   }
   if (!candidateGroups.length || !Number.isFinite(candidateMinimumGames)) return null;
   const fairGroups = candidateGroups.filter((group) => Math.max(...group.map((player) => player.gamesPlayed)) <= candidateMinimumGames + 1);
@@ -569,7 +757,7 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
       const standardMixedDoubles = isStandardMixedDoublesLineup(teamA, teamB);
       if (mode === "MIXED_DOUBLES" && !standardMixedDoubles) continue;
       if (teamA.some((player) => teamB.some((candidate) => sameSynergyTeam(player, candidate)))) continue;
-      if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
+      if (isProhibitedGeneratedGenderMatch(teamA, teamB) || (mode === "GUIDED" ? validateGuidedLineup(teamA, teamB) : isProhibitedGeneratedNewbieMatch(teamA, teamB))) continue;
       const teamATotal = teamA.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
       const teamBTotal = teamB.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
       if (mode === "BALANCED" && Math.abs(teamATotal - teamBTotal) !== strengthGap!) continue;
@@ -598,13 +786,14 @@ export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, hist
         explanation: {
           algorithmVersion: MATCHMAKING_ALGORITHM,
           mode,
-          searchStats: { eligibleCount: eligible.length, evaluatedCount: searchPlayers.length, bounded: searchPlayers.length < eligible.length },
+          searchStats: { eligibleCount: eligible.length, evaluatedCount: evaluatedGroups, bounded: boundedGroups || searchPlayers.length < eligible.length },
           loneFemalePolicy: loneFemalePolicy(teamA, teamB),
           strengthGap: strengthGap ?? null,
           rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() },
           teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: Math.abs(teamATotal - teamBTotal) },
           synergy: { teamIds: [...new Set(group.flatMap((player) => player.synergyTeamId ? [player.synergyTeamId] : []))], effectiveSkillWeights: group.filter((player) => player.synergyTeamId).map((player) => ({ id: player.id, weight: effectiveWeightFor(player) })) },
           skillDiversity: { groupSpread: skillSpread, partnerMix },
+          ...(mode === "GUIDED" ? { guided: buildGuidedExplanation(group) } : {}),
           repeatPenalties: {
             recentPairCount: recentPairValues.filter(Boolean).length,
             recentPairTotal: recentPairValues.reduce((sum, value) => sum + value, 0),

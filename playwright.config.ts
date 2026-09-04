@@ -39,7 +39,7 @@ export default defineConfig({
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
-    env: { UI_TEST_DIST_DIR: ".next-ui-test" },
+    env: { UI_TEST_DIST_DIR: process.env.UI_TEST_DIST_DIR ?? ".next-ui-test" },
     stdout: "ignore",
     stderr: "pipe",
   },

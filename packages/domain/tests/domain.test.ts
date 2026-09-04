@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { allocateFinalFeeAmounts, applyPlayerDeletion, isProhibitedGeneratedNewbieMatch, previewPlayerDeletion, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateMixedDoublesLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
+import { allocateFinalFeeAmounts, applyPlayerDeletion, evaluateGuidedAvailability, isGuidedMatchAvailable, isProhibitedGeneratedNewbieMatch, previewPlayerDeletion, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateGuidedLineup, validateMixedDoublesLineup, validateScores, type CloudSnapshotV2, type MatchHistory, type MatchPlayer } from "../src/index.js";
 test("allocates finalized no-show penalties", () => {
   const players = [{ id: "played", matchesPlayed: 3 }, { id: "absent", matchesPlayed: 0 }, { id: "never-checked-in", matchesPlayed: 0 }];
   assert.deepEqual(Object.fromEntries(allocateFinalFeeAmounts({ mode: "FIXED_PER_PLAYER", fixedAmountPerPlayerMinor: 100, expectedQueueCostMinor: 0, noShowPenaltyMinor: 25 }, players)), { absent: 25, "never-checked-in": 25, played: 100 });
@@ -40,6 +40,59 @@ test("generated matches require Newbies to partner with Beginner or Upper Beginn
   assert.equal(suggestMatch([make("n1", "NEWBIE", 1), make("i1", "INTERMEDIATE", 4), make("i2", "INTERMEDIATE", 4), make("i3", "INTERMEDIATE", 4)], "OPEN", history), null);
   const undefeated = ["n1", "n2", "n3", "n4"].map((id) => ({ ...make(id, "NEWBIE", 1), gamesPlayed: 4, wins: 4 }));
   assert.equal(suggestMatch(undefeated, "UNDEFEATED_CHALLENGE", history), null);
+});
+
+test("Guided matchmaking requires two raw learners and two intermediate guides", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (id: string, skillLevel: MatchPlayer["skillLevel"], skillWeight: number): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight, skillLevel, status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(Number(id.replace(/\D/g, "")) || 0).toISOString(), lastMatchEndedAt: null, manualPriority: 0 });
+  const players = [make("n1", "NEWBIE", 1), make("b1", "BEGINNER", 2), make("i1", "INTERMEDIATE", 4), make("i2", "INTERMEDIATE", 4)];
+  const guided = suggestMatch(players, "GUIDED", history);
+  assert.ok(guided);
+  assert.equal(validateGuidedLineup(guided.teamA, guided.teamB), null);
+  assert.deepEqual(guided.explanation.guided, { learnerSkillLevels: ["NEWBIE", "BEGINNER"], guideSkillLevels: ["INTERMEDIATE"], learnerIds: ["n1", "b1"], guideIds: ["i1", "i2"] });
+  assert.equal(suggestMatch([make("n1", "NEWBIE", 1), make("i1", "INTERMEDIATE", 4), make("i2", "INTERMEDIATE", 4), make("i3", "INTERMEDIATE", 4)], "GUIDED", history), null);
+  assert.equal(suggestMatch([make("b1", "BEGINNER", 2), make("u1", "UPPER_BEGINNER", 3), make("i1", "INTERMEDIATE", 4), make("i2", "INTERMEDIATE", 4)], "GUIDED", history), null);
+  assert.equal(validateGuidedLineup([players[0]!, players[2]!], [players[1]!, players[3]!]), null);
+  assert.match(validateGuidedLineup([players[0]!, players[1]!], [players[2]!, players[3]!]) ?? "", /one learner/);
+  assert.equal(isGuidedMatchAvailable(players, { now: new Date("2026-01-01T10:00:00.000Z") }), true);
+  assert.ok(suggestMatch(players, "GUIDED", history, [], { synergyTeams: [{ id: "pair-1", queuePlayerIds: ["n1", "i1"] as [string, string] }] }));
+  assert.equal(isGuidedMatchAvailable(players, { synergyTeams: [{ id: "pair-1", queuePlayerIds: ["n1", "b1"] as [string, string] }] }), false);
+  const restBlocked = players.map((player) => player.id === "i1" ? { ...player, lastMatchEndedAt: "2026-01-01T09:45:00.000Z" } : player);
+  assert.equal(isGuidedMatchAvailable(restBlocked, { minimumRestMinutes: 30, now: new Date("2026-01-01T10:00:00.000Z") }), false);
+});
+
+test("Guided availability summaries classify composition, rest, and legal partitions", () => {
+  const make = (id: string, skillLevel: MatchPlayer["skillLevel"], lastMatchEndedAt: string | null = null): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight: skillWeight(skillLevel), skillLevel, status: "WAITING", gamesPlayed: 0, queueEnteredAt: "2026-01-01T00:00:00.000Z", lastMatchEndedAt, manualPriority: 0 });
+  const now = new Date("2026-01-01T10:00:00.000Z");
+  assert.equal(evaluateGuidedAvailability([make("l1", "BEGINNER"), make("g1", "INTERMEDIATE"), make("g2", "INTERMEDIATE")], { now }).reason, "NO_GUIDED_COMPOSITION");
+  assert.equal(evaluateGuidedAvailability([make("l1", "BEGINNER", "2026-01-01T09:45:00.000Z"), make("l2", "NEWBIE"), make("g1", "INTERMEDIATE"), make("g2", "INTERMEDIATE")], { now, minimumRestMinutes: 30 }).reason, "REST_REQUIRED");
+  const lockedLearners = [{ id: "same-role", queuePlayerIds: ["l1", "l2"] as [string, string] }];
+  const invalid = evaluateGuidedAvailability([make("l1", "BEGINNER"), make("l2", "NEWBIE"), make("g1", "INTERMEDIATE"), make("g2", "INTERMEDIATE")], { now, synergyTeams: lockedLearners });
+  assert.equal(invalid.reason, "NO_VALID_GROUP");
+  assert.equal(invalid.available, false);
+});
+
+test("Guided bounded search seeds a valid witness outside the generic pool", () => {
+  const make = (id: string, skillLevel: MatchPlayer["skillLevel"], gender: "MALE" | "FEMALE" = "MALE"): MatchPlayer => ({ id, displayName: id, gender, skillWeight: skillWeight(skillLevel), skillLevel, status: "WAITING", gamesPlayed: 0, queueEnteredAt: "2026-01-01T00:00:00.000Z", lastMatchEndedAt: null, manualPriority: 0 });
+  const learners = Array.from({ length: 21 }, (_, index) => make(`learner-${index}`, "BEGINNER", index % 2 ? "FEMALE" : "MALE"));
+  const guides = Array.from({ length: 20 }, (_, index) => make(`guide-${index}`, "INTERMEDIATE", index % 2 ? "FEMALE" : "MALE"));
+  const synergyTeams = [{ id: "same-role", queuePlayerIds: ["learner-0", "learner-1"] as [string, string] }];
+  const options = { now: new Date("2026-01-01T10:00:00.000Z"), synergyTeams };
+  assert.equal(isGuidedMatchAvailable([...learners, ...guides], options), true);
+  const suggestion = suggestMatch([...learners, ...guides], "GUIDED", { partners: new Map(), opponents: new Map(), quartets: new Map() }, [], options);
+  assert.ok(suggestion);
+  assert.equal(validateGuidedLineup(suggestion.teamA, suggestion.teamB), null);
+});
+
+test("Guided availability stays bounded for large invalid Synergy queues", () => {
+  const make = (id: string, skillLevel: MatchPlayer["skillLevel"]): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight: skillWeight(skillLevel), skillLevel, status: "WAITING", gamesPlayed: 0, queueEnteredAt: "2026-01-01T00:00:00.000Z", lastMatchEndedAt: null, manualPriority: 0 });
+  const learners = Array.from({ length: 60 }, (_, index) => make(`learner-${index}`, index % 2 ? "BEGINNER" : "NEWBIE"));
+  const guides = Array.from({ length: 60 }, (_, index) => make(`guide-${index}`, "INTERMEDIATE"));
+  const synergyTeams = [...Array.from({ length: 30 }, (_, index) => ({ id: `learner-pair-${index}`, queuePlayerIds: [`learner-${index * 2}`, `learner-${index * 2 + 1}`] as [string, string] })), ...Array.from({ length: 30 }, (_, index) => ({ id: `guide-pair-${index}`, queuePlayerIds: [`guide-${index * 2}`, `guide-${index * 2 + 1}`] as [string, string] }))];
+  const startedAt = Date.now();
+  const summary = evaluateGuidedAvailability([...learners, ...guides], { now: new Date("2026-01-01T10:00:00.000Z"), synergyTeams });
+  assert.equal(summary.available, false);
+  assert.ok(Date.now() - startedAt < 1000);
 });
 
 test("handicap suggestions require an exact team-total difference", () => {
@@ -293,18 +346,48 @@ test("bounds large queues deterministically with independent gender and skill po
   assert.ok(mixed);
   assert.ok(mixedAgain);
   assert.equal(mixed.key, mixedAgain.key);
-  assert.deepEqual(mixed.explanation.searchStats, { eligibleCount: 100, evaluatedCount: 40, bounded: true });
+  assert.deepEqual(mixed.explanation.searchStats, { eligibleCount: 100, evaluatedCount: 8000, bounded: true });
   assert.equal(validateMixedDoublesLineup(mixed.teamA, mixed.teamB), null);
 
   const genderRare = [...Array.from({ length: 4 }, (_, index) => make(`female-${index}`, "FEMALE", "BEGINNER", 2)), ...Array.from({ length: 76 }, (_, index) => make(`male-${index}`, "MALE", "BEGINNER", 2))];
   const sameGender = suggestMatch(genderRare, "SAME_GENDER", history);
   assert.ok(sameGender);
   assert.equal(new Set([...sameGender.teamA, ...sameGender.teamB].map((player) => player.gender)).size, 1);
-  assert.equal((sameGender.explanation.searchStats as { evaluatedCount: number }).evaluatedCount, 44);
+  assert.equal((sameGender.explanation.searchStats as { evaluatedCount: number }).evaluatedCount, 8001);
 
   const skillPools = [...Array.from({ length: 50 }, (_, index) => make(`beginner-${index}`, index % 2 ? "FEMALE" : "MALE", "BEGINNER", 2)), ...Array.from({ length: 50 }, (_, index) => make(`intermediate-${index}`, index % 2 ? "FEMALE" : "MALE", "INTERMEDIATE", 4))];
   const sameSkill = suggestMatch(skillPools, "SAME_SKILL", history);
   assert.ok(sameSkill);
   assert.equal(new Set([...sameSkill.teamA, ...sameSkill.teamB].map((player) => player.skillLevel)).size, 1);
-  assert.equal((sameSkill.explanation.searchStats as { evaluatedCount: number }).evaluatedCount, 80);
+  assert.equal((sameSkill.explanation.searchStats as { evaluatedCount: number }).evaluatedCount, 16000);
+});
+
+
+test("Guided hard constraints cover roles, skills, duplicate IDs, locked pairs, and gender alternatives", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (id: string, skillLevel: MatchPlayer["skillLevel"], gender: "MALE" | "FEMALE" = "MALE"): MatchPlayer => ({ id, displayName: id, gender, skillLevel, skillWeight: skillWeight(skillLevel), status: "WAITING", gamesPlayed: 0, queueEnteredAt: "2026-01-01T00:00:00.000Z", lastMatchEndedAt: null, manualPriority: 0 });
+  const valid = [make("l1", "NEWBIE", "FEMALE"), make("l2", "BEGINNER", "MALE"), make("g1", "INTERMEDIATE", "FEMALE"), make("g2", "INTERMEDIATE", "MALE")];
+  const suggestion = suggestMatch(valid, "GUIDED", history);
+  assert.ok(suggestion);
+  assert.equal(validateGuidedLineup(suggestion.teamA, suggestion.teamB), null);
+  assert.notEqual(validateGuidedLineup([valid[0]!, valid[0]!], [valid[2]!, valid[3]!]), null);
+  assert.notEqual(validateGuidedLineup([valid[0]!], [valid[1]!, valid[2]!, valid[3]!]), null);
+  for (const unsupported of ["UPPER_BEGINNER", "UPPER_INTERMEDIATE", "ADVANCED"] as const) {
+    const unsupportedPlayers = [make("l1", unsupported), make("l2", "BEGINNER"), make("g1", "INTERMEDIATE"), make("g2", "INTERMEDIATE")];
+    assert.equal(suggestMatch(unsupportedPlayers, "GUIDED", history), null);
+  }
+  assert.equal(isGuidedMatchAvailable(valid, { synergyTeams: [{ id: "learner-pair", queuePlayerIds: ["l1", "l2"] as [string, string] }] }), false);
+  assert.equal(isGuidedMatchAvailable(valid, { synergyTeams: [{ id: "guide-pair", queuePlayerIds: ["g1", "g2"] as [string, string] }] }), false);
+  assert.equal(isGuidedMatchAvailable(valid, { synergyTeams: [{ id: "valid-pair", queuePlayerIds: ["l1", "g2"] as [string, string] }] }), true);
+});
+
+test("Guided preserves alternative lineups when the first key is excluded", () => {
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const make = (id: string, skillLevel: MatchPlayer["skillLevel"], index: number): MatchPlayer => ({ id, displayName: id, gender: index % 2 ? "FEMALE" : "MALE", skillLevel, skillWeight: skillWeight(skillLevel), status: "WAITING", gamesPlayed: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null, manualPriority: 0 });
+  const players = [make("l1", "BEGINNER", 1), make("l2", "BEGINNER", 2), make("l3", "BEGINNER", 3), make("g1", "INTERMEDIATE", 4), make("g2", "INTERMEDIATE", 5), make("g3", "INTERMEDIATE", 6)];
+  const first = suggestMatch(players, "GUIDED", history);
+  assert.ok(first);
+  const alternate = suggestMatch(players, "GUIDED", history, [first.key]);
+  assert.ok(alternate);
+  assert.notEqual(alternate.key, first.key);
 });
