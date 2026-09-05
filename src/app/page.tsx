@@ -49,7 +49,7 @@ import { hasPlayerNameConflict } from "@/lib/player-names";
 import { saveRankingsToDevice } from "@/lib/rankings-image";
 import { partitionRankingRows } from "@/lib/ranking-presentation";
 import { publishedPublicRankingState, revokedPublicRankingState, visiblePublicRankingPublication } from "@/lib/public-rankings";
-import { evaluateGuidedAvailability, lowSkillLoneFemaleAdvisory, validateMatchmakingConstraints, undefeatedChallengePlayers, UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, UNDEFEATED_CHALLENGE_RANK_LIMIT, type MatchPlayer as DomainMatchPlayer, type MatchmakingMode as DomainMatchmakingMode, type Gender as DomainGender, type QueuePlayerStatus as DomainQueuePlayerStatus, type SkillLevel as DomainSkillLevel } from "@/lib/offline/domain-compat";
+import { evaluateGuidedAvailability, lowSkillLoneFemaleAdvisory, validateMatchmakingConstraints, validateScores, undefeatedChallengePlayers, UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, UNDEFEATED_CHALLENGE_RANK_LIMIT, type MatchPlayer as DomainMatchPlayer, type MatchmakingMode as DomainMatchmakingMode, type Gender as DomainGender, type QueuePlayerStatus as DomainQueuePlayerStatus, type SkillLevel as DomainSkillLevel } from "@/lib/offline/domain-compat";
 import { isQueuePlayerReady, matchmakingWaitingFingerprint } from "@/lib/matchmaking-scope";
 import { DEFAULT_QUEUE_SORT, LONG_WAIT_MINUTES, VERY_LONG_WAIT_MINUTES, sortQueuePlayers, waitAttention, waitMinutes as queueWaitMinutes, type QueueSort, type QueueSortDirection, type QueueSortKey } from "@/lib/queue-sorting";
 
@@ -1008,7 +1008,7 @@ function deriveChallengePlayers(queue: QueueState) {
   return undefeatedChallengePlayers(allPlayers).map(({ player, rank }) => {
     const source = allPlayers.find((candidate) => candidate.id === player.id);
     const waitingPlayer = queue.waiting.find((candidate) => candidate.id === player.id);
-    const ready = source?.status === "WAITING" && waitingPlayer ? isQueuePlayerReady(waitingPlayer, queue.serverTime) : false;
+    const ready = source?.status === "WAITING" && waitingPlayer ? isQueuePlayerReady(waitingPlayer, queue.serverTime, queue.minimumRestMinutes ?? 0) : false;
     return { queuePlayerId: player.id, displayName: player.displayName, rank, matchesPlayed: player.gamesPlayed, wins: player.wins ?? 0, losses: player.losses ?? 0, status: player.status, ready, restEligibleAt: waitingPlayer?.restEligibleAt ?? null };
   });
 }
@@ -1147,14 +1147,14 @@ function MatchmakerPanel({ sessionId, queue, courts, onChanged, queueLoaded = tr
   const waitingFingerprint = useMemo(() => matchmakingWaitingFingerprint(queue), [queue]);
   const mixedCounts = useMemo(() => {
     const waiting = queue.waiting;
-    const ready = waiting.filter((player) => isQueuePlayerReady(player, queue.serverTime));
+    const ready = waiting.filter((player) => isQueuePlayerReady(player, queue.serverTime, queue.minimumRestMinutes ?? 0));
     return {
       waitingMale: waiting.filter((player) => player.gender === "MALE").length,
       waitingFemale: waiting.filter((player) => player.gender === "FEMALE").length,
       readyMale: ready.filter((player) => player.gender === "MALE").length,
       readyFemale: ready.filter((player) => player.gender === "FEMALE").length,
     };
-  }, [queue.serverTime, queue.waiting]);
+  }, [queue.minimumRestMinutes, queue.serverTime, queue.waiting]);
   const guidedAvailability = guidedRequestContext.availability ?? guidedQueueAvailability(queue);
   const previousGuidedAvailability = useRef<boolean | null>(null);
   useEffect(() => {
@@ -1772,6 +1772,82 @@ function HistoryMatchCard({ match, selectedPlayerId }: { match: HistoryMatch; se
   return <article className="border-b border-[var(--line)] p-4 last:border-0"><button type="button" className="focus-ring flex w-full items-start gap-3 rounded-2xl text-left" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-[#edf8f4] text-[var(--teal)]"><HistoryIcon size={16} /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--muted)]"><span>{match.completedAt ? new Date(match.completedAt).toLocaleString() : "Completion time unavailable"}</span><span>·</span><span>{formatHistoryDuration(match.durationSeconds)}</span>{(match.matchmakingMode === "UNDEFEATED_CHALLENGE" || match.matchmakingMode === "GUIDED") && <><span>·</span>{match.matchmakingMode === "GUIDED" ? <Badge tone="teal">Guided</Badge> : <Badge tone="orange">Undefeated challenge</Badge>}</>}{match.court && <><span>·</span><span>{match.court.name}</span></>}</span><span className="mt-2 block text-sm font-semibold"><span className={match.winnerTeam === "A" ? "text-[var(--teal)]" : ""}>{teamA.map((player) => player.displayName).join(" + ") || "Team A"}</span><span className="mx-2 text-[var(--muted)]">vs</span><span className={match.winnerTeam === "B" ? "text-[var(--teal)]" : ""}>{teamB.map((player) => player.displayName).join(" + ") || "Team B"}</span></span><span className="mt-1 block text-xs text-[var(--muted)]">{historyScoreLabel(match)} · {winner}</span></span><ChevronDown size={18} className={`mt-1 shrink-0 text-[var(--muted)] transition ${expanded ? "rotate-180" : ""}`} /></button>{expanded && <div className="mt-4 space-y-4 rounded-2xl bg-[#f7faf8] p-4"><div className="grid gap-3 sm:grid-cols-2"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--teal)]">Team A</p><div className="mt-2 space-y-2">{teamA.map((player) => <div key={player.sessionPlayerId} className={`rounded-xl border px-3 py-2 ${selectedPlayerId === player.sessionPlayerId ? "border-[var(--teal)] bg-[#edf8f4]" : "border-[var(--line)] bg-white"}`}><p className="text-sm font-semibold">{player.displayName}</p><p className="text-xs text-[var(--muted)]">{player.gender === "MALE" ? "Male" : player.gender === "FEMALE" ? "Female" : "Gender unavailable"} · {player.skillLevel ? pretty(player.skillLevel) : "Skill unavailable"}</p></div>)}</div></div><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[#a85b2b]">Team B</p><div className="mt-2 space-y-2">{teamB.map((player) => <div key={player.sessionPlayerId} className={`rounded-xl border px-3 py-2 ${selectedPlayerId === player.sessionPlayerId ? "border-[var(--teal)] bg-[#edf8f4]" : "border-[var(--line)] bg-white"}`}><p className="text-sm font-semibold">{player.displayName}</p><p className="text-xs text-[var(--muted)]">{player.gender === "MALE" ? "Male" : player.gender === "FEMALE" ? "Female" : "Gender unavailable"} · {player.skillLevel ? pretty(player.skillLevel) : "Skill unavailable"}</p></div>)}</div></div></div>{match.score?.games.length ? <div><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Game scores</p><div className="mt-2 overflow-hidden rounded-xl border border-[var(--line)] bg-white">{match.score.games.map((game) => <div key={game.gameNumber} className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2 text-sm last:border-0"><span>Game {game.gameNumber}</span><span className="font-semibold">{game.teamAScore} – {game.teamBScore}</span><span className="text-xs text-[var(--muted)]">Team {game.winnerTeam}</span></div>)}</div></div> : <p className="text-xs text-[var(--muted)]">No score revision is available for this match.</p>}</div>}</article>;
 }
 
+function EditableHistoryMatchCard({ match, onEditScore, onEditPlayers }: { match: HistoryMatch; onEditScore: (match: HistoryMatch) => void; onEditPlayers: (match: HistoryMatch) => void }) {
+  return <div className="border-b border-[var(--line)] last:border-0"><HistoryMatchCard match={match} /><div className="flex flex-wrap gap-2 px-4 pb-4"><Button variant="quiet" className="flex-1 sm:flex-none" onClick={() => onEditScore(match)}><Pencil size={15} /> Edit score</Button><Button variant="quiet" className="flex-1 sm:flex-none" onClick={() => onEditPlayers(match)}><UsersRound size={15} /> Edit players</Button></div></div>;
+}
+
+function HistoryDialogShell({ title, eyebrow, children, onClose, pending }: { title: string; eyebrow: string; children: React.ReactNode; onClose: () => void; pending?: boolean }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) { onClose(); return; }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href]")].filter((element) => !element.hasAttribute("disabled"));
+      if (!focusable.length) return;
+      const first = focusable[0]!; const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, [onClose, pending]);
+  return <div className="fixed inset-0 z-50 grid items-end bg-[#102a2d]/45 p-0 sm:items-center sm:p-5"><div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="history-correction-title" className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl outline-none sm:mx-auto sm:max-w-lg sm:rounded-3xl sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-[var(--teal)]">{eyebrow}</p><h2 id="history-correction-title" className="display mt-1 text-3xl">{title}</h2></div><Button variant="quiet" className="px-3" aria-label="Close correction dialog" disabled={pending} onClick={onClose}><X size={18} /></Button></div>{children}</div></div>;
+}
+
+function HistoryScoreCorrectionDialog({ match, pending, error, onConfirm, onClose }: { match: HistoryMatch; pending: boolean; error?: unknown; onConfirm: (games: { teamAScore: number; teamBScore: number }[], reason?: string) => void; onClose: () => void }) {
+  const initialGames = match.score?.games.map((game) => ({ teamAScore: String(game.teamAScore), teamBScore: String(game.teamBScore) })) ?? [{ teamAScore: "", teamBScore: "" }];
+  const [games, setGames] = useState(initialGames);
+  const [reason, setReason] = useState("");
+  const [validationError, setValidationError] = useState("");
+  const settings = match.scoring;
+  const teamA = historyTeamPlayers(match, "A").map((player) => player.displayName).join(" + ") || "Team A";
+  const teamB = historyTeamPlayers(match, "B").map((player) => player.displayName).join(" + ") || "Team B";
+  const updateGame = (index: number, field: "teamAScore" | "teamBScore", value: string) => setGames((current) => current.map((game, gameIndex) => gameIndex === index ? { ...game, [field]: value.replace(/[^0-9]/g, "").slice(0, 2) } : game));
+  const submit = () => {
+    setValidationError("");
+    const parsed = games.map((game) => ({ teamAScore: Number(game.teamAScore), teamBScore: Number(game.teamBScore) }));
+    try {
+      validateScores(parsed, settings);
+      const before = match.score?.games.map((game) => `${game.teamAScore}:${game.teamBScore}`).join("|") ?? "";
+      const after = parsed.map((game) => `${game.teamAScore}:${game.teamBScore}`).join("|");
+      if (before === after) throw new Error("Enter a different score before saving.");
+      onConfirm(parsed, reason.trim() || undefined);
+    } catch (validation) { setValidationError(errorMessage(validation)); }
+  };
+  return <HistoryDialogShell title="Correct the score" eyebrow="Match history" onClose={onClose} pending={pending}><div className="mt-5 rounded-2xl bg-[#edf8f4] p-4"><div className="flex items-center justify-between text-sm font-semibold"><span>{teamA}</span><span className="text-xs text-[var(--muted)]">vs</span><span className="text-right">{teamB}</span></div><p className="mt-2 text-xs text-[var(--muted)]">Stored rules: race to {settings.pointsToWin}, win by {settings.winBy}, maximum {settings.scoreCap ?? settings.pointsToWin}, best of {settings.bestOf}</p></div><div className="mt-5 space-y-3">{games.map((game, index) => <div key={index} className="rounded-2xl border border-[var(--line)] p-3"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Game {index + 1}</span>{settings.bestOf === 3 && <span className="text-xs text-[var(--muted)]">{index === 0 ? "Required" : "Optional"}</span>}</div><div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2"><Input inputMode="numeric" aria-label={`${teamA} game ${index + 1} score`} value={game.teamAScore} onChange={(event) => updateGame(index, "teamAScore", event.target.value)} /><span className="text-sm text-[var(--muted)]">–</span><Input inputMode="numeric" aria-label={`${teamB} game ${index + 1} score`} value={game.teamBScore} onChange={(event) => updateGame(index, "teamBScore", event.target.value)} /></div></div>)}</div>{settings.bestOf === 3 && games.length < 3 && <Button type="button" variant="quiet" className="mt-3 w-full" onClick={() => setGames((current) => [...current, { teamAScore: "", teamBScore: "" }])}><Plus size={16} /> Add game</Button>}<label className="mt-4 block text-sm font-semibold">Correction reason <span className="font-normal text-[var(--muted)]">(optional)</span><Input value={reason} maxLength={240} onChange={(event) => setReason(event.target.value)} placeholder="Score correction" /></label>{(validationError || Boolean(error)) && <p role="alert" className="mt-3 rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{validationError || (error ? errorMessage(error) : "")}</p>}<div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="quiet" type="button" onClick={onClose} disabled={pending}>Cancel</Button><Button type="button" onClick={submit} disabled={pending}>{pending ? "Saving…" : "Save score correction"}</Button></div></HistoryDialogShell>;
+}
+
+function HistoryParticipantCorrectionDialog({ match, players, pending, error, onConfirm, onClose }: { match: HistoryMatch; players: SessionPlayer[]; pending: boolean; error?: unknown; onConfirm: (teamA: string[], teamB: string[], reason?: string) => void; onClose: () => void }) {
+  const initialA = historyTeamPlayers(match, "A").map((player) => player.queuePlayerId);
+  const initialB = historyTeamPlayers(match, "B").map((player) => player.queuePlayerId);
+  const [teamA, setTeamA] = useState(initialA);
+  const [teamB, setTeamB] = useState(initialB);
+  const [reason, setReason] = useState("");
+  const [validationError, setValidationError] = useState("");
+  const roster = useMemo(() => [...players].sort((left, right) => left.displayName.localeCompare(right.displayName)), [players]);
+  const update = (team: "A" | "B", index: number, value: string) => {
+    const nextA = [...teamA]; const nextB = [...teamB];
+    const target = team === "A" ? nextA : nextB;
+    const previous = target[index];
+    const otherA = teamA.findIndex((id, slot) => id === value && !(team === "A" && slot === index));
+    const otherB = teamB.findIndex((id, slot) => id === value && !(team === "B" && slot === index));
+    target[index] = value;
+    if (otherA >= 0) nextA[otherA] = previous!;
+    if (otherB >= 0) nextB[otherB] = previous!;
+    setTeamA(nextA); setTeamB(nextB);
+  };
+  const slot = (team: "A" | "B", index: number, value: string) => <label className="block text-sm font-semibold">{team} player {index + 1}<Select value={value} onChange={(event) => update(team, index, event.target.value)} aria-label={`Team ${team} player ${index + 1}`}><option value="">Select player</option>{roster.map((player) => <option key={player.id} value={player.id}>{player.displayName} · {pretty(player.skillLevel)} · {player.status}</option>)}</Select></label>;
+  const submit = () => {
+    setValidationError("");
+    const all = [...teamA, ...teamB];
+    if (all.some((id) => !id) || new Set(all).size !== all.length) { setValidationError("Choose a distinct roster player for every slot."); return; }
+    if (teamA.join("|") === initialA.join("|") && teamB.join("|") === initialB.join("|")) { setValidationError("Choose a different lineup before saving."); return; }
+    onConfirm(teamA, teamB, reason.trim() || undefined);
+  };
+  return <HistoryDialogShell title="Correct the players" eyebrow="Match history" onClose={onClose} pending={pending}><p className="mt-4 text-sm leading-6 text-[var(--muted)]">Keep the original {initialA.length === 1 ? "singles" : "doubles"} format. Players can be replaced, swapped, or moved between sides using the current queue roster.</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><div className="space-y-3 rounded-2xl bg-[#edf8f4] p-3"><p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--teal)]">Team A</p>{teamA.map((id, index) => <Fragment key={`a-${index}`}>{slot("A", index, id)}</Fragment>)}</div><div className="space-y-3 rounded-2xl bg-[#fff7f0] p-3"><p className="text-xs font-bold uppercase tracking-[0.14em] text-[#a85b2b]">Team B</p>{teamB.map((id, index) => <Fragment key={`b-${index}`}>{slot("B", index, id)}</Fragment>)}</div></div><label className="mt-4 block text-sm font-semibold">Correction reason <span className="font-normal text-[var(--muted)]">(optional)</span><Input value={reason} maxLength={240} onChange={(event) => setReason(event.target.value)} placeholder="Participant correction" /></label>{(validationError || Boolean(error)) && <p role="alert" className="mt-3 rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{validationError || (error ? errorMessage(error) : "")}</p>}<div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button variant="quiet" type="button" onClick={onClose} disabled={pending}>Cancel</Button><Button type="button" onClick={submit} disabled={pending}>{pending ? "Saving…" : "Save player correction"}</Button></div></HistoryDialogShell>;
+}
+
 function PaginationControls({ pagination, onPage }: { pagination: { page: number; totalPages: number; total: number }; onPage: (page: number) => void }) {
   return <div className="flex items-center justify-between border-t border-[var(--line)] px-4 py-3"><p className="text-xs text-[var(--muted)]">Page {pagination.page} of {pagination.totalPages} · {pagination.total} matches</p><div className="flex gap-2"><Button variant="quiet" className="px-3" aria-label="Previous page" disabled={pagination.page <= 1} onClick={() => onPage(Math.max(1, pagination.page - 1))}><ArrowLeft size={15} /></Button><Button variant="quiet" className="px-3" aria-label="Next page" disabled={pagination.page >= pagination.totalPages} onClick={() => onPage(Math.min(pagination.totalPages, pagination.page + 1))}><ArrowRight size={15} /></Button></div></div>;
 }
@@ -1842,10 +1918,23 @@ function FeesView({ sessionId }: { sessionId: string }) {
 }
 
 function HistoryView({ sessionId }: { sessionId: string }) {
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(1); const [search, setSearch] = useState("");
-  const historyQuery = useQuery({ queryKey: ["history", sessionId, page, search], queryFn: () => api.history(sessionId, page, 15, search) }); const history = historyQuery.data;
-  if (historyQuery.isPending) return <LoadingState label="Loading match history" />;
-  return <div className="space-y-5"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-[var(--muted)]">Finished games</p><h2 className="display text-4xl">The queue log.</h2></div>{history?.pagination && <Badge tone="teal">{history.pagination.total} completed</Badge>}</div><Card className="overflow-hidden p-0"><div className="border-b border-[var(--line)] p-4"><label className="relative block"><Search size={16} className="absolute left-3 top-3 text-[var(--muted)]" /><Input className="pl-9" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search by player name" aria-label="Search history by player name" /></label></div>{historyQuery.isPending ? <div className="space-y-3 p-4"><div className="h-24 animate-pulse rounded-2xl bg-[#f1f5f2]" /><div className="h-24 animate-pulse rounded-2xl bg-[#f1f5f2]" /></div> : historyQuery.isError ? <p role="alert" className="p-4 text-sm text-[#8d4824]">{errorMessage(historyQuery.error)}</p> : !history?.items.length ? <div className="p-4"><EmptyState icon={HistoryIcon} title={search ? "No matching games" : "No finished games yet"} body={search ? "Try another player name or clear the search." : "Completed matches will appear here after score entry."} /></div> : <div>{history.items.map((match) => <HistoryMatchCard key={match.id} match={match} />)}</div>}{history?.pagination && history.pagination.total > 0 && <PaginationControls pagination={history.pagination} onPage={setPage} />}</Card></div>;
+  const [scoreMatch, setScoreMatch] = useState<HistoryMatch | null>(null);
+  const [participantMatch, setParticipantMatch] = useState<HistoryMatch | null>(null);
+  const historyQuery = useQuery({ queryKey: ["history", sessionId, page, search], queryFn: () => api.history(sessionId, page, 15, search) });
+  const sessionPlayersQuery = useQuery({ queryKey: ["sessionPlayers", sessionId], queryFn: () => api.sessionPlayers(sessionId) });
+  const refreshCorrectionData = () => {
+    for (const key of ["history", "playerHistory", "rankings", "fees", "payments", "queue", "sessionPlayers", "matches", "workspace", "publicRankingPublications"]) {
+      void queryClient.invalidateQueries({ queryKey: key === "workspace" || key === "publicRankingPublications" ? [key] : [key, sessionId] });
+    }
+  };
+  const scoreCorrection = useMutation({ mutationFn: (input: { match: HistoryMatch; games: { teamAScore: number; teamBScore: number }[]; reason?: string }) => api.correctMatch(input.match.id, input.games, input.reason, input.match.version), onSuccess: () => { setScoreMatch(null); refreshCorrectionData(); toast.success("Score correction saved."); } });
+  const participantCorrection = useMutation({ mutationFn: (input: { match: HistoryMatch; teamA: string[]; teamB: string[]; reason?: string }) => api.correctMatchParticipants(input.match.id, input.teamA, input.teamB, input.reason, input.match.version), onSuccess: () => { setParticipantMatch(null); refreshCorrectionData(); toast.success("Participant correction saved."); } });
+  const history = historyQuery.data;
+  if (historyQuery.isPending || sessionPlayersQuery.isPending) return <LoadingState label="Loading match history" />;
+  const queryError = historyQuery.error ?? sessionPlayersQuery.error;
+  return <div className="space-y-5"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-[var(--muted)]">Finished games</p><h2 className="display text-4xl">The queue log.</h2></div>{history?.pagination && <Badge tone="teal">{history.pagination.total} completed</Badge>}</div><Card className="overflow-hidden p-0"><div className="border-b border-[var(--line)] p-4"><label className="relative block"><Search size={16} className="absolute left-3 top-3 text-[var(--muted)]" /><Input className="pl-9" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search by player name" aria-label="Search history by player name" /></label></div>{queryError ? <p role="alert" className="p-4 text-sm text-[#8d4824]">{errorMessage(queryError)}</p> : !history?.items.length ? <div className="p-4"><EmptyState icon={HistoryIcon} title={search ? "No matching games" : "No finished games yet"} body={search ? "Try another player name or clear the search." : "Completed matches will appear here after score entry."} /></div> : <div>{history.items.map((match) => <EditableHistoryMatchCard key={match.id} match={match} onEditScore={(selected) => { scoreCorrection.reset(); setScoreMatch(selected); }} onEditPlayers={(selected) => { participantCorrection.reset(); setParticipantMatch(selected); }} />)}</div>}{history?.pagination && history.pagination.total > 0 && <PaginationControls pagination={history.pagination} onPage={setPage} />}</Card>{scoreMatch && <HistoryScoreCorrectionDialog match={scoreMatch} pending={scoreCorrection.isPending} error={scoreCorrection.isError ? scoreCorrection.error : undefined} onConfirm={(games, reason) => scoreCorrection.mutate({ match: scoreMatch, games, ...(reason ? { reason } : {}) })} onClose={() => { if (!scoreCorrection.isPending) { setScoreMatch(null); scoreCorrection.reset(); } }} />}{participantMatch && <HistoryParticipantCorrectionDialog match={participantMatch} players={sessionPlayersQuery.data ?? []} pending={participantCorrection.isPending} error={participantCorrection.isError ? participantCorrection.error : undefined} onConfirm={(teamA, teamB, reason) => participantCorrection.mutate({ match: participantMatch, teamA, teamB, ...(reason ? { reason } : {}) })} onClose={() => { if (!participantCorrection.isPending) { setParticipantMatch(null); participantCorrection.reset(); } }} />}</div>;
 }
 
 function PlayerHistoryDetails({ sessionId, ranking }: { sessionId: string; ranking: Ranking }) {
