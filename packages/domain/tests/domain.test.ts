@@ -290,7 +290,7 @@ test("challenge mode anchors qualified players and keeps qualified opponents apa
   assert.equal(result.teamB.some((player) => selected.has(player.id)), true);
 });
 
-test("single-qualifier challenge alternates keep the qualifier disadvantaged", () => {
+test("single-qualifier challenge keeps the qualifier within the allowed disadvantage", () => {
   const make = (id: string, skillWeight: number, gamesPlayed: number): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight, skillLevel: "BEGINNER", status: "WAITING", gamesPlayed, wins: gamesPlayed, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null });
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const challengeAdvantage = (result: NonNullable<ReturnType<typeof suggestMatch>>) => {
@@ -298,11 +298,13 @@ test("single-qualifier challenge alternates keep the qualifier disadvantaged", (
     const qualifierOnA = result.teamA.some((player) => player.id === selectedId);
     return qualifierOnA ? result.teamBTotal - result.teamATotal : result.teamATotal - result.teamBTotal;
   };
-  const players = [make("q", 5, 5), make("s1", 3, 0), make("s2", 6, 0), make("s3", 5, 0)];
+  const players = [make("q", 2, 5), make("s1", 2, 0), make("s2", 3, 0), make("s3", 3, 0)];
   const first = suggestMatch(players, "UNDEFEATED_CHALLENGE", history);
   assert.ok(first);
-  assert.ok(challengeAdvantage(first) > 0);
-  assert.equal(suggestMatch(players, "UNDEFEATED_CHALLENGE", history, [first.key]), null);
+  assert.ok(challengeAdvantage(first) >= 0 && challengeAdvantage(first) <= 2);
+  const next = suggestMatch(players, "UNDEFEATED_CHALLENGE", history, [first.key]);
+  assert.ok(next);
+  assert.ok(challengeAdvantage(next) >= 0 && challengeAdvantage(next) <= 2);
 
   const playersWithAlternate = [...players, make("s4", 7, 0)];
   const alternateFirst = suggestMatch(playersWithAlternate, "UNDEFEATED_CHALLENGE", history);
@@ -310,7 +312,38 @@ test("single-qualifier challenge alternates keep the qualifier disadvantaged", (
   const alternate = suggestMatch(playersWithAlternate, "UNDEFEATED_CHALLENGE", history, [alternateFirst.key]);
   assert.ok(alternate);
   assert.notEqual(alternate.key, alternateFirst.key);
-  assert.ok(challengeAdvantage(alternate) > 0);
+  assert.ok(challengeAdvantage(alternate) >= 0 && challengeAdvantage(alternate) <= 2);
+});
+
+test("single-qualifier challenge prefers +1, then +2, then equal strength", () => {
+  const make = (id: string, skillWeight: number): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight, skillLevel: skillLevelForWeight(skillWeight), status: "WAITING", gamesPlayed: id === "q" ? 5 : 0, wins: id === "q" ? 5 : 0, losses: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null, manualPriority: 0 });
+  const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
+  const advantage = (result: NonNullable<ReturnType<typeof suggestMatch>>) => {
+    const qualifierId = (result.explanation.challenge as { selectedPlayerIds: string[] }).selectedPlayerIds[0];
+    const qualifierTeam = result.teamA.some((player) => player.id === qualifierId) ? result.teamA : result.teamB;
+    const opponentTeam = qualifierTeam === result.teamA ? result.teamB : result.teamA;
+    return opponentTeam.reduce((sum, player) => sum + player.skillWeight, 0) - qualifierTeam.reduce((sum, player) => sum + player.skillWeight, 0);
+  };
+  const plusOne = suggestMatch([make("q", 2), make("p1", 2), make("p2", 3), make("p3", 4)], "UNDEFEATED_CHALLENGE", history);
+  assert.ok(plusOne);
+  assert.equal(advantage(plusOne), 1);
+  const plusTwo = suggestMatch([make("q", 2), make("p1", 2), make("p2", 3), make("p3", 5)], "UNDEFEATED_CHALLENGE", history);
+  assert.ok(plusTwo);
+  assert.equal(advantage(plusTwo), 2);
+  const equal = suggestMatch([make("q", 2), make("p1", 2), make("p2", 2), make("p3", 2)], "UNDEFEATED_CHALLENGE", history);
+  assert.ok(equal);
+  assert.equal(advantage(equal), 0);
+  assert.equal((equal.explanation.challenge as { equalStrengthFallback?: boolean }).equalStrengthFallback, true);
+});
+
+test("challenge qualification uses personal records before Synergy fairness preparation", () => {
+  const make = (id: string, gamesPlayed: number, wins: number, skillWeight: number): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight, skillLevel: skillLevelForWeight(skillWeight), status: "WAITING", gamesPlayed, wins, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null });
+  const players = [make("q", 5, 5, 2), { ...make("partner", 6, 5, 2), losses: 1 }, make("s1", 0, 0, 2), make("s2", 0, 0, 2)];
+  const result = suggestMatch(players, "UNDEFEATED_CHALLENGE", { partners: new Map(), opponents: new Map(), quartets: new Map() }, [], { synergyTeams: [{ id: "q-pair", queuePlayerIds: ["q", "partner"] }] });
+  assert.ok(result);
+  const challenge = result.explanation.challenge as { qualifyingPlayers: Array<{ id: string; gamesPlayed: number; wins: number }>; selectedPlayerIds: string[] };
+  assert.equal(challenge.qualifyingPlayers.some((player) => player.id === "q" && player.gamesPlayed === 5 && player.wins === 5), true);
+  assert.equal(challenge.selectedPlayerIds.includes("q"), true);
 });
 
 test("mixed doubles requires exactly two players per gender while open keeps lone-female policy", () => {

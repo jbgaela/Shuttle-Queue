@@ -220,7 +220,7 @@ export type MatchHistory = { partners: Map<string, Map<string, number>>; opponen
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; matchupAdvisory?: MatchupAdvisory | null; explanation: Record<string, unknown> };
 export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date; synergyTeams?: Array<Pick<DomainSynergyTeam, "id" | "queuePlayerIds">> };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
-export const MATCHMAKING_ALGORITHM = "v12-undefeated-five-match-threshold";
+export const MATCHMAKING_ALGORITHM = "v13-undefeated-ordered-gap-fallback";
 export const UNDEFEATED_CHALLENGE_MINIMUM_MATCHES = 5;
 export const UNDEFEATED_CHALLENGE_RANK_LIMIT = 3;
 
@@ -670,18 +670,42 @@ const combinationValues = (players: MatchPlayer[], size: number) => {
   forEachCombination(players, size, (selected) => values.push(selected));
   return values;
 };
+type ChallengePartition = { teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; challengeAdvantage: number };
+const challengePartitions = (group: MatchPlayer[], qualifierSet: MatchPlayer[]): ChallengePartition[] => {
+  if (!hasSynergyCompatiblePartition(group)) return [];
+  const results: ChallengePartition[] = [];
+  for (const [teamA, teamB] of partitions([...group].sort((a, b) => a.id.localeCompare(b.id)))) {
+    if (teamA.some((player) => teamB.some((candidate) => sameSynergyTeam(player, candidate)))) continue;
+    if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
+    const teamAQualifiers = teamA.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
+    const teamBQualifiers = teamB.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
+    if (qualifierSet.length > 1 && (!teamAQualifiers.length || !teamBQualifiers.length)) continue;
+    const teamATotal = teamA.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
+    const teamBTotal = teamB.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
+    const qualifierTeam = teamAQualifiers.length ? teamA : teamB;
+    const opponentTeam = teamAQualifiers.length ? teamB : teamA;
+    const challengeAdvantage = opponentTeam.reduce((sum, player) => sum + effectiveWeightFor(player), 0) - qualifierTeam.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
+    if (qualifierSet.length === 1 && ![0, 1, 2].includes(challengeAdvantage)) continue;
+    results.push({ teamA, teamB, teamATotal, teamBTotal, challengeAdvantage });
+  }
+  return results;
+};
 
 function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistory, excludedKeys: string[], options: MatchmakingOptions): Suggestion | null {
+  const preparedPlayers = applySynergyTeams(players, options.synergyTeams);
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
-  const eligibleCandidates = players.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
+  const eligibleCandidates = preparedPlayers.filter((player) => player.status === "WAITING" && player.queueEnteredAt && restReadyAt(player.lastMatchEndedAt, minimumRestMinutes, now) <= now);
   const eligibleIds = new Set(eligibleCandidates.map((player) => player.id));
-  const eligible = eligibleCandidates.filter((player) => !player.synergyTeamId || players.some((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id && eligibleIds.has(candidate.id)));
+  const eligible = eligibleCandidates.filter((player) => !player.synergyTeamId || preparedPlayers.some((candidate) => candidate.synergyTeamId === player.synergyTeamId && candidate.id !== player.id && eligibleIds.has(candidate.id)));
   const ranked = undefeatedChallengePlayers(players);
+  const preparedById = new Map(preparedPlayers.map((player) => [player.id, player]));
+  const rankedPrepared = ranked.map(({ player, rank }) => ({ player: preparedById.get(player.id) ?? player, rank }));
   const rankedIds = new Set(ranked.map(({ player }) => player.id));
-  const readyQualifiers = ranked.filter(({ player }) => eligible.some((candidate) => candidate.id === player.id));
+  const readyQualifiers = rankedPrepared.filter(({ player }) => eligible.some((candidate) => candidate.id === player.id));
   if (!readyQualifiers.length) return null;
-  const supports = diversePool(eligible.filter((player) => !rankedIds.has(player.id)), Math.max(0, MAX_MATCHMAKING_POOL - ranked.length), new Set(), eligible);
+  const supportSource = eligible.filter((player) => !rankedIds.has(player.id));
+  const supports = diversePool(supportSource, Math.max(0, MAX_MATCHMAKING_POOL - ranked.length), new Set(), eligible);
   const excluded = new Set(excludedKeys);
   const excludedPairs = new Set(excludedKeys.map((key) => key.split("|").flatMap((part) => part.split(",")).filter((id) => rankedIds.has(id)).sort().join(",")).filter(Boolean));
   const useFallback = readyQualifiers.length >= 3 && supports.length < 2;
@@ -691,11 +715,46 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
       ? combinationValues(readyQualifiers.map(({ player }) => player), 3)
       : combinationValues(readyQualifiers.map(({ player }) => player), 2);
   const supportSize = qualifierSets[0]?.length === 1 ? 3 : useFallback ? 1 : 2;
-  if (supports.length < supportSize) return null;
-  const supportGroups = combinationValues(supports, supportSize).filter((group) => qualifierSets.some((qualifierSet) => hasNewbieCompatiblePartition([...qualifierSet, ...group]) && hasSynergyCompatiblePartition([...qualifierSet, ...group])));
+  if (supportSource.length < supportSize) return null;
+  const witnessGroups: MatchPlayer[][] = [];
+  const witnessKeys = new Set<string>();
+  let witnessEvaluatedCount = 0;
+  const targetAdvantages: Array<number | null> = qualifierSets[0]?.length === 1 ? [1, 2, 0] : [null];
+  for (const targetAdvantage of targetAdvantages) {
+    let found: MatchPlayer[] | null = null;
+    const find = (qualifierIndex: number, start: number, selected: MatchPlayer[]) => {
+      if (found) return true;
+      if (selected.length === supportSize) {
+        witnessEvaluatedCount += 1;
+        const qualifierSet = qualifierSets[qualifierIndex];
+        const group = [...qualifierSet!, ...selected];
+        const legal = challengePartitions(group, qualifierSet!).some((partition) => (targetAdvantage === null || partition.challengeAdvantage === targetAdvantage) && !excluded.has(challengeGroupKey(partition.teamA, partition.teamB)));
+        if (legal) { found = [...selected]; return true; }
+        return false;
+      }
+      for (let index = start; index <= supportSource.length - (supportSize - selected.length); index += 1) {
+        selected.push(supportSource[index]!);
+        if (find(qualifierIndex, index + 1, selected)) return true;
+        selected.pop();
+      }
+      return false;
+    };
+    for (let qualifierIndex = 0; qualifierIndex < qualifierSets.length && !found; qualifierIndex += 1) find(qualifierIndex, 0, []);
+    if (found) {
+      const key = quartetKey(found);
+      if (!witnessKeys.has(key)) { witnessKeys.add(key); witnessGroups.push(found); }
+    }
+  }
+  const supportGroups: MatchPlayer[][] = [];
+  const supportGroupKeys = new Set<string>();
+  for (const group of [...combinationValues(supports, supportSize), ...witnessGroups]) {
+    const key = quartetKey(group);
+    if (supportGroupKeys.has(key) || !qualifierSets.some((qualifierSet) => challengePartitions([...qualifierSet, ...group], qualifierSet).length > 0)) continue;
+    supportGroupKeys.add(key);
+    supportGroups.push(group);
+  }
   if (!supportGroups.length) return null;
   const minimumSupportGames = supportGroups.reduce((minimum, group) => Math.min(minimum, ...group.map(gamesFor)), Number.POSITIVE_INFINITY);
-  const fairSupportExists = supportGroups.some((group) => Math.max(...group.map(gamesFor)) <= minimumSupportGames + 1);
   let best: { key: (number[] | number | string)[]; suggestion: Suggestion } | null = null;
 
   for (const qualifierSet of qualifierSets) {
@@ -706,31 +765,22 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
       const group = [...qualifierSet, ...supportGroup];
       if (!hasSynergyCompatiblePartition(group)) continue;
       const supportGames = supportGroup.map(gamesFor).sort((a, b) => a - b);
-      if (fairSupportExists && Math.max(...supportGames) > minimumSupportGames + 1) continue;
       const supportPending = supportGroup.filter((player) => player.latePenaltyState === "PENDING").length;
       const supportPriority = [...supportGroup].map((player) => -(player.manualPriority ?? 0)).sort((a, b) => a - b);
       const supportQueueAge = Math.max(...supportGroup.map((player) => new Date(player.queueEnteredAt!).getTime()));
       const recentPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, true)));
       const allPairs = group.flatMap((player, index) => group.slice(index + 1).map((other) => sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, false)));
-      for (const [teamA, teamB] of partitions([...group].sort((a, b) => a.id.localeCompare(b.id)))) {
-        if (teamA.some((player) => teamB.some((candidate) => sameSynergyTeam(player, candidate)))) continue;
-        if (isProhibitedGeneratedGenderMatch(teamA, teamB) || isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
+      for (const { teamA, teamB, teamATotal, teamBTotal, challengeAdvantage } of challengePartitions(group, qualifierSet)) {
         const teamAQualifiers = teamA.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
-        const teamBQualifiers = teamB.filter((player) => qualifierSet.some((candidate) => candidate.id === player.id));
-        if (qualifierSet.length > 1 && (!teamAQualifiers.length || !teamBQualifiers.length)) continue;
-        const teamATotal = teamA.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
-        const teamBTotal = teamB.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
         const teamDifference = Math.abs(teamATotal - teamBTotal);
         const qualifierTeam = teamAQualifiers.length ? teamA : teamB;
-        const opponentTeam = teamAQualifiers.length ? teamB : teamA;
-        const challengeAdvantage = opponentTeam.reduce((sum, player) => sum + effectiveWeightFor(player), 0) - qualifierTeam.reduce((sum, player) => sum + effectiveWeightFor(player), 0);
-        if (qualifierSet.length === 1 && challengeAdvantage <= 0) continue;
         const qualifierPartner = qualifierSet.length === 1 ? qualifierTeam.find((player) => !qualifierSet.some((candidate) => candidate.id === player.id)) : undefined;
         const pairRotation = qualifierSet.length > 1 && !pairWasExcluded ? 0 : 1;
-        const key: (number[] | number | string)[] = [pairRotation, pairHistory, supportPriority, supportGames, supportPending, supportQueueAge, isQualifiedLoneFemaleGroup(group) ? 0 : 1, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner ? effectiveWeightFor(qualifierPartner) : 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];
+        const difficultyTier = qualifierSet.length === 1 ? (challengeAdvantage === 1 ? 0 : challengeAdvantage === 2 ? 1 : 2) : 0;
+        const key: (number[] | number | string)[] = [difficultyTier, pairRotation, pairHistory, supportPriority, supportGames, supportPending, supportQueueAge, isQualifiedLoneFemaleGroup(group) ? 0 : 1, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner ? effectiveWeightFor(qualifierPartner) : 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];
         const keyString = challengeGroupKey(teamA, teamB);
         if (excluded.has(keyString)) continue;
-        const suggestion: Suggestion = { mode: "UNDEFEATED_CHALLENGE", teamA, teamB, teamATotal, teamBTotal, difference: teamDifference, key: keyString, explanation: { algorithmVersion: MATCHMAKING_ALGORITHM, mode: "UNDEFEATED_CHALLENGE", searchStats: { eligibleCount: eligible.length, evaluatedCount: ranked.length + supports.length, bounded: supports.length < eligible.filter((player) => !rankedIds.has(player.id)).length }, loneFemalePolicy: loneFemalePolicy(teamA, teamB), rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() }, challenge: { minimumMatches: UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, rankLimit: UNDEFEATED_CHALLENGE_RANK_LIMIT, qualifyingPlayers: ranked.map(({ player, rank }) => ({ id: player.id, displayName: player.displayName, rank, gamesPlayed: gamesFor(player), wins: winsFor(player), losses: lossesFor(player) })), selectedPlayerIds: qualifierSet.map((player) => player.id), opposingPlayerIds: qualifierSet.length > 1 ? qualifierSet.map((player) => player.id) : [], pairKey, rotatedPair: pairRotation === 1, fallbackIncludedThird: useFallback, difficultyPolicy: qualifierSet.length === 1 ? "WEAKER_TEAM_FAIR_QUEUE" : "QUALIFIED_PLAYERS_OPPOSED" }, teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: teamDifference }, repeatPenalties: { recentPairCount: recentPairs.filter(Boolean).length, recentPairTotal: recentPairs.reduce((sum, value) => sum + value, 0), allTimePairCount: allPairs.filter(Boolean).length, allTimePairTotal: allPairs.reduce((sum, value) => sum + value, 0) }, fairness: { supportMinimumGames: minimumSupportGames, supportPending } } };
+        const suggestion: Suggestion = { mode: "UNDEFEATED_CHALLENGE", teamA, teamB, teamATotal, teamBTotal, difference: teamDifference, key: keyString, explanation: { algorithmVersion: MATCHMAKING_ALGORITHM, mode: "UNDEFEATED_CHALLENGE", searchStats: { eligibleCount: eligible.length, evaluatedCount: supportGroups.length + witnessEvaluatedCount, bounded: supports.length < supportSource.length }, loneFemalePolicy: loneFemalePolicy(teamA, teamB), rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() }, challenge: { minimumMatches: UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, rankLimit: UNDEFEATED_CHALLENGE_RANK_LIMIT, qualifyingPlayers: ranked.map(({ player, rank }) => ({ id: player.id, displayName: player.displayName, rank, gamesPlayed: gamesFor(player), wins: winsFor(player), losses: lossesFor(player) })), selectedPlayerIds: qualifierSet.map((player) => player.id), opposingPlayerIds: qualifierSet.length > 1 ? qualifierSet.map((player) => player.id) : [], pairKey, rotatedPair: pairRotation === 1, fallbackIncludedThird: useFallback, difficultyPolicy: qualifierSet.length === 1 ? "TEAM_TOTAL_PLUS_ONE_THEN_PLUS_TWO_THEN_EQUAL" : "QUALIFIED_PLAYERS_OPPOSED", appliedDisadvantage: qualifierSet.length === 1 ? challengeAdvantage : null, equalStrengthFallback: qualifierSet.length === 1 && challengeAdvantage === 0 }, teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: teamDifference }, repeatPenalties: { recentPairCount: recentPairs.filter(Boolean).length, recentPairTotal: recentPairs.reduce((sum, value) => sum + value, 0), allTimePairCount: allPairs.filter(Boolean).length, allTimePairTotal: allPairs.reduce((sum, value) => sum + value, 0) }, fairness: { supportMinimumGames: minimumSupportGames, supportPending } } };
         if (!best || compare(key, best.key) < 0) best = { key, suggestion };
       }
     }
@@ -740,8 +790,8 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
 }
 
 export function suggestMatch(players: MatchPlayer[], mode: MatchmakingMode, history: MatchHistory, excludedKeys: string[] = [], options: MatchmakingOptions = {}): Suggestion | null {
+  if (mode === "UNDEFEATED_CHALLENGE") return suggestUndefeatedChallenge(players, history, excludedKeys, options);
   const preparedPlayers = applySynergyTeams(players, options.synergyTeams);
-  if (mode === "UNDEFEATED_CHALLENGE") return suggestUndefeatedChallenge(preparedPlayers, history, excludedKeys, options);
   const now = options.now ? new Date(options.now).getTime() : Date.now();
   const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
   const strengthGap = mode === "BALANCED" ? options.strengthGap ?? DEFAULT_BALANCED_STRENGTH_GAP : undefined;
