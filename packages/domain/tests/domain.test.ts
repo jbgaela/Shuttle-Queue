@@ -261,20 +261,26 @@ test("blocks deletion of queued or playing players", () => {
   assert.throws(() => applyPlayerDeletion(snapshot, ["p"]), /Busy players/);
 });
 
-test("qualifies only current top-three undefeated players after four matches", () => {
+test("qualifies only current top-three undefeated players after five matches", () => {
   const players: MatchPlayer[] = [
     { id: "a", displayName: "Alpha", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 3, wins: 3, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
-    { id: "b", displayName: "Bravo", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 4, wins: 4, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
+    { id: "b", displayName: "Bravo", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 5, wins: 5, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
     { id: "c", displayName: "Charlie", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 4, wins: 3, losses: 1, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
-    { id: "d", displayName: "Delta", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 4, wins: 4, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
-    { id: "e", displayName: "Echo", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 4, wins: 4, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
+    { id: "d", displayName: "Delta", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 5, wins: 5, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
+    { id: "e", displayName: "Echo", gender: "MALE", skillWeight: 2, skillLevel: "NEWBIE", status: "WAITING", gamesPlayed: 5, wins: 5, losses: 0, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null },
   ];
   assert.deepEqual(undefeatedChallengePlayers(players).map(({ player, rank }) => [player.id, rank]), [["b", 1], ["d", 2], ["e", 3]]);
   assert.equal(undefeatedChallengePlayers(players.map((player) => player.id === "b" ? { ...player, losses: 1 } : player)).length, 2);
 });
 
+test("undefeated challenge requires five wins and excludes losses or rank-four players", () => {
+  const make = (id: string, gamesPlayed: number, wins: number, losses: number): MatchPlayer => ({ id, displayName: id, gender: "MALE", skillWeight: 2, skillLevel: "BEGINNER", status: "WAITING", gamesPlayed, wins, losses, manualPriority: 0, queueEnteredAt: new Date(0).toISOString(), lastMatchEndedAt: null });
+  const players = [make("a", 4, 4, 0), make("b", 5, 5, 0), make("c", 5, 4, 1), make("d", 5, 5, 0), make("e", 5, 5, 0)];
+  assert.deepEqual(undefeatedChallengePlayers(players).map(({ player }) => player.id), ["b", "d", "e"]);
+});
+
 test("challenge mode anchors qualified players and keeps qualified opponents apart", () => {
-  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: index + 1, skillLevel: "BEGINNER", status: "WAITING", gamesPlayed: id <= "c" ? 4 : 0, wins: id <= "c" ? 4 : 0, losses: 0, manualPriority: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null }));
+  const players: MatchPlayer[] = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({ id, displayName: id, gender: "MALE", skillWeight: index + 1, skillLevel: "BEGINNER", status: "WAITING", gamesPlayed: id <= "c" ? 5 : 0, wins: id <= "c" ? 5 : 0, losses: 0, manualPriority: 0, queueEnteredAt: new Date(index).toISOString(), lastMatchEndedAt: null }));
   const history: MatchHistory = { partners: new Map(), opponents: new Map(), quartets: new Map() };
   const result = suggestMatch(players, "UNDEFEATED_CHALLENGE", history);
   assert.ok(result);
@@ -292,7 +298,7 @@ test("single-qualifier challenge alternates keep the qualifier disadvantaged", (
     const qualifierOnA = result.teamA.some((player) => player.id === selectedId);
     return qualifierOnA ? result.teamBTotal - result.teamATotal : result.teamATotal - result.teamBTotal;
   };
-  const players = [make("q", 5, 4), make("s1", 3, 0), make("s2", 6, 0), make("s3", 5, 0)];
+  const players = [make("q", 5, 5), make("s1", 3, 0), make("s2", 6, 0), make("s3", 5, 0)];
   const first = suggestMatch(players, "UNDEFEATED_CHALLENGE", history);
   assert.ok(first);
   assert.ok(challengeAdvantage(first) > 0);

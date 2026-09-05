@@ -42,7 +42,7 @@ export function guidedSnapshot() {
     schemaVersion: 2,
     queueMasterId: "account-1",
     settings: { id: "guided-settings", pointsToWin: 21, winBy: 2, scoreCap: null, bestOf: 1, minimumRestMinutes: 0, lateArrivalGraceMinutes: 15, defaultFeeMode: "NONE", defaultFixedFeeMinor: null, currencyCode: "PHP", timeZone: "Asia/Manila", defaultLateArrivalCutoffTime: null, version: 1 },
-    workspace: { startedAt, endedAt: null, lateArrivalCutoffAt: null, matchmakingAlgorithm: "v11-guided-matchmaking-optimized-search", matchmakingRevision: 1, version: 1 },
+    workspace: { startedAt, endedAt: null, lateArrivalCutoffAt: null, matchmakingAlgorithm: "v12-undefeated-five-match-threshold", matchmakingRevision: 1, version: 1 },
     players,
     queuePlayers,
     synergyTeams: [],

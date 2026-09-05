@@ -220,7 +220,9 @@ export type MatchHistory = { partners: Map<string, Map<string, number>>; opponen
 export type Suggestion = { mode: MatchmakingMode; teamA: MatchPlayer[]; teamB: MatchPlayer[]; teamATotal: number; teamBTotal: number; difference: number; key: string; matchupAdvisory?: MatchupAdvisory | null; explanation: Record<string, unknown> };
 export type MatchmakingOptions = { strengthGap?: 1 | 2 | 3; minimumRestMinutes?: number; now?: string | Date; synergyTeams?: Array<Pick<DomainSynergyTeam, "id" | "queuePlayerIds">> };
 const DEFAULT_BALANCED_STRENGTH_GAP = 1;
-export const MATCHMAKING_ALGORITHM = "v11-guided-matchmaking-optimized-search";
+export const MATCHMAKING_ALGORITHM = "v12-undefeated-five-match-threshold";
+export const UNDEFEATED_CHALLENGE_MINIMUM_MATCHES = 5;
+export const UNDEFEATED_CHALLENGE_RANK_LIMIT = 3;
 
 export const skillWeights: Record<SkillLevel, number> = {
   NEWBIE: 1,
@@ -353,6 +355,53 @@ export const validateBalancedLineup = (teamA: MatchPlayer[], teamB: MatchPlayer[
   if (teamDifference !== strengthGap) return `Handicap matchups require team strength totals to differ by exactly ${strengthGap}.`;
   return null;
 };
+
+export type MatchmakingConstraintResult =
+  | { valid: true }
+  | { valid: false; code: string; message: string; canConvertToManual: true };
+
+const invalidConstraint = (code: string, message: string): MatchmakingConstraintResult => ({ valid: false, code, message, canConvertToManual: true });
+
+/** Validates the mode guarantee for an edited/generated lineup. Universal player, rest, ownership, and court rules remain outside the domain mode validator. */
+export function validateMatchmakingConstraints(mode: MatchmakingMode, teamA: MatchPlayer[], teamB: MatchPlayer[], strengthGap = DEFAULT_BALANCED_STRENGTH_GAP): MatchmakingConstraintResult {
+  if (![1, 2].includes(teamA.length) || teamA.length !== teamB.length || new Set([...teamA, ...teamB].map((player) => player.id)).size !== teamA.length + teamB.length) {
+    return invalidConstraint("TEAM_STRUCTURE", "Choose unique players with equal team sizes for singles or doubles.");
+  }
+  const generatedGenderResult = (): MatchmakingConstraintResult => isProhibitedGeneratedGenderMatch(teamA, teamB)
+    ? invalidConstraint("GENERATED_GENDER_RULE", "Generated matchups cannot place two female players against two male players.")
+    : { valid: true };
+  if (mode === "BALANCED") {
+    const error = validateBalancedLineup(teamA, teamB, strengthGap);
+    return error ? invalidConstraint("BALANCE_CONSTRAINT_VIOLATION", error) : generatedGenderResult();
+  }
+  if (mode === "MIXED_DOUBLES") {
+    const error = validateMixedDoublesLineup(teamA, teamB);
+    return error ? invalidConstraint("MIXED_DOUBLES_COMPOSITION", error) : generatedGenderResult();
+  }
+  if (mode === "GUIDED") {
+    const error = validateGuidedLineup(teamA, teamB);
+    if (error) return invalidConstraint("GUIDED_COMPOSITION", error);
+    return isProhibitedGeneratedGenderMatch(teamA, teamB)
+      ? invalidConstraint("GENERATED_GENDER_RULE", "Generated matchups cannot place two female players against two male players.")
+      : { valid: true };
+  }
+  if (mode === "SAME_GENDER") {
+    const valid = new Set([...teamA, ...teamB].map((player) => player.gender)).size === 1;
+    return valid ? generatedGenderResult() : invalidConstraint("MODE_CONSTRAINT_VIOLATION", "Same gender matchups require one gender across the generated group.");
+  }
+  if (mode === "SAME_SKILL") {
+    const weights = [...teamA, ...teamB].map((player) => effectiveWeightFor(player));
+    const valid = weights.every((weight) => weight === weights[0]);
+    return valid ? generatedGenderResult() : invalidConstraint("MODE_CONSTRAINT_VIOLATION", "Same skill matchups require identical effective player strength.");
+  }
+  if (mode === "OPEN" && isProhibitedGeneratedNewbieMatch(teamA, teamB)) {
+    return invalidConstraint("MODE_CONSTRAINT_VIOLATION", "Open matchups cannot pair a Newbie with an Intermediate player.");
+  }
+  if (mode === "UNDEFEATED_CHALLENGE") {
+    return invalidConstraint("UNDEFEATED_CHALLENGE_CONSTRAINT", "Edited Undefeated Challenge lineups must continue as Manual Adjusted.");
+  }
+  return generatedGenderResult();
+}
 
 export function normalizeName(value: string) {
   return value.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
@@ -610,7 +659,7 @@ export function leaderboardOrder(players: MatchPlayer[]) {
   return [...players].sort((a, b) => winsFor(b) - winsFor(a) || gamesFor(b) - gamesFor(a) || normalizeName(a.displayName).localeCompare(normalizeName(b.displayName)) || a.id.localeCompare(b.id));
 }
 
-export function undefeatedChallengePlayers(players: MatchPlayer[], minimumMatches = 4, rankLimit = 3) {
+export function undefeatedChallengePlayers(players: MatchPlayer[], minimumMatches = UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, rankLimit = UNDEFEATED_CHALLENGE_RANK_LIMIT) {
   return leaderboardOrder(players).slice(0, rankLimit).flatMap((player, index) => winsFor(player) === gamesFor(player) && lossesFor(player) === 0 && gamesFor(player) >= minimumMatches ? [{ player, rank: index + 1 }] : []);
 }
 
@@ -681,7 +730,7 @@ function suggestUndefeatedChallenge(players: MatchPlayer[], history: MatchHistor
         const key: (number[] | number | string)[] = [pairRotation, pairHistory, supportPriority, supportGames, supportPending, supportQueueAge, isQualifiedLoneFemaleGroup(group) ? 0 : 1, recentPairs.filter(Boolean).length, recentPairs.reduce((sum, value) => sum + value, 0), allPairs.filter(Boolean).length, allPairs.reduce((sum, value) => sum + value, 0), qualifierSet.length === 1 ? -challengeAdvantage : teamDifference, qualifierPartner ? effectiveWeightFor(qualifierPartner) : 0, teamA.map((player) => player.id).sort().join(","), teamB.map((player) => player.id).sort().join(",")];
         const keyString = challengeGroupKey(teamA, teamB);
         if (excluded.has(keyString)) continue;
-        const suggestion: Suggestion = { mode: "UNDEFEATED_CHALLENGE", teamA, teamB, teamATotal, teamBTotal, difference: teamDifference, key: keyString, explanation: { algorithmVersion: MATCHMAKING_ALGORITHM, mode: "UNDEFEATED_CHALLENGE", searchStats: { eligibleCount: eligible.length, evaluatedCount: ranked.length + supports.length, bounded: supports.length < eligible.filter((player) => !rankedIds.has(player.id)).length }, loneFemalePolicy: loneFemalePolicy(teamA, teamB), rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() }, challenge: { minimumMatches: 4, rankLimit: 3, qualifyingPlayers: ranked.map(({ player, rank }) => ({ id: player.id, displayName: player.displayName, rank, gamesPlayed: gamesFor(player), wins: winsFor(player), losses: lossesFor(player) })), selectedPlayerIds: qualifierSet.map((player) => player.id), opposingPlayerIds: qualifierSet.length > 1 ? qualifierSet.map((player) => player.id) : [], pairKey, rotatedPair: pairRotation === 1, fallbackIncludedThird: useFallback, difficultyPolicy: qualifierSet.length === 1 ? "WEAKER_TEAM_FAIR_QUEUE" : "QUALIFIED_PLAYERS_OPPOSED" }, teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: teamDifference }, repeatPenalties: { recentPairCount: recentPairs.filter(Boolean).length, recentPairTotal: recentPairs.reduce((sum, value) => sum + value, 0), allTimePairCount: allPairs.filter(Boolean).length, allTimePairTotal: allPairs.reduce((sum, value) => sum + value, 0) }, fairness: { supportMinimumGames: minimumSupportGames, supportPending } } };
+        const suggestion: Suggestion = { mode: "UNDEFEATED_CHALLENGE", teamA, teamB, teamATotal, teamBTotal, difference: teamDifference, key: keyString, explanation: { algorithmVersion: MATCHMAKING_ALGORITHM, mode: "UNDEFEATED_CHALLENGE", searchStats: { eligibleCount: eligible.length, evaluatedCount: ranked.length + supports.length, bounded: supports.length < eligible.filter((player) => !rankedIds.has(player.id)).length }, loneFemalePolicy: loneFemalePolicy(teamA, teamB), rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() }, challenge: { minimumMatches: UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, rankLimit: UNDEFEATED_CHALLENGE_RANK_LIMIT, qualifyingPlayers: ranked.map(({ player, rank }) => ({ id: player.id, displayName: player.displayName, rank, gamesPlayed: gamesFor(player), wins: winsFor(player), losses: lossesFor(player) })), selectedPlayerIds: qualifierSet.map((player) => player.id), opposingPlayerIds: qualifierSet.length > 1 ? qualifierSet.map((player) => player.id) : [], pairKey, rotatedPair: pairRotation === 1, fallbackIncludedThird: useFallback, difficultyPolicy: qualifierSet.length === 1 ? "WEAKER_TEAM_FAIR_QUEUE" : "QUALIFIED_PLAYERS_OPPOSED" }, teamSkillTotals: { teamA: teamATotal, teamB: teamBTotal, difference: teamDifference }, repeatPenalties: { recentPairCount: recentPairs.filter(Boolean).length, recentPairTotal: recentPairs.reduce((sum, value) => sum + value, 0), allTimePairCount: allPairs.filter(Boolean).length, allTimePairTotal: allPairs.reduce((sum, value) => sum + value, 0) }, fairness: { supportMinimumGames: minimumSupportGames, supportPending } } };
         if (!best || compare(key, best.key) < 0) best = { key, suggestion };
       }
     }

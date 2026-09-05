@@ -6,8 +6,8 @@ type LocalSuggestionPayload = {
   mode: (typeof VALID_MATCHMAKING_MODES)[number];
   strengthGap?: 1 | 2 | 3;
   key: string;
-  teamA: [string] | [string, string];
-  teamB: [string] | [string, string];
+  teamA: [string, string];
+  teamB: [string, string];
   expiresAt: number;
 };
 
@@ -16,13 +16,17 @@ const staleError = () => new Error("SUGGESTION_STALE: Generate a new suggestion.
 export function decodeLocalSuggestion(value: string): LocalSuggestionPayload {
   if (!value.startsWith("local:")) throw staleError();
   try {
-    const parsed: unknown = JSON.parse(atob(value.slice(6)));
+    const encoded = value.slice(6);
+    if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) throw new Error();
+    const decoded = atob(encoded);
+    if (btoa(decoded) !== encoded) throw new Error();
+    const parsed: unknown = JSON.parse(decoded);
     if (!parsed || typeof parsed !== "object") throw new Error();
     const payload = parsed as Record<string, unknown>;
     const allowedKeys = new Set(["algorithmVersion", "revision", "mode", "strengthGap", "key", "teamA", "teamB", "expiresAt"]);
     if (Object.keys(payload).some((key) => !allowedKeys.has(key))) throw new Error();
     if (typeof payload.algorithmVersion !== "string" || payload.algorithmVersion.length === 0 || typeof payload.mode !== "string" || !Array.isArray(payload.teamA) || !Array.isArray(payload.teamB) || typeof payload.key !== "string" || payload.key.length < 3 || typeof payload.revision !== "number" || !Number.isInteger(payload.revision) || payload.revision < 0 || typeof payload.expiresAt !== "number" || !Number.isInteger(payload.expiresAt) || payload.expiresAt <= 0 || payload.expiresAt < Date.now()) throw new Error();
-    if (![1, 2].includes(payload.teamA.length) || payload.teamA.length !== payload.teamB.length || payload.teamA.some((id) => typeof id !== "string" || id.length === 0) || payload.teamB.some((id) => typeof id !== "string" || id.length === 0)) throw new Error();
+    if (payload.teamA.length !== 2 || payload.teamB.length !== 2 || payload.teamA.some((id) => typeof id !== "string" || id.length === 0) || payload.teamB.some((id) => typeof id !== "string" || id.length === 0)) throw new Error();
     const teamA = payload.teamA as string[];
     const teamB = payload.teamB as string[];
     const lineupIds = [...teamA, ...teamB];
@@ -38,8 +42,8 @@ export function decodeLocalSuggestion(value: string): LocalSuggestionPayload {
       mode: payload.mode as LocalSuggestionPayload["mode"],
       ...(payload.strengthGap === undefined ? {} : { strengthGap: payload.strengthGap as 1 | 2 | 3 }),
       key: payload.key,
-      teamA: teamA as LocalSuggestionPayload["teamA"],
-      teamB: teamB as LocalSuggestionPayload["teamB"],
+      teamA: teamA as [string, string],
+      teamB: teamB as [string, string],
       expiresAt: payload.expiresAt,
     };
   } catch {
