@@ -5,14 +5,26 @@ import { mockGuidedApi } from "./guided-fixtures";
 test.use({ serviceWorkers: "block" });
 
 test("the signed-out entry screen exposes a labelled, keyboard-accessible sign-in form", async ({ page }) => {
+  await page.route("**/api/v2/auth/me", (route) => route.fulfill({ status: 401, json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } } }));
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Badminton Queueing System" })).toBeVisible();
   await expect(page.getByLabel("Username")).toBeVisible();
-  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to continue", level: 2 })).toBeVisible();
+  await expect(page.getByRole("contentinfo")).toHaveText("Created by @jbgaela & @jendii");
+  await page.getByLabel("Username").focus();
+  await page.keyboard.press("Tab");
+  await expect(page.getByLabel("Password", { exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  const toggle = page.getByRole("button", { name: "Show password" });
+  await expect(toggle).toBeFocused();
+  expect(await toggle.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe("solid");
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeFocused();
 
   const results = await new AxeBuilder({ page }).analyze();
-  expect(results.violations.filter((violation) => violation.impact === "critical")).toEqual([]);
+  expect(results.violations).toEqual([]);
 });
 
 test("the signed-in Guided queue exposes counts, banner semantics, and keyboard focus", async ({ page }) => {

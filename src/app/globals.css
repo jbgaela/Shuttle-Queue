@@ -19,6 +19,46 @@ label > input, label > select { margin-top: 0.375rem; }
 .display { font-family: Georgia, "Times New Roman", serif; letter-spacing: -0.03em; }
 .focus-ring:focus-visible { outline: 3px solid #f6b667; outline-offset: 2px; }
 .text-\[\#a85b2b\] { color: #a45125; }
+.login-shell {
+  background: radial-gradient(ellipse at 0% 15%, #d8ede4 0, transparent 55%), radial-gradient(ellipse at 100% 90%, #f9eadc 0, transparent 45%), var(--paper);
+}
+
+.login-court {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(120deg, var(--teal-dark), var(--teal));
+  border: 8px solid #d8ede4;
+  box-shadow: 0 12px 28px #102a2d0d;
+}
+
+.login-court::before {
+  content: "";
+  position: absolute;
+  inset: 14px 24px;
+  border: 1px solid #ffffff70;
+  background: linear-gradient(90deg, transparent calc(50% - 0.5px), #ffffff70 50%, transparent calc(50% + 0.5px)), linear-gradient(transparent calc(50% - 0.5px), #ffffff70 50%, transparent calc(50% + 0.5px));
+}
+
+.login-court::after {
+  content: "";
+  position: absolute;
+  inset: 14px 32%;
+  border-inline: 1px solid #ffffff70;
+}
+
+.login-court span,
+.login-court i {
+  position: absolute;
+  top: 34%;
+  left: 22%;
+  width: 12px;
+  height: 12px;
+  border: 3px solid white;
+  border-radius: 50%;
+  box-shadow: 0 0 0 7px #ffffff15;
+}
+
+.login-court i { top: 58%; left: 73%; background: #f6b667; border-color: #f6b667; }
 header.sticky { background-color: var(--paper); backdrop-filter: none; }
 header.sticky .overflow-x-auto > button { background-color: var(--paper); }
 header.sticky .overflow-x-auto > button.bg-\[var\(--teal\)\] { background-color: var(--teal); color: #ffffff; }

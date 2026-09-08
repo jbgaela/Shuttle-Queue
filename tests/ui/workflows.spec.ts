@@ -4,6 +4,7 @@ import { mockGuidedApi } from "./guided-fixtures";
 test.use({ serviceWorkers: "block" });
 
 test("the queue entry workflow keeps the sign-in action available without creating a match", async ({ page }) => {
+  await page.route("**/api/v2/auth/me", (route) => route.fulfill({ status: 401, json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } } }));
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Badminton Queueing System" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeEnabled();

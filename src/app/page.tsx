@@ -15,6 +15,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   Filter,
   History as HistoryIcon,
   KeyRound,
@@ -278,6 +280,7 @@ function useRefreshInterval(enabled: boolean) {
 function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const login = useMutation({
     mutationFn: async () => {
       const result = await api.login(username.trim(), password);
@@ -288,21 +291,45 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: AuthUser) => void }) {
     onSuccess: (result) => { try { window.sessionStorage.removeItem("shuttle-queue-offline-signed-out"); } catch { /* ignore storage cleanup failures */ } onLoggedIn(result.user); toast.success("Welcome back."); },
   });
   return (
-    <main className="flex min-h-screen items-center justify-center px-5 py-10">
-      <Card className="w-full max-w-md p-7 sm:p-9">
-        <div className="mb-8 flex items-center gap-3">
-          <div className="grid size-12 place-items-center rounded-2xl bg-[var(--teal)] text-white"><Zap size={23} /></div>
-          <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[var(--teal)]">Shuttle Queue</p><h1 className="display text-3xl">Badminton Queueing System</h1></div>
-        </div>
-        <p className="mb-7 text-sm leading-6 text-[var(--muted)]">By: LineDrive PH: Jean Benedict Gaela & Jendii</p>
-        <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); login.mutate(); }}>
-          <label className="block text-sm font-semibold">Username<Input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
-          <label className="block text-sm font-semibold">Password<Input value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" type="password" required /></label>
-          {login.isError && <p className="rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]">{isAuthRequired(login.error) ? "The server could not verify this login session. Check your connection and try again." : errorMessage(login.error)}</p>}
-          <Button type="submit" className="w-full" loading={login.isPending}>Sign in</Button>
-        </form>
-      </Card>
-    </main>
+    <div className="login-shell flex min-h-svh flex-col px-5 sm:px-8">
+      <main className="mx-auto grid w-full max-w-6xl flex-1 content-center gap-7 py-8 sm:gap-10 sm:py-12 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center lg:gap-16">
+        <section aria-labelledby="login-title" className="login-hero relative isolate min-w-0">
+          <div className="mb-6 flex items-center gap-3 lg:mb-10">
+            <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--teal)] text-white"><Zap aria-hidden="true" size={23} /></span>
+            <span className="text-sm font-bold uppercase tracking-[0.18em] text-[var(--teal-dark)]">Shuttle Queue</span>
+          </div>
+          <p className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-[var(--orange)]">Less waiting. More playing.</p>
+          <h1 id="login-title" className="display max-w-lg text-4xl leading-[1.08] sm:text-5xl lg:text-6xl">Badminton <span className="text-[var(--teal)]">Queueing</span> System</h1>
+          <p className="mt-4 max-w-md text-base leading-7 text-[var(--muted)] sm:mt-6 sm:text-lg">Keep players moving, courts active, and every match organized.</p>
+          <ul className="mt-5 flex flex-wrap gap-x-5 gap-y-3 text-xs font-semibold text-[var(--teal-dark)] sm:mt-7 sm:text-sm">
+            <li className="flex items-center gap-2"><UsersRound aria-hidden="true" size={17} />Fairer rotations</li>
+            <li className="flex items-center gap-2"><Activity aria-hidden="true" size={17} />Live court visibility</li>
+            <li className="flex items-center gap-2"><ShieldCheck aria-hidden="true" size={17} />Offline-ready workflow</li>
+          </ul>
+          <div aria-hidden="true" className="login-court mt-10 hidden h-36 max-w-md rounded-2xl lg:block"><span /><i /></div>
+        </section>
+        <Card aria-labelledby="login-form-title" className="w-full max-w-lg justify-self-center p-6 sm:p-9 lg:p-10">
+          <span aria-hidden="true" className="mb-5 hidden size-11 place-items-center rounded-2xl bg-[#d8f1eb] text-[var(--teal-dark)] sm:grid"><KeyRound size={21} /></span>
+          <h2 id="login-form-title" className="text-2xl font-bold tracking-tight">Sign in to continue</h2>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">Manage courts, players, and match flow from your account.</p>
+          <form className="mt-6 space-y-5 sm:mt-8" onSubmit={(event) => { event.preventDefault(); if (!login.isPending) login.mutate(); }}>
+            <label className="block text-sm font-semibold">Username<Input className="min-h-12 text-base" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} required /></label>
+            <div>
+              <label htmlFor="login-password" className="block text-sm font-semibold">Password</label>
+              <div className="relative mt-1.5">
+                <Input id="login-password" className="min-h-12 pr-14 text-base" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" type={passwordVisible ? "text" : "password"} required />
+                <button type="button" aria-label={passwordVisible ? "Hide password" : "Show password"} aria-pressed={passwordVisible} aria-controls="login-password" onClick={() => setPasswordVisible((visible) => !visible)} className="focus-ring absolute right-0.5 top-0.5 grid size-11 place-items-center rounded-xl text-[var(--muted)] hover:bg-[var(--paper)] hover:text-[var(--teal)]">{passwordVisible ? <EyeOff aria-hidden="true" size={20} /> : <Eye aria-hidden="true" size={20} />}</button>
+              </div>
+            </div>
+            {login.isError && <p role="alert" className="break-words rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm leading-6 text-[#8d4824]">{isAuthRequired(login.error) ? "The server could not verify this login session. Check your connection and try again." : errorMessage(login.error)}</p>}
+            <Button type="submit" className="min-h-12 w-full text-base" loading={login.isPending}>Sign in<ArrowRight aria-hidden="true" size={18} /></Button>
+          </form>
+        </Card>
+      </main>
+      <footer className="mx-auto w-full max-w-6xl border-t border-[var(--line)] py-5 text-center sm:py-6">
+        <p className="inline-block rounded-full border border-[#bfdcd1] bg-[#e8f2ec] px-5 py-3 text-sm font-semibold text-[var(--teal-dark)]">Created by @jbgaela &amp; @jendii</p>
+      </footer>
+    </div>
   );
 }
 

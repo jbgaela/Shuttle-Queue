@@ -73,7 +73,7 @@ test("does not enter the dashboard until a fresh login session is verified", asy
   });
   await page.goto("/");
   await page.getByLabel("Username").fill(account.username);
-  await page.getByLabel("Password").fill("password");
+  await page.getByLabel("Password", { exact: true }).fill("password");
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page.getByText("The server could not verify this login session. Check your connection and try again.")).toBeVisible();
