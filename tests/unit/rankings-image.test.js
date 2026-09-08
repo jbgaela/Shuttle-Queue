@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRankingExportCanvas, formatRankingExportDate, rankingExportFilename, rankingExportRows, saveRankingsToDevice } from "../../src/lib/rankings-image.ts";
+import { partitionPublicRankingRows, partitionRankingRows } from "../../src/lib/ranking-presentation.ts";
 
 const ranking = (overrides = {}) => ({ rank: 1, queuePlayerId: "queue-1", sessionPlayerId: "queue-1", player: "Alice Santos", playerId: "player-1", gender: "FEMALE", skillLevel: "BEGINNER", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000, pointsFor: 84, pointsAgainst: 60, pointDifferential: 24, ...overrides });
 
@@ -56,8 +57,8 @@ test("private export keeps provisional players in the ranked table", () => {
     ranking({ player: "Qualified Player", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000, eligible: true, rank: 2 }),
   ]);
   assert.deepEqual(rows.map(({ player, rank, section }) => ({ player, rank, section })), [
-    { player: "Provisional Player (Provisional)", rank: 1, section: "RANKED" },
-    { player: "Qualified Player", rank: 2, section: "RANKED" },
+    { player: "Qualified Player", rank: 1, section: "RANKED" },
+    { player: "Provisional Player (Provisional)", rank: 11, section: "RANKED" },
   ]);
 });
 
@@ -68,8 +69,8 @@ test("public export omits prize labels, score, and eligibility sections", () => 
     ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
   ], { variant: "public" });
   assert.deepEqual(rows.map(({ player, rank, section }) => ({ player, rank, section })), [
-    { player: "Short Sample", rank: 1, section: "RANKED" },
-    { player: "Qualified Sample", rank: 2, section: "RANKED" },
+    { player: "Qualified Sample", rank: 1, section: "RANKED" },
+    { player: "Short Sample", rank: 11, section: "RANKED" },
     { player: "No Games", rank: null, section: "DID_NOT_PLAY" },
   ]);
   assert.equal(rows.some((row) => row.rankingScore !== undefined), false);
@@ -95,6 +96,29 @@ function canvasEnvironment() {
   const canvas = { width: 0, height: 0, getContext: () => context, toBlob: (callback) => callback(new Blob(["png"], { type: "image/png" })) };
   const document = { createElement: (tag) => tag === "canvas" ? canvas : (() => { const anchor = { href: "", download: "", click: () => anchors.push(anchor) }; return anchor; })() };
   return { canvas, document, drawnText, anchors };
+}
+
+for (const variant of ["private", "public"]) {
+  test(`${variant} canvas preserves rank eleven and matches screen ranks`, () => {
+    const input = [
+      ranking({ player: "Provisional", rank: 1, matchesPlayed: 4, wins: 4, losses: 0 }),
+      ranking({ player: "Eligible", rank: 2 }),
+    ];
+    const options = variant === "public" ? { variant: "public" } : {};
+    const partition = variant === "public" ? partitionPublicRankingRows : partitionRankingRows;
+    assert.deepEqual(rankingExportRows(input, options).map(({ rank }) => rank), partition(input).ranked.map(({ rank }) => rank));
+    const environment = canvasEnvironment();
+    const previousDocument = globalThis.document;
+    globalThis.document = environment.document;
+    try {
+      createRankingExportCanvas(input, new Date(2026, 7, 15), options);
+      assert.ok(environment.drawnText.includes("11"));
+      assert.ok(environment.drawnText.includes("1"));
+      assert.equal(environment.drawnText.includes("Provisional (Provisional)"), variant !== "public");
+    } finally {
+      globalThis.document = previousDocument;
+    }
+  });
 }
 
 test("canvas export includes every player and adapts for long names", () => {

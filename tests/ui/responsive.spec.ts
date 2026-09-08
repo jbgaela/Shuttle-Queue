@@ -179,6 +179,9 @@ function feesSnapshot() {
 function rankingSnapshot() {
   const snapshot = liveSnapshot() as any;
   snapshot.queuePlayers.forEach((player: any) => { player.matchesPlayed = 5; player.wins = 4; player.losses = 1; });
+  snapshot.queuePlayers[0].matchesPlayed = 4;
+  snapshot.queuePlayers[0].wins = 4;
+  snapshot.queuePlayers[0].losses = 0;
   const completedMatch = snapshot.matches[0];
   completedMatch.status = "COMPLETED";
   completedMatch.completedAt = new Date(new Date(completedMatch.startedAt).getTime() + 5 * 60_000).toISOString();
@@ -428,9 +431,10 @@ async function mockPublicRankingApi(route: Route) {
   const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
   if (path === "/public/rankings/public-token" || path === "/public/rankings/empty-token") {
     const rankings = path.endsWith("empty-token") ? [] : [
-      { rank: null, playerKey: "early-key", player: "Early Player", matchesPlayed: 1, wins: 1, losses: 0, winRateBasisPoints: 10000, pointsFor: 21, pointsAgainst: 10, pointDifferential: 11 },
-      { rank: 1, playerKey: "played-key", player: "Played Player", matchesPlayed: 2, wins: 1, losses: 1, winRateBasisPoints: 5000, pointsFor: 42, pointsAgainst: 40, pointDifferential: 2 },
-      { rank: 2, playerKey: "zero-key", player: "Public Did Not Play", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0, pointsFor: 0, pointsAgainst: 0, pointDifferential: 0 },
+      { rank: 4, playerKey: "early-key", player: "Early Player", matchesPlayed: 1, wins: 1, losses: 0, winRateBasisPoints: 10000, pointsFor: 21, pointsAgainst: 10, pointDifferential: 11 },
+      { rank: 1, playerKey: "qualified-key", player: "Qualified Player", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000, pointsFor: 63, pointsAgainst: 50, pointDifferential: 13 },
+      { rank: 5, playerKey: "played-key", player: "Played Player", matchesPlayed: 2, wins: 1, losses: 1, winRateBasisPoints: 5000, pointsFor: 42, pointsAgainst: 40, pointDifferential: 2 },
+      { rank: null, playerKey: "zero-key", player: "Public Did Not Play", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0, pointsFor: 0, pointsAgainst: 0, pointDifferential: 0 },
     ];
     await route.fulfill({ json: { data: { sessionStartedAt: "2026-08-30T08:00:00.000Z", firstMatchStartedAt: "2026-08-30T08:10:00.000Z", state: "LIVE", serverTime: "2026-08-30T08:20:00.000Z", lastUpdatedAt: "2026-08-30T08:20:00.000Z", historyAvailable: true, rankings } }, headers: corsHeaders });
     return;
@@ -774,6 +778,15 @@ test.describe("responsive regressions", () => {
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     const playerRow = page.getByTestId("ranking-row-queue-1");
     expect(await playerRow.count()).toBe(1);
+    await expect(playerRow.locator("span").first()).toHaveText("16");
+    await expect(playerRow).toContainText("Provisional");
+    const rankingRows = page.locator("[data-testid^='ranking-row-']");
+    for (let index = 0; index < 10; index += 1) {
+      await expect(rankingRows.nth(index).locator("span").first()).toHaveText(String(index + 1));
+      await expect(rankingRows.nth(index)).not.toContainText("Provisional");
+      if (index < 3) await expect(rankingRows.nth(index)).toContainText("Prize");
+    }
+    await expect(page.getByText("Ranks 1–10 are reserved for players with at least 5 completed games", { exact: false })).toBeVisible();
     await playerRow.click();
     await expect(page.getByText("Avg duration", { exact: true })).toBeVisible();
     await expect(page.getByText("5 min", { exact: true }).first()).toBeVisible();
@@ -790,6 +803,12 @@ test.describe("responsive regressions", () => {
     const earlyRow = page.getByRole("button").filter({ hasText: "Early Player" });
     await expect(earlyRow).toHaveCount(1);
     await expect(earlyRow).toContainText("Early Player");
+    const qualifiedRow = page.getByRole("button").filter({ hasText: "Qualified Player" });
+    await expect(qualifiedRow.locator("span").first()).toHaveText("1");
+    await expect(earlyRow.locator("span").first()).toHaveText("11");
+    const playedRow = page.getByRole("button").filter({ hasText: "Played Player" });
+    await expect(playedRow.locator("span").first()).toHaveText("12");
+    await expect(page.getByText(/Ranks 1–10 are reserved/i)).toHaveCount(0);
     await expect(page.getByText("1 games · 1W / 0L", { exact: true })).toBeVisible();
     await expect(page.getByText(/games to prize/i)).toHaveCount(0);
     await expect(earlyRow.getByText("Provisional", { exact: true })).toHaveCount(0);

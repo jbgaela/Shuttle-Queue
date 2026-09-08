@@ -1,3 +1,5 @@
+import { PRIZE_RANKING_MIN_MATCHES, PRIZE_RANKING_RESERVED_PLACES } from "@shuttle-queue/domain";
+
 export type RankingPresentationRow = {
   rank: number | null;
   player: string;
@@ -27,17 +29,31 @@ function compareRankingOrder<T extends RankingPresentationRow>(left: T, right: T
   return 0;
 }
 
+function isPrizeEligible<T extends RankingPresentationRow>(row: T) {
+  return row.matchesPlayed >= PRIZE_RANKING_MIN_MATCHES && row.eligible !== false;
+}
+
+function rankedRows<T extends RankingPresentationRow>(rows: T[]) {
+  const played = rows.filter((row) => row.matchesPlayed > 0).slice().sort(compareRankingOrder);
+  const eligible = played.filter(isPrizeEligible);
+  const provisional = played.filter((row) => !isPrizeEligible(row));
+  const provisionalRankStart = Math.max(PRIZE_RANKING_RESERVED_PLACES, eligible.length) + 1;
+  return [
+    ...eligible.map((row, index) => ({ ...row, rank: index + 1 })),
+    ...provisional.map((row, index) => ({ ...row, rank: provisionalRankStart + index })),
+  ];
+}
+
 /** Split ranking rows into the numbered leaderboard and unranked roster sections. */
 export function partitionRankingRows<T extends RankingPresentationRow>(rows: T[]): RankingPresentationGroups<T> {
-  const ranked = rows.filter((row) => row.matchesPlayed > 0).slice().sort(compareRankingOrder).map((row, index) => ({ ...row, rank: index + 1 }));
+  const ranked = rankedRows(rows);
   const didNotPlay = rows.filter((row) => row.matchesPlayed === 0).slice().sort(comparePlayerNames).map((row) => ({ ...row, rank: null }));
   return { ranked, didNotPlay };
 }
 
 /** Build the public live leaderboard from the server-provided ranking order. */
 export function partitionPublicRankingRows<T extends PublicRankingPresentationRow>(rows: T[]) {
-  const played = rows.filter((row) => row.matchesPlayed > 0).slice().sort(compareRankingOrder);
-  const ranked = played.map((row, index) => ({ ...row, rank: index + 1 }));
+  const ranked = rankedRows(rows);
   const didNotPlay = rows.filter((row) => row.matchesPlayed === 0).slice().sort(comparePlayerNames).map((row) => ({ ...row, rank: null }));
   return { ranked, didNotPlay };
 }
