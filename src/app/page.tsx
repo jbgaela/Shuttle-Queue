@@ -1761,7 +1761,7 @@ function historyScoreText(match: HistoryMatch) {
 
 function historyScoreLabel(match: HistoryMatch) {
   const score = historyScoreText(match);
-  return match.matchmakingLabel ? `${match.matchmakingLabel} Â· ${score}` : score;
+  return match.matchmakingLabel ? `${match.matchmakingLabel} ${score}` : score;
 }
 
 function HistoryMatchCard({ match, selectedPlayerId, actions }: { match: HistoryMatch; selectedPlayerId?: string; actions?: ReactNode }) {
