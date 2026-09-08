@@ -1,6 +1,6 @@
 import type { CloudSnapshotV2, DomainMatch, DomainPlayer, DomainQueuePlayer, MatchHistory, MatchPlayer, MatchmakingMode, ScoreSettings, SyncMetadata, DomainSynergyTeam, GuidedAvailabilitySummary, GuidedLineupPlayer } from "./domain-compat";
 import { allocateFinalFeeAmounts, applyPlayerDeletion, historyDurationSeconds, isProhibitedGeneratedGenderMatch, isProhibitedGeneratedNewbieMatch, evaluateGuidedAvailability, buildGuidedExplanation, loneFemalePolicy, lowSkillLoneFemaleAdvisory, normalizeText, removeSessionPlayer, skillWeight, suggestMatch, undefeatedChallengePlayers, validateBalancedLineup, validateGuidedLineup, validateMatchmakingConstraints, validateMixedDoublesLineup, validateSynergyLineup, MATCHMAKING_ALGORITHM, UNDEFEATED_CHALLENGE_MINIMUM_MATCHES, UNDEFEATED_CHALLENGE_RANK_LIMIT, validateScores, prizeRankingRows, PRIZE_RANKING_METHOD } from "./domain-compat";
-import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, RankingPayload, Suggestion, WorkspaceSummary, SynergyTeam } from "../api";
+import type { Court, FeeSummary, HistoryMatch, HistoryResponse, Match, MatchProvenance, Payment, Player, PlayerHistoryResponse, QueueState, QueuePlayer, Ranking, RankingPayload, Suggestion, WorkspaceSummary, SynergyTeam } from "../api";
 import { ApiError, request } from "../api";
 import { hasPlayerNameConflict } from "../player-names";
 import { playerHistoryStats } from "../player-history-stats";
@@ -170,7 +170,36 @@ const feeSummary = (snapshot: CloudSnapshotV2): FeeSummary => {
   return { config: snapshot.feeConfig as any, expectedMinor: players.reduce((sum, player) => sum + player.dueMinor, 0), collectedMinor: players.reduce((sum, player) => sum + player.collectedMinor, 0), outstandingMinor: players.reduce((sum, player) => sum + player.outstandingMinor, 0), creditMinor: players.reduce((sum, player) => sum + player.creditMinor, 0), noShowCount: players.filter((player) => player.isNoShow).length, paymentCount: payments.length, players } as FeeSummary;
 };
 const historyMatches = (snapshot: CloudSnapshotV2, search = "") => snapshot.matches.filter((match) => match.status === "COMPLETED").filter((match) => !search || match.participants.some((participant) => (findQueuePlayer(snapshot, participant.queuePlayerId)?.displayName ?? "").toLowerCase().includes(search.toLowerCase()))).sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
-const historyView = (snapshot: CloudSnapshotV2, match: DomainMatch): HistoryMatch => { const revision = scoreFor(match); const court = findCourt(snapshot, match.courtId ?? undefined); const courtHistory = match.courtIdSnapshot && match.courtNameSnapshot ? { id: match.courtIdSnapshot, name: match.courtNameSnapshot } : court ? { id: court.id, name: court.name } : null; return { id: match.id, source: match.source, matchmakingMode: match.matchmakingMode ?? null, matchmakingLabel: match.matchmakingMode === "BALANCED" ? `Handicap +${[1, 2, 3].includes(Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1)) ? Number((match.suggestionExplanation as { strengthGap?: number } | null)?.strengthGap ?? 1) : 1}` : match.matchmakingMode === "GUIDED" ? "Guided" : match.matchmakingMode === "UNDEFEATED_CHALLENGE" ? "Undefeated challenge" : match.matchmakingMode === "SAME_SKILL" ? "Same skill" : match.matchmakingMode === "MIXED_DOUBLES" ? "Mixed doubles" : match.matchmakingMode === "SAME_GENDER" ? "Same gender" : match.matchmakingMode === "OPEN" ? "Open" : match.source === "MANUAL_ADJUSTED" ? "Manual Adjusted" : "Manual", format: match.participants.length === 4 ? "DOUBLES" : "SINGLES", court: courtHistory, startedAt: match.startedAt ?? null, completedAt: match.completedAt ?? null, durationSeconds: historyDurationSeconds(match.startedAt, match.completedAt), winnerTeam: match.winnerTeam ?? null, version: match.version, scoring: { pointsToWin: match.pointsToWin, winBy: match.winBy, scoreCap: match.scoreCap ?? null, bestOf: match.bestOf }, score: revision ? { revisionNumber: revision.revisionNumber, winnerTeam: revision.winnerTeam, games: revision.games } : null, participants: match.participants.map((participant) => { const player = findQueuePlayer(snapshot, participant.queuePlayerId); return { queuePlayerId: participant.queuePlayerId, sessionPlayerId: participant.queuePlayerId, playerId: player?.playerId, displayName: player?.displayName ?? "Unknown", gender: player?.gender ?? "", skillLevel: player?.skillLevel ?? "", team: participant.team, teamSlot: participant.teamSlot }; }) } as HistoryMatch; };
+const offlineModeLabel = (match: DomainMatch, explanation: Record<string, unknown> | null) => {
+  if (match.matchmakingMode === "BALANCED") {
+    const gap = Number(explanation?.strengthGap ?? 1);
+    return `Handicap +${[1, 2, 3].includes(gap) ? gap : 1}`;
+  }
+  if (match.matchmakingMode === "GUIDED") return "Guided";
+  if (match.matchmakingMode === "UNDEFEATED_CHALLENGE") {
+    const challenge = explanation?.challenge && typeof explanation.challenge === "object" ? explanation.challenge as { appliedDisadvantage?: unknown; equalStrengthFallback?: unknown } : null;
+    const gap = Number(challenge?.appliedDisadvantage);
+    return gap === 1 || gap === 2 ? `Challenge +${gap}` : challenge?.equalStrengthFallback === true || gap === 0 ? "Equal-strength challenge" : "Undefeated challenge";
+  }
+  return match.matchmakingMode === "SAME_SKILL" ? "Same skill" : match.matchmakingMode === "MIXED_DOUBLES" ? "Mixed doubles" : match.matchmakingMode === "SAME_GENDER" ? "Same gender" : match.matchmakingMode === "OPEN" ? "Open" : null;
+};
+const offlineOriginalModeLabel = (value: string | null, fallback: string) => value === "BALANCED" ? "Balanced" : value === "GUIDED" ? "Guided" : value === "UNDEFEATED_CHALLENGE" ? "Undefeated challenge" : value === "SAME_SKILL" ? "Same skill" : value === "MIXED_DOUBLES" ? "Mixed doubles" : value === "SAME_GENDER" ? "Same gender" : value === "OPEN" ? "Open" : fallback;
+const offlineMatchProvenance = (match: DomainMatch, generatedLabel: string | null): MatchProvenance => {
+  const explanation = match.suggestionExplanation && typeof match.suggestionExplanation === "object" ? match.suggestionExplanation as Record<string, unknown> : null;
+  const generatedOrigin = explanation?.generatedOrigin === "SUGGESTION" || typeof explanation?.originalMode === "string";
+  if (match.source === "MANUAL") return { kind: "MANUAL", label: "Manual", description: "Teams were selected directly by the Queue Master.", originalMode: null, guaranteesRetained: null };
+  if (match.source === "MANUAL_ADJUSTED" && generatedOrigin) {
+    const originalMode = typeof explanation?.originalMode === "string" ? explanation.originalMode : null;
+    const label = generatedLabel ? `${generatedLabel} · Adjusted` : "Adjusted suggestion";
+    const description = generatedLabel
+      ? `Started as a ${offlineOriginalModeLabel(originalMode, generatedLabel)} suggestion. The lineup was edited and still meets ${generatedLabel} rules.`
+      : `Started as a ${offlineOriginalModeLabel(originalMode, "generated")} suggestion. The lineup was edited manually, so the original mode guarantees no longer apply.`;
+    return { kind: "ADJUSTED_SUGGESTION", label, description, originalMode, guaranteesRetained: Boolean(match.matchmakingMode) };
+  }
+  if (match.source === "MANUAL_ADJUSTED") return { kind: "LEGACY_ADJUSTED", label: "Adjusted lineup", description: "The lineup was recorded as adjusted, but its original suggestion details are unavailable.", originalMode: null, guaranteesRetained: null };
+  return { kind: "GENERATED", label: generatedLabel ?? "Generated suggestion", description: `${generatedLabel ?? "Generated suggestion"} was accepted without manual lineup changes.`, originalMode: typeof explanation?.originalMode === "string" ? explanation.originalMode : null, guaranteesRetained: true };
+};
+const historyView = (snapshot: CloudSnapshotV2, match: DomainMatch): HistoryMatch => { const revision = scoreFor(match); const court = findCourt(snapshot, match.courtId ?? undefined); const courtHistory = match.courtIdSnapshot && match.courtNameSnapshot ? { id: match.courtIdSnapshot, name: match.courtNameSnapshot } : court ? { id: court.id, name: court.name } : null; const explanation = match.suggestionExplanation && typeof match.suggestionExplanation === "object" ? match.suggestionExplanation as Record<string, unknown> : null; const generatedLabel = offlineModeLabel(match, explanation); const provenance = offlineMatchProvenance(match, generatedLabel); return { id: match.id, source: match.source, matchmakingMode: match.matchmakingMode ?? null, matchmakingLabel: provenance.label, provenance, format: match.participants.length === 4 ? "DOUBLES" : "SINGLES", court: courtHistory, startedAt: match.startedAt ?? null, completedAt: match.completedAt ?? null, durationSeconds: historyDurationSeconds(match.startedAt, match.completedAt), winnerTeam: match.winnerTeam ?? null, version: match.version, scoring: { pointsToWin: match.pointsToWin, winBy: match.winBy, scoreCap: match.scoreCap ?? null, bestOf: match.bestOf }, score: revision ? { revisionNumber: revision.revisionNumber, winnerTeam: revision.winnerTeam, games: revision.games } : null, participants: match.participants.map((participant) => { const player = findQueuePlayer(snapshot, participant.queuePlayerId); return { queuePlayerId: participant.queuePlayerId, sessionPlayerId: participant.queuePlayerId, playerId: player?.playerId, displayName: player?.displayName ?? "Unknown", gender: player?.gender ?? "", skillLevel: player?.skillLevel ?? "", team: participant.team, teamSlot: participant.teamSlot }; }) } as HistoryMatch; };
 const guidedAvailabilityOffline = (snapshot: CloudSnapshotV2, serverTime: string): GuidedAvailabilitySummary => {
   const input: MatchPlayer[] = snapshot.queuePlayers.map((player) => {
     const effective = effectiveFor(player, snapshot);
@@ -636,10 +665,11 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
     const oldIds = match.participants.map((participant) => participant.queuePlayerId);
     const originalTeamA = match.participants.filter((participant) => participant.team === "A").sort((a, b) => a.teamSlot - b.teamSlot).map((participant) => participant.queuePlayerId);
     const originalTeamB = match.participants.filter((participant) => participant.team === "B").sort((a, b) => a.teamSlot - b.teamSlot).map((participant) => participant.queuePlayerId);
+    const lineupChanged = originalTeamA.join(",") !== teamA.join(",") || originalTeamB.join(",") !== teamB.join(",");
     const originalIds = new Set(oldIds);
     const overrideToManual = body.overrideToManual === true;
     if (overrideToManual && match.source === "MANUAL") throw new Error("Manual conversion requires a suggested or generated matchup.");
-    if (overrideToManual && JSON.stringify(originalTeamA) === JSON.stringify(teamA) && JSON.stringify(originalTeamB) === JSON.stringify(teamB)) throw new Error("Manual conversion requires an edited lineup.");
+    if (overrideToManual && !lineupChanged) throw new Error("Manual conversion requires an edited lineup.");
     const players = ids.map((queuePlayerId) => findQueuePlayer(snapshot, queuePlayerId));
     if (players.some((player) => !player || (live ? originalIds.has(player.id) ? player.status !== "PLAYING" : player.status !== "WAITING" : !["WAITING", "QUEUED", "PLAYING"].includes(player.status)))) throw new Error(live ? "PLAYER_BUSY: New live-match participants must be waiting and cannot already be queued or playing another match." : "Only waiting, queued, or playing players can be assigned.");
     const selected = players as DomainQueuePlayer[];
@@ -685,18 +715,18 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
         swappedMatch.courtId = currentCourt.id;
         swappedMatch.courtIdSnapshot = currentCourt.id;
         swappedMatch.courtNameSnapshot = currentCourt.name;
-        swappedMatch.source = "MANUAL_ADJUSTED";
-        swappedMatch.suggestionKey = null;
-        swappedMatch.suggestionExplanation = { ...(swappedMatch.suggestionExplanation as Record<string, unknown> | null ?? {}), adjusted: true };
         swappedMatch.version += 1;
       }
       match.courtId = targetCourt.id;
       match.courtIdSnapshot = targetCourt.id;
       match.courtNameSnapshot = targetCourt.name;
     }
-     const prior = new Map(match.participants.map((participant) => [participant.queuePlayerId, participant.priorQueueEnteredAt ?? null]));
-    match.participants = [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))];
+    if (lineupChanged) {
+      const prior = new Map(match.participants.map((participant) => [participant.queuePlayerId, participant.priorQueueEnteredAt ?? null]));
+      match.participants = [...teamA.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "A" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null })), ...teamB.map((queuePlayerId, index) => ({ id: id(), matchId, queuePlayerId, team: "B" as const, teamSlot: index + 1, priorQueueEnteredAt: prior.get(queuePlayerId) ?? findQueuePlayer(snapshot, queuePlayerId)?.queueEnteredAt ?? null }))];
+    }
      const previousExplanation = match.suggestionExplanation && typeof match.suggestionExplanation === "object" ? match.suggestionExplanation as Record<string, unknown> : null;
+     const previousSource = match.source;
      const previousMode = match.matchmakingMode;
      const previousAlgorithm = match.algorithmVersion;
      const previousSuggestionKey = match.suggestionKey;
@@ -704,13 +734,18 @@ async function updateMatchStacked(accountId: string, matchId: string, body: Reco
      const preservedMode = !overrideToManual && match.matchmakingMode && match.matchmakingMode !== "UNDEFEATED_CHALLENGE" ? match.matchmakingMode : null;
      const preservedGuided = preservedMode === "GUIDED";
      const guidedExplanation = preservedGuided ? { guided: buildGuidedExplanation([...teamA, ...teamB].map((queuePlayerId) => { const player = findQueuePlayer(snapshot, queuePlayerId); return { id: queuePlayerId, skillLevel: player!.skillLevel }; })) } : {};
-     match.source = "MANUAL_ADJUSTED";
-     match.matchmakingMode = preservedMode;
-     match.algorithmVersion = preservedMode ? match.algorithmVersion ?? MATCHMAKING_ALGORITHM : null;
-     match.suggestionKey = null;
-     match.suggestionExplanation = previousExplanation || updatedAdvisory || preservedMode || overrideToManual ? { ...(previousExplanation ?? {}), ...(overrideToManual ? { originalMode: previousMode, originalAlgorithmVersion: previousAlgorithm, originalSuggestionKey: previousSuggestionKey, overrideToManual: true, adjusted: true } : {}), ...(preservedMode ? { algorithmVersion: match.algorithmVersion, adjusted: true } : {}), ...(preservedGuided ? guidedExplanation : {}), matchupAdvisory: updatedAdvisory } : null;
+     const generatedSuggestionOrigin = previousSource === "AUTOMATIC" || previousExplanation?.generatedOrigin === "SUGGESTION" || typeof previousExplanation?.originalMode === "string";
+     match.source = lineupChanged && previousSource !== "MANUAL" ? "MANUAL_ADJUSTED" : previousSource;
+     match.matchmakingMode = lineupChanged ? preservedMode : previousMode ?? null;
+     match.algorithmVersion = lineupChanged ? (preservedMode ? match.algorithmVersion ?? MATCHMAKING_ALGORITHM : null) : previousAlgorithm ?? null;
+     match.suggestionKey = lineupChanged ? null : previousSuggestionKey ?? null;
+     match.suggestionExplanation = !lineupChanged
+       ? previousExplanation
+       : previousExplanation || updatedAdvisory || preservedMode || overrideToManual || generatedSuggestionOrigin
+         ? { ...(previousExplanation ?? {}), ...(generatedSuggestionOrigin ? { generatedOrigin: "SUGGESTION", originalMode: previousExplanation?.originalMode ?? previousMode ?? null } : {}), ...(lineupChanged && previousSource !== "MANUAL" ? { adjusted: true } : {}), ...(overrideToManual ? { originalMode: previousMode ?? null, originalAlgorithmVersion: previousAlgorithm ?? null, originalSuggestionKey: previousSuggestionKey ?? null, ...(generatedSuggestionOrigin ? { generatedOrigin: "SUGGESTION" } : {}), overrideToManual: true, adjusted: true } : {}), ...(preservedMode ? { algorithmVersion: match.algorithmVersion, adjusted: true } : {}), ...(preservedGuided ? guidedExplanation : {}), ...(updatedAdvisory ? { matchupAdvisory: updatedAdvisory } : {}) }
+         : null;
     match.version += 1;
-    reconcileOfflinePlayers(snapshot, [...oldIds, ...ids]);
+    if (lineupChanged) reconcileOfflinePlayers(snapshot, [...oldIds, ...ids]);
     snapshot.workspace.matchmakingRevision += 1;
     snapshot.workspace.version += 1;
     return matchView(snapshot, match);
@@ -774,8 +809,7 @@ async function endQueue(accountId: string) {
 
 async function freshQueue(accountId: string) { return mutate(accountId, "WORKSPACE_RESET", (snapshot) => { snapshot.queuePlayers = []; snapshot.courts = []; snapshot.matches = []; snapshot.payments = []; snapshot.audits = []; snapshot.workspace.startedAt = now(); snapshot.workspace.endedAt = null; snapshot.workspace.lateArrivalCutoffAt = null; snapshot.workspace.matchmakingRevision += 1; snapshot.workspace.version += 1; if (snapshot.settings) snapshot.feeConfig = { id: snapshot.feeConfig?.id ?? id(), mode: snapshot.settings.defaultFeeMode, currencyCode: snapshot.settings.currencyCode, fixedAmountPerPlayerMinor: snapshot.settings.defaultFixedFeeMinor ?? null, expectedQueueCostMinor: 0, noShowPenaltyMinor: snapshot.settings.noShowPenaltyMinor ?? 0, participationRule: snapshot.feeConfig?.participationRule ?? "ALL_ACTIVE", frozenAt: null, version: (snapshot.feeConfig?.version ?? 0) + 1 }; return workspaceView(snapshot); }); }
 
-const historyChallengeLabel = (match: DomainMatch) => { const explanation = match.suggestionExplanation && typeof match.suggestionExplanation === "object" ? match.suggestionExplanation as { challenge?: { appliedDisadvantage?: unknown; equalStrengthFallback?: unknown } } : null; const challenge = explanation?.challenge; const gap = Number(challenge?.appliedDisadvantage); return gap === 1 || gap === 2 ? `Challenge +${gap}` : challenge?.equalStrengthFallback === true || gap === 0 ? "Equal-strength challenge" : "Undefeated challenge"; };
-const historyViewWithChallengeLabel = (snapshot: CloudSnapshotV2, match: DomainMatch): HistoryMatch => { const row = historyView(snapshot, match); return match.matchmakingMode === "UNDEFEATED_CHALLENGE" ? { ...row, matchmakingLabel: historyChallengeLabel(match) } : row; };
+const historyViewWithChallengeLabel = (snapshot: CloudSnapshotV2, match: DomainMatch): HistoryMatch => historyView(snapshot, match);
 function historyResponse(snapshot: CloudSnapshotV2, path: string): HistoryResponse { const search = params(path).get("search") ?? ""; return page(historyMatches(snapshot, search).map((match) => historyViewWithChallengeLabel(snapshot, match)), path) as HistoryResponse; }
 function playerHistory(snapshot: CloudSnapshotV2, queuePlayerId: string, path: string): PlayerHistoryResponse { const player = findQueuePlayer(snapshot, queuePlayerId); if (!player) throw new Error("Queue player not found."); const matches = historyMatches(snapshot).filter((match) => match.participants.some((participant) => participant.queuePlayerId === queuePlayerId)); const rows = matches.map((match) => historyViewWithChallengeLabel(snapshot, match)); const summary = playerHistoryStats(rows, queuePlayerId); let wins = 0; let pointsFor = 0; let pointsAgainst = 0; for (const match of matches) { const participant = match.participants.find((item) => item.queuePlayerId === queuePlayerId); const revision = scoreFor(match); if (!participant || !revision) continue; const a = revision.games.reduce((sum, game) => sum + game.teamAScore, 0); const b = revision.games.reduce((sum, game) => sum + game.teamBScore, 0); pointsFor += participant.team === "A" ? a : b; pointsAgainst += participant.team === "A" ? b : a; wins += Number(participant.team === revision.winnerTeam); } return { player: { queuePlayerId, sessionPlayerId: queuePlayerId, playerId: player.playerId, displayName: player.displayName, gender: player.gender, skillLevel: player.skillLevel }, stats: { matchesPlayed: matches.length, wins, losses: matches.length - wins, winRateBasisPoints: matches.length ? Math.floor(wins * 10000 / matches.length) : 0, pointsFor, pointsAgainst, pointDifferential: pointsFor - pointsAgainst, averageDurationSeconds: summary.averageDurationSeconds, mostPlayedPartner: summary.mostPlayedPartner, mostPlayedOpponent: summary.mostPlayedOpponent }, ...page(rows, path) } as PlayerHistoryResponse; }
 function rankings(snapshot: CloudSnapshotV2): Ranking[] { return prizeRankingRows(snapshot.queuePlayers.map((player) => ({ id: player.id, displayName: player.displayName, matchesPlayed: player.matchesPlayed, wins: player.wins, losses: player.losses, pointsFor: player.pointsFor, pointsAgainst: player.pointsAgainst })), snapshot.workspace.startedAt).map((ranking, index) => { const player = snapshot.queuePlayers.find((candidate) => candidate.id === ranking.id)!; return { rank: ranking.rank, queuePlayerId: player.id, sessionPlayerId: player.id, player: player.displayName, playerId: player.playerId, gender: player.gender, skillLevel: player.skillLevel, matchesPlayed: player.matchesPlayed, wins: player.wins, losses: player.losses, winRateBasisPoints: player.matchesPlayed ? Math.floor(player.wins * 10000 / player.matchesPlayed) : 0, pointsFor: player.pointsFor, pointsAgainst: player.pointsAgainst, pointDifferential: player.pointsFor - player.pointsAgainst, eligible: ranking.eligible, gamesNeeded: ranking.gamesNeeded, rankingScoreBasisPoints: ranking.rankingScoreBasisPoints, pointPercentageBasisPoints: ranking.pointPercentageBasisPoints, isPrizePosition: ranking.isPrizePosition, seededDrawUsed: ranking.seededDrawUsed }; }); }

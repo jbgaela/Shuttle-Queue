@@ -26,7 +26,7 @@ function historySnapshot(): HistorySnapshot {
       courtNameSnapshot: snapshot.courts[0]!.name,
       status: "COMPLETED",
       source: "MANUAL",
-      matchmakingMode: "OPEN",
+      matchmakingMode: null,
       algorithmVersion: null,
       suggestionKey: null,
       suggestionExplanation: null,
@@ -55,7 +55,7 @@ function historySnapshot(): HistorySnapshot {
       matchmakingMode: null,
       algorithmVersion: null,
       suggestionKey: null,
-      suggestionExplanation: null,
+      suggestionExplanation: { generatedOrigin: "SUGGESTION", originalMode: "OPEN" },
       pointsToWin: 21,
       winBy: 2,
       scoreCap: null,
@@ -113,6 +113,8 @@ test.describe("History correction layout", () => {
   test("keeps correction actions inside the expanded match", async ({ page }) => {
     const firstMatch = page.getByTestId("history-match-history-match-1");
     const secondMatch = page.getByTestId("history-match-history-match-2");
+    await expect(firstMatch).toContainText("Manual");
+    await expect(secondMatch).toContainText("Adjusted suggestion");
     await expect(page.getByRole("button", { name: "Edit score" })).toHaveCount(0);
 
     await firstMatch.getByTestId("history-match-toggle").click();
