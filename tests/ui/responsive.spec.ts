@@ -157,6 +157,10 @@ function feesSnapshot() {
   snapshot.queuePlayers[0].matchesPlayed = 0;
   snapshot.queuePlayers[0].status = "INACTIVE";
   snapshot.queuePlayers[0].amountDueMinor = 150;
+  snapshot.players[0].displayName = "Émile Stone";
+  snapshot.queuePlayers[0].displayName = "Émile Stone";
+  snapshot.players[1].displayName = "Alexandra";
+  snapshot.queuePlayers[1].displayName = "Alexandra";
   snapshot.queuePlayers[1].amountDueMinor = 500;
   snapshot.feeConfig = {
     id: "fee-1",
@@ -171,7 +175,7 @@ function feesSnapshot() {
   };
   snapshot.payments = [
     { id: "payment-1", queuePlayerId: "queue-1", kind: "COLLECTION", method: "CASH", amountMinor: 100, reference: null, note: null, reversalOfPaymentId: null, recordedById: "account-1", occurredAt: endedAt, createdAt: endedAt },
-    { id: "payment-2", queuePlayerId: "queue-2", kind: "COLLECTION", method: "EWALLET", amountMinor: 500, reference: null, note: null, reversalOfPaymentId: null, recordedById: "account-1", occurredAt: endedAt, createdAt: endedAt },
+    { id: "payment-2", queuePlayerId: "queue-2", kind: "COLLECTION", method: "EWALLET", amountMinor: 100, reference: null, note: null, reversalOfPaymentId: null, recordedById: "account-1", occurredAt: endedAt, createdAt: endedAt },
   ];
   return snapshot;
 }
@@ -653,6 +657,51 @@ test.describe("responsive regressions", () => {
     await save.click();
     await expect(page.getByText("No-show penalty updated.", { exact: true })).toBeVisible();
     await expect(control.getByText("Disabled", { exact: true })).toBeVisible();
+  });
+
+  test("fees player autocomplete searches alphabetically and preserves manual amounts", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/v2/**", mockFeesApi);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Fees" }).click();
+    const card = page.getByTestId("log-payment-card");
+    const player = card.getByRole("combobox", { name: "Player" });
+    const amount = card.getByRole("textbox", { name: "Amount", exact: true });
+    await expect(player).toHaveValue("");
+    await expect(amount).toHaveValue("");
+
+    await player.click();
+    const playerOptions = card.getByRole("listbox").getByRole("option");
+    await expect(playerOptions.first()).toContainText("Alexandra");
+    await expect(playerOptions.nth(1)).toContainText("Émile Stone");
+    await player.fill("emile");
+    await expect(playerOptions).toHaveCount(1);
+    await expect(playerOptions.first()).toContainText("Émile Stone");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(player).toHaveValue("Émile Stone");
+
+    await amount.fill("42.50");
+    await player.fill("alex");
+    await expect(amount).toHaveValue("");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(player).toHaveValue("Alexandra");
+    await amount.fill("42.50");
+
+    const allocation = page.getByTestId("fee-allocation-card");
+    await allocation.getByRole("textbox", { name: "Amount per player", exact: true }).fill("5");
+    await allocation.getByRole("button", { name: "Save allocation", exact: true }).click();
+    await expect(amount).toHaveValue("42.50");
+
+    await card.getByRole("button", { name: "Record collection", exact: true }).click();
+    await expect(page.getByText("Payment recorded.", { exact: true })).toBeVisible();
+    await expect(amount).toHaveValue("");
+
+    await player.click();
+    await page.keyboard.press("Escape");
+    await expect(card.getByRole("listbox")).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 
   test("signed-in rankings separate zero-game players without rank or history controls", async ({ page }) => {

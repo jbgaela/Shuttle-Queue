@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Children, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes } from "react";
+import { Children, forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes } from "react";
 import { LoaderCircle, Zap } from "lucide-react";
 
 type SpinnerSize = "sm" | "md" | "lg";
@@ -28,7 +28,7 @@ export function Button({ className, variant = "primary", loading = false, disabl
 }
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) { return <section className={cn("min-w-0 rounded-3xl border border-[var(--line)] bg-white p-5 shadow-[0_10px_30px_rgba(16,42,45,0.05)]", className)} {...props} />; }
 export function Badge({ children, tone = "teal" }: { children: React.ReactNode; tone?: "teal" | "orange" | "gray" }) { return <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold", tone === "teal" && "bg-[#d8f1eb] text-[var(--teal-dark)]", tone === "orange" && "bg-[#fff0e4] text-[#a85b2b]", tone === "gray" && "bg-[#edf2f0] text-[var(--muted)]")}>{children}</span>; }
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) { return <input className={cn("focus-ring w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]", className)} {...props} />; }
+export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className, ...props }, ref) { return <input ref={ref} className={cn("focus-ring w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]", className)} {...props} />; });
 export function Select({ children, className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select className={cn("focus-ring w-full rounded-2xl border border-[var(--line)] bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--teal)] focus:ring-2 focus:ring-[#d8f1eb]", className)} {...props}>{children}</select>;
 }
