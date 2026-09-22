@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   distDir: process.env.UI_TEST_DIST_DIR ?? ".next",
   allowedDevOrigins: ['192.168.8.232'],
+  async headers() {
+    return [{ source: "/rankings/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "Permissions-Policy", value: "geolocation=(self)" }] }];
+  },
   async rewrites() {
     return [{ source: "/api/v2/:path*", destination: `${backendApiBaseUrl}/:path*` }];
   },

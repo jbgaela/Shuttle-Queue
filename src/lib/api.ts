@@ -1,3 +1,5 @@
+// @ts-expect-error Explicit extension supports the repository's native Node test runner.
+import { rankingVisitAccessSchema, rankingTrackingLinksSchema, rankingTrackingVisitsSchema, validatedTracking } from "./ranking-tracking-validation.ts";
 export type ApiEnvelope<T> = { data: T; requestId?: string; meta?: unknown };
 const baseUrl = "/api/v2";
 let csrfTokenCache: string | null = null;
@@ -114,6 +116,11 @@ async function requestOnline<T>(path: string, init?: RequestInit, allowCsrfResyn
     throw apiError;
   }
   if (payload?.data?.csrfToken) saveCsrfToken(payload.data.csrfToken);
+  if ((path === "/auth/login" || path === "/auth/logout") && typeof BroadcastChannel !== "undefined") {
+    const channel = new BroadcastChannel("ranking-tracking-auth");
+    channel.postMessage("changed");
+    channel.close();
+  }
   const data = (payload as ApiEnvelope<T>).data;
   return (path.startsWith("/sync/") ? data : hydrateQueueFields(data));
 }
@@ -126,10 +133,10 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   return requestOnline(path, init, allowCsrfResync);
 }
 
-async function publicRequest<T>(token: string, suffix = ""): Promise<T> {
-  const response = await fetch(`${baseUrl}/public/rankings/${encodeURIComponent(token)}${suffix}`, { credentials: "omit", cache: "no-store" });
+async function publicRequest<T>(token: string, suffix = "", visitKey?: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${baseUrl}/public/rankings/${encodeURIComponent(token)}${suffix}`, { ...init, credentials: "omit", cache: "no-store", headers: { "content-type": "application/json", ...(visitKey ? { "x-ranking-visit-key": visitKey } : {}) } });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message ?? "These public rankings are no longer available.");
+  if (!response.ok) throw new ApiError(response.status, payload?.error?.code ?? "HTTP_ERROR", payload?.error?.message ?? "These public rankings are no longer available.");
   return (payload as ApiEnvelope<T>).data;
 }
 
@@ -212,8 +219,12 @@ export const api = {
   publicRankingPublications: () => request<PublicRankingPublicationResponse>("/workspace/public-rankings"),
   publishPublicRankings: (version: number) => requestOnline<PublicRankingPublication>("/workspace/public-rankings/publish", { method: "POST", headers: { "if-match": `"${version}"` }, body: JSON.stringify({ version }) }),
   revokePublicRankings: (publication: PublicRankingPublication) => requestOnline<PublicRankingPublication>(`/workspace/public-rankings/${publication.id}/revoke`, { method: "POST", headers: { "if-match": `"${publication.version}"` }, body: JSON.stringify({ version: publication.version }) }),
-  publicRankings: (token: string) => publicRequest<PublicRankingPayload>(token),
-  publicRankingPlayerHistory: (token: string, playerKey: string) => publicRequest<PublicRankingPlayerHistoryPayload>(token, `/players/${encodeURIComponent(playerKey)}/history`),
+  publicRankings: (token: string, visitKey: string) => publicRequest<PublicRankingPayload>(token, "", visitKey),
+  publicRankingPlayerHistory: (token: string, playerKey: string, visitKey: string) => publicRequest<PublicRankingPlayerHistoryPayload>(token, `/players/${encodeURIComponent(playerKey)}/history`, visitKey),
+  openRankingVisit: (token: string, visitKey: string) => publicRequest<RankingVisitAccess>(token, "/visits", visitKey, { method: "POST", body: "{}" }).then((value) => validatedTracking(rankingVisitAccessSchema, value)),
+  rankingVisitLocation: (token: string, visitKey: string, location: RankingLocationInput) => publicRequest<RankingVisitAccess>(token, "/visits/location", visitKey, { method: "PATCH", body: JSON.stringify(location) }).then((value) => validatedTracking(rankingVisitAccessSchema, value)),
+  rankingTrackingLinks: (cursor?: string, accountId?: string) => requestOnline<RankingTrackingLinks>(`${accountId ? `/admin/accounts/${encodeURIComponent(accountId)}/public-ranking-links` : "/workspace/public-rankings/tracking-links"}?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { cache: "no-store" }).then((value) => validatedTracking(rankingTrackingLinksSchema, value)),
+  rankingTrackingVisits: (linkId: string, cursor?: string, status?: RankingLocationStatus) => requestOnline<RankingTrackingVisits>(`/workspace/public-rankings/tracking-links/${encodeURIComponent(linkId)}/visits?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${status ? `&status=${status}` : ""}`, { cache: "no-store" }).then((value) => validatedTracking(rankingTrackingVisitsSchema, value)),
   fees: (_workspaceId: string) => request<FeeSummary>("/fees"),
   updateFeeConfig: (_workspaceId: string, body: { mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null }) => request<{ config: FeeConfig; summary: FeeSummary }>("/fees/config", { method: "PUT", body: JSON.stringify({ ...body, expectedQueueCostMinor: body.expectedQueueCostMinor ?? body.expectedSessionCostMinor }) }),
   payments: (_workspaceId: string) => request<Payment[]>("/payments"),
@@ -265,10 +276,18 @@ export type PublicRankingPayload = { sessionStartedAt: string; firstMatchStarted
 export type PublicRankingMatch = { matchKey: string; startedAt?: string | null; completedAt: string | null; result: "WIN" | "LOSS"; winnerTeam: "A" | "B" | null; teamA: string[]; teamB: string[]; games: Array<{ gameNumber: number; teamAScore: number; teamBScore: number; winnerTeam: "A" | "B" }> };
 export type PublicRankingPlayerHistoryStats = { averageDurationSeconds: number | null; mostPlayedPartner: { displayName: string; count: number } | null; mostPlayedOpponent: { displayName: string; count: number } | null };
 export type PublicRankingPlayerHistoryPayload = { player: { playerKey: string; player: string }; stats: PublicRankingPlayerHistoryStats; matches: PublicRankingMatch[] };
-export type PublicRankingPublication = { id: string; sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL" | "REVOKED"; publishedAt: string; finalizedAt?: string | null; revokedAt?: string | null; version: number; token?: string };
+export type PublicRankingPublication = { trackingLinkId?: string; id: string; sessionStartedAt: string; sessionEndedAt?: string | null; state: "LIVE" | "FINAL" | "REVOKED"; publishedAt: string; finalizedAt?: string | null; revokedAt?: string | null; version: number; token?: string };
 export type PublicRankingPublicationResponse = { current: PublicRankingPublication | null; archives: PublicRankingPublication[] };
 export type FeeConfig = { id: string; mode: "FIXED_PER_PLAYER" | "EQUAL_SPLIT"; currencyCode: string; fixedAmountPerPlayerMinor?: number | null; expectedQueueCostMinor?: number | null; expectedSessionCostMinor?: number | null; noShowPenaltyMinor: number; participationRule: string; frozenAt?: string | null; version: number };
 export type PaymentMethod = "CASH" | "EWALLET" | "OTHER";
 export type FeePlayer = { queuePlayerId: string; sessionPlayerId: string; displayName: string; dueMinor: number; collectedMinor: number; waivedMinor: number; outstandingMinor: number; creditMinor: number; isNoShow: boolean; status: "WAIVED" | "PAID" | "PARTIAL" | "UNPAID" | "CREDIT"; collectionByMethodMinor: Record<PaymentMethod, number> };
 export type FeeSummary = { config: FeeConfig | null; expectedMinor: number; collectedMinor: number; outstandingMinor: number; creditMinor: number; noShowCount: number; paymentCount: number; players: FeePlayer[] };
 export type Payment = { id: string; queuePlayerId: string; sessionPlayerId: string; kind: "COLLECTION" | "REFUND" | "WAIVER" | "WAIVER_REVERSAL"; method?: "CASH" | "EWALLET" | "OTHER" | null; amountMinor: number; reference?: string | null; note?: string | null; occurredAt: string; createdAt: string };
+
+export type RankingLocationStatus = "PENDING" | "GRANTED" | "DENIED" | "TIMEOUT" | "UNAVAILABLE";
+export type RankingLocationInput = { status: "GRANTED"; latitude: number; longitude: number; accuracy: number } | { status: "DENIED" | "TIMEOUT" | "UNAVAILABLE" };
+export type RankingVisitAccess = { visitId: string; status: RankingLocationStatus; accessExpiresAt: string | null };
+export type RankingTrackingLink = { id: string; queueMasterId: string; issuedAt: string; revokedAt: string | null; publication: { id: string; sessionStartedAt: string; sessionEndedAt: string | null; finalizedAt: string | null } };
+export type RankingTrackingVisit = { id: string; openedAt: string; locationReceivedAt: string | null; accessExpiresAt: string | null; ipAddress: string; device: string; browser: string; operatingSystem: string; city: string | null; region: string | null; country: string | null; locationStatus: RankingLocationStatus; latitude: number | null; longitude: number | null; accuracy: number | null };
+export type RankingTrackingLinks = { items: RankingTrackingLink[]; nextCursor: string | null };
+export type RankingTrackingVisits = { link: RankingTrackingLink; items: RankingTrackingVisit[]; nextCursor: string | null };
