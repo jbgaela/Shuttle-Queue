@@ -29,6 +29,7 @@ const locationMessages = {
 
 type PermissionStateValue = "granted" | "denied" | "prompt" | "unsupported";
 type EnvironmentIssue = "INSECURE_CONTEXT" | "POLICY_BLOCKED" | "UNAVAILABLE";
+type LocationPhase = "idle" | "locating" | "saving";
 
 const environmentMessages: Record<EnvironmentIssue, string> = {
   INSECURE_CONTEXT:
@@ -69,7 +70,9 @@ export function RankingLocationGate({
   const [visitKey, setVisitKey] = useState(newRankingVisitKey);
   const [accessUntil, setAccessUntil] = useState<number | null>(null);
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [locationPhase, setLocationPhase] =
+    useState<LocationPhase>("idle");
+  const [online, setOnline] = useState(true);
   const [permissionState, setPermissionState] =
     useState<PermissionStateValue>("unsupported");
   const generation = useRef(0);
@@ -94,7 +97,7 @@ export function RankingLocationGate({
       generation.current += 1;
       locationInFlight.current = false;
       setAccessUntil(null);
-      setBusy(false);
+      setLocationPhase("idle");
     };
     const restore = (event: PageTransitionEvent) => {
       if (event.persisted) {
@@ -114,6 +117,17 @@ export function RankingLocationGate({
       });
     };
   }, [queryClient, visitKey]);
+
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
 
   useEffect(() => {
     if (!accessUntil) return;
@@ -137,7 +151,7 @@ export function RankingLocationGate({
     if (locationInFlight.current || !opening.isSuccess) return;
     locationInFlight.current = true;
     const attempt = generation.current;
-    setBusy(true);
+    setLocationPhase("locating");
     setMessage("");
     try {
       const issue = environmentIssue();
@@ -168,15 +182,16 @@ export function RankingLocationGate({
         );
       }
       if (generation.current !== attempt) return;
+      setLocationPhase("saving");
       const result = await api.rankingVisitLocation(token, visitKey, location);
       if (generation.current !== attempt) return;
       if (
         result.status === "GRANTED" &&
         result.accessExpiresAt &&
         Date.parse(result.accessExpiresAt) > Date.now()
-      )
+      ) {
         setAccessUntil(Date.parse(result.accessExpiresAt));
-      else
+      } else {
         setMessage(
           issue
             ? environmentMessages[issue]
@@ -184,26 +199,26 @@ export function RankingLocationGate({
               ? "Location was not accepted. Please retry."
               : locationMessages[location.status],
         );
+      }
     } catch (error) {
-      if (generation.current === attempt)
+      if (generation.current === attempt) {
         setMessage(
           error instanceof Error
             ? error.message
             : "Unable to save location. Please retry.",
         );
+      }
     } finally {
       if (generation.current === attempt) {
         locationInFlight.current = false;
-        setBusy(false);
+        setLocationPhase("idle");
       }
     }
   }, [opening.isSuccess, token, visitKey]);
 
   useEffect(() => {
     if (!opening.isSuccess || accessUntil) return;
-    if (!navigator.permissions?.query) {
-      return;
-    }
+    if (!navigator.permissions?.query) return;
     let cancelled = false;
     const attempt = generation.current;
     let removePermissionListener = () => {};
@@ -238,13 +253,51 @@ export function RankingLocationGate({
   }, [accessUntil, opening.isSuccess, shareLocation]);
 
   if (accessUntil) return children(visitKey, loseAccess);
-  if (opening.isPending && opening.fetchStatus !== "paused")
+  if (opening.isPending && opening.fetchStatus !== "paused") {
     return (
       <LoadingState variant="fullPage" label="Preparing shared rankings" />
     );
+  }
+
   const unavailable =
     opening.error instanceof ApiError && opening.error.status === 404;
+  const offline = !online || opening.fetchStatus === "paused";
+  if (offline) {
+    return (
+      <GateScreen
+        heading="Connection required"
+        description="Connect to the internet to open these shared rankings."
+        actionLabel="Retry connection when online"
+        actionDisabled
+      />
+    );
+  }
+  if (unavailable) {
+    return (
+      <GateScreen
+        heading="Rankings unavailable"
+        description="This shared link is invalid or has been revoked."
+      />
+    );
+  }
+  if (opening.isError) {
+    const requestId =
+      opening.error instanceof ApiError ? opening.error.requestId : undefined;
+    return (
+      <GateScreen
+        heading="Unable to open rankings"
+        description="The shared rankings service could not be reached."
+        alert={opening.error.message}
+        {...(requestId ? { requestId } : {})}
+        actionLabel="Retry connection"
+        actionLoading={opening.isFetching}
+        onAction={() => void opening.refetch()}
+      />
+    );
+  }
+
   const environment = opening.isSuccess ? environmentIssue() : null;
+  const busy = locationPhase !== "idle";
   return (
     <main className="grid min-h-screen place-items-center bg-[var(--paper)] px-4 py-10">
       <Card className="w-full max-w-lg p-6 sm:p-8">
@@ -254,60 +307,114 @@ export function RankingLocationGate({
           size={32}
         />
         <h1 className="display mt-4 text-3xl">
-          {unavailable
-            ? "Rankings unavailable"
-            : busy
-              ? "Opening rankings"
+          {locationPhase === "locating"
+            ? "Getting your location"
+            : locationPhase === "saving"
+              ? "Confirming access"
               : "Location required"}
         </h1>
         <p className="mt-4 text-sm leading-6 text-[var(--muted)]">
-          {unavailable
-            ? "This shared link is invalid or has been revoked."
-            : "Location is required to view these rankings."}
+          Location is required to view these rankings.
         </p>
-        {!unavailable && (
-          <>
-            <p role="status" className="mt-3 text-sm text-[var(--muted)]">
-              {busy
-                ? "Getting your location and confirming access…"
-                : environment
-                  ? environmentMessages[environment]
-                  : permissionState === "denied"
-                    ? "Location is blocked for this site. Update the browser permission, then check again."
-                    : permissionState === "prompt"
-                      ? "Select Share location and continue, then choose Allow when your browser asks."
-                      : "We need your location to confirm access to these rankings."}
-            </p>
-            {(message || opening.error || opening.fetchStatus === "paused") && (
-              <p role="alert" className="mt-4 text-sm text-[#8d4824]">
-                {message ||
-                  (opening.fetchStatus === "paused"
-                    ? "Connect to the internet to continue."
-                    : opening.error?.message)}
-              </p>
-            )}
-            <Button
-              className="mt-5"
-              loading={busy || opening.isFetching}
-              disabled={
-                busy || opening.isFetching || opening.fetchStatus === "paused"
-              }
-              onClick={() => {
-                if (opening.isError) void opening.refetch();
-                else void shareLocation();
-              }}
-            >
-              {opening.isError
-                ? "Retry connection"
-                : busy
-                  ? "Getting location"
-                  : permissionState === "denied" || environment
-                    ? "Check location access"
-                    : message
-                      ? "Retry location"
-                      : "Share location and continue"}
-            </Button>
-          </>
+        <p role="status" className="mt-3 text-sm text-[var(--muted)]">
+          {locationPhase === "locating"
+            ? "Waiting for your browser to provide a location."
+            : locationPhase === "saving"
+              ? "Saving your location and confirming access."
+              : environment
+                ? environmentMessages[environment]
+                : permissionState === "denied"
+                  ? "Location is blocked for this site. Update the browser permission, then check again."
+                  : permissionState === "prompt"
+                    ? "Select Share location and continue, then choose Allow when your browser asks."
+                    : "We need your location to confirm access to these rankings."}
+        </p>
+        {message && (
+          <p role="alert" className="mt-4 text-sm text-[#8d4824]">
+            {message}
+          </p>
+        )}
+        <details className="mt-4 text-sm text-[var(--muted)]">
+          <summary className="cursor-pointer rounded-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--teal)]">
+            About this access check
+          </summary>
+          <p className="mt-2 leading-6">
+            Your IP address, device details, visit time, and location are
+            recorded and can be viewed by the link owner and Super Admins for
+            90 days.
+          </p>
+        </details>
+        <Button
+          className="mt-5"
+          loading={busy}
+          disabled={busy}
+          onClick={() => void shareLocation()}
+        >
+          {busy
+            ? locationPhase === "saving"
+              ? "Confirming access"
+              : "Getting location"
+            : permissionState === "denied" || environment
+              ? "Check location access"
+              : message
+                ? "Retry location"
+                : "Share location and continue"}
+        </Button>
+      </Card>
+    </main>
+  );
+}
+
+function GateScreen({
+  heading,
+  description,
+  alert,
+  requestId,
+  actionLabel,
+  actionDisabled = false,
+  actionLoading = false,
+  onAction,
+}: {
+  heading: string;
+  description: string;
+  alert?: string;
+  requestId?: string;
+  actionLabel?: string;
+  actionDisabled?: boolean;
+  actionLoading?: boolean;
+  onAction?: () => void;
+}) {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[var(--paper)] px-4 py-10">
+      <Card className="w-full max-w-lg p-6 sm:p-8">
+        <MapPinned
+          aria-hidden="true"
+          className="text-[var(--teal)]"
+          size={32}
+        />
+        <h1 className="display mt-4 text-3xl">{heading}</h1>
+        <p className="mt-4 text-sm leading-6 text-[var(--muted)]">
+          {description}
+        </p>
+        {alert && (
+          <p role="alert" className="mt-4 text-sm text-[#8d4824]">
+            {alert}
+          </p>
+        )}
+        {requestId && (
+          <p className="mt-2 text-xs text-[var(--muted)]">
+            Reference: {requestId}
+          </p>
+        )}
+        {actionLabel && (
+          <Button
+            className="mt-5"
+            loading={actionLoading}
+            disabled={actionDisabled || actionLoading}
+            onClick={onAction}
+          >
+            {actionLabel}
+          </Button>
         )}
       </Card>
     </main>

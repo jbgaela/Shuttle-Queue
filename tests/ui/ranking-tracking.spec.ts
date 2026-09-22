@@ -27,10 +27,14 @@ async function publicFixture(
     secureContext?: boolean;
     policyAllowed?: boolean;
     openingFailure?: boolean;
+    openingStatus?: number;
+    openingCode?: string;
+    openingMessage?: string;
+    online?: boolean;
   } = {},
 ) {
   await page.addInitScript(
-    ({ initial, permissionState, secureContext, policyAllowed }) => {
+    ({ initial, permissionState, secureContext, policyAllowed, online }) => {
       const permissionListeners = new Set<() => void>();
       const permission = {
         state: permissionState,
@@ -50,6 +54,10 @@ async function publicFixture(
       Object.defineProperty(window, "isSecureContext", {
         configurable: true,
         value: secureContext,
+      });
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: online,
       });
       Object.defineProperty(document, "permissionsPolicy", {
         configurable: true,
@@ -95,24 +103,32 @@ async function publicFixture(
       permissionState: permission,
       secureContext: options.secureContext ?? true,
       policyAllowed: options.policyAllowed ?? true,
+      online: options.online ?? true,
     },
   );
   const openings = new Set<string>();
+  const openingKeys: string[] = [];
   const outcomes: string[] = [];
   let reads = 0;
   let failWrite = false;
+  let remainingOpeningFailures = options.openingFailure ? Infinity : 0;
   await page.route("**/api/v2/public/rankings/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const key = route.request().headers()["x-ranking-visit-key"] ?? "";
     if (path.endsWith("/visits")) {
-      if (options.openingFailure) {
+      openingKeys.push(key);
+      if (remainingOpeningFailures > 0) {
+        remainingOpeningFailures -= 1;
         await route.fulfill({
-          status: 503,
+          status: options.openingStatus ?? 503,
           json: {
             error: {
-              code: "TRACKING_UNAVAILABLE",
-              message: "Unable to record this visit. Please try again.",
+              code: options.openingCode ?? "EDGE_CONFIGURATION_ERROR",
+              message:
+                options.openingMessage ??
+                "Unable to record this visit. Please try again.",
             },
+            requestId: "edge-test-request",
           },
         });
         return;
@@ -170,10 +186,14 @@ async function publicFixture(
   });
   return {
     openings,
+    openingKeys,
     outcomes,
     reads: () => reads,
     failWrites: () => {
       failWrite = true;
+    },
+    recoverOpenings: () => {
+      remainingOpeningFailures = 0;
     },
   };
 }
@@ -284,6 +304,13 @@ test("a failed visit opening never requests browser location", async ({
   });
   await page.goto(`/rankings/shared/${token}`);
   await expect(
+    page.getByRole("heading", { name: "Unable to open rankings" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Location required" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Reference: edge-test-request")).toBeVisible();
+  await expect(
     page.getByRole("button", { name: "Retry connection" }),
   ).toBeVisible();
   expect(
@@ -294,6 +321,119 @@ test("a failed visit opening never requests browser location", async ({
     ),
   ).toBe(0);
   expect(state.reads()).toBe(0);
+});
+
+for (const openingFailure of [
+  {
+    status: 403,
+    code: "PUBLIC_RANKINGS_DISABLED",
+    message: "Public rankings are disabled.",
+  },
+  {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Too many requests. Please try again.",
+  },
+  {
+    status: 503,
+    code: "PUBLIC_REQUEST_TIMEOUT",
+    message: "The request took too long. Please try again.",
+  },
+]) {
+  test(`opening ${openingFailure.status} ${openingFailure.code} is actionable and never requests location`, async ({
+    page,
+  }) => {
+    const state = await publicFixture(page, "GRANTED", "prompt", {
+      openingFailure: true,
+      openingStatus: openingFailure.status,
+      openingCode: openingFailure.code,
+      openingMessage: openingFailure.message,
+    });
+    await page.goto(`/rankings/shared/${token}`);
+    await expect(
+      page.getByRole("heading", { name: "Unable to open rankings" }),
+    ).toBeVisible();
+    await expect(page.getByRole("main").getByRole("alert")).toHaveText(
+      openingFailure.message,
+    );
+    await expect(
+      page.getByRole("button", { name: "Retry connection" }),
+    ).toBeVisible();
+    expect(state.reads()).toBe(0);
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { locationTestRequests: number })
+            .locationTestRequests,
+      ),
+    ).toBe(0);
+  });
+}
+
+test("offline opening is identified as a connection problem", async ({
+  page,
+}) => {
+  const state = await publicFixture(page, "GRANTED", "prompt", {
+    online: false,
+  });
+  await page.goto(`/rankings/shared/${token}`);
+  await expect(
+    page.getByRole("heading", { name: "Connection required" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry connection when online" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("heading", { name: "Location required" }),
+  ).toHaveCount(0);
+  expect(state.reads()).toBe(0);
+});
+
+test("retrying a failed opening reuses its visit key and waits for an explicit permission action", async ({
+  page,
+}) => {
+  const state = await publicFixture(page, "GRANTED", "prompt", {
+    openingFailure: true,
+  });
+  await page.goto(`/rankings/shared/${token}`);
+  await expect(
+    page.getByRole("heading", { name: "Unable to open rankings" }),
+  ).toBeVisible();
+  state.recoverOpenings();
+  await page.getByRole("button", { name: "Retry connection" }).click();
+  await expect(
+    page.getByRole("button", { name: "Share location and continue" }),
+  ).toBeVisible();
+  expect(state.openingKeys.length).toBeGreaterThanOrEqual(2);
+  expect(new Set(state.openingKeys).size).toBe(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { locationTestRequests: number })
+          .locationTestRequests,
+    ),
+  ).toBe(0);
+  expect(state.reads()).toBe(0);
+});
+
+test("existing granted permission continues automatically after an opening retry", async ({
+  page,
+}) => {
+  const state = await publicFixture(page, "GRANTED", "granted", {
+    openingFailure: true,
+  });
+  await page.goto(`/rankings/shared/${token}`);
+  await expect(
+    page.getByRole("heading", { name: "Unable to open rankings" }),
+  ).toBeVisible();
+  state.recoverOpenings();
+  await page.getByRole("button", { name: "Retry connection" }).click();
+  await expect(
+    page.getByRole("heading", { name: "LineDrive Afternoon Queue" }),
+  ).toBeVisible();
+  expect(state.openingKeys.length).toBeGreaterThanOrEqual(2);
+  expect(new Set(state.openingKeys).size).toBe(1);
+  expect(state.outcomes).toEqual(["GRANTED"]);
 });
 
 for (const permission of ["prompt", "denied", "unsupported"]) {

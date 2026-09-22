@@ -133,11 +133,61 @@ export async function request<T>(path: string, init?: RequestInit, allowCsrfResy
   return requestOnline(path, init, allowCsrfResync);
 }
 
-async function publicRequest<T>(token: string, suffix = "", visitKey?: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}/public/rankings/${encodeURIComponent(token)}${suffix}`, { ...init, credentials: "omit", cache: "no-store", headers: { "content-type": "application/json", ...(visitKey ? { "x-ranking-visit-key": visitKey } : {}) } });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(response.status, payload?.error?.code ?? "HTTP_ERROR", payload?.error?.message ?? "These public rankings are no longer available.");
-  return (payload as ApiEnvelope<T>).data;
+async function publicRequest<T>(
+  token: string,
+  suffix = "",
+  visitKey?: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+): Promise<T> {
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = controller
+    ? globalThis.setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+
+  try {
+    const response = await fetch(
+      `${baseUrl}/public/rankings/${encodeURIComponent(token)}${suffix}`,
+      {
+        ...init,
+        credentials: "omit",
+        cache: "no-store",
+        headers: {
+          "content-type": "application/json",
+          ...(visitKey ? { "x-ranking-visit-key": visitKey } : {}),
+        },
+        ...(controller ? { signal: controller.signal } : {}),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new ApiError(
+        response.status,
+        payload?.error?.code ?? "HTTP_ERROR",
+        payload?.error?.message ??
+          "These public rankings are no longer available.",
+        payload?.error?.details,
+        typeof payload?.requestId === "string" ? payload.requestId : undefined,
+      );
+    }
+    return (payload as ApiEnvelope<T>).data;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (controller?.signal.aborted) {
+      throw new ApiError(
+        503,
+        "PUBLIC_REQUEST_TIMEOUT",
+        "The request took too long. Please try again.",
+      );
+    }
+    throw new ApiError(
+      503,
+      "NETWORK_ERROR",
+      "Unable to connect. Please try again.",
+    );
+  } finally {
+    if (timeout !== null) globalThis.clearTimeout(timeout);
+  }
 }
 
 export type SuggestionNoMatchCode = "NO_EXACT_STRENGTH_GAP" | "NO_UNDEFEATED_QUALIFIER" | "REST_REQUIRED" | "NO_MIXED_DOUBLES_COMPOSITION" | "NO_GUIDED_COMPOSITION" | "NO_VALID_GROUP";
@@ -221,8 +271,8 @@ export const api = {
   revokePublicRankings: (publication: PublicRankingPublication) => requestOnline<PublicRankingPublication>(`/workspace/public-rankings/${publication.id}/revoke`, { method: "POST", headers: { "if-match": `"${publication.version}"` }, body: JSON.stringify({ version: publication.version }) }),
   publicRankings: (token: string, visitKey: string) => publicRequest<PublicRankingPayload>(token, "", visitKey),
   publicRankingPlayerHistory: (token: string, playerKey: string, visitKey: string) => publicRequest<PublicRankingPlayerHistoryPayload>(token, `/players/${encodeURIComponent(playerKey)}/history`, visitKey),
-  openRankingVisit: (token: string, visitKey: string) => publicRequest<RankingVisitAccess>(token, "/visits", visitKey, { method: "POST", body: "{}" }).then((value) => validatedTracking(rankingVisitAccessSchema, value)),
-  rankingVisitLocation: (token: string, visitKey: string, location: RankingLocationInput) => publicRequest<RankingVisitAccess>(token, "/visits/location", visitKey, { method: "PATCH", body: JSON.stringify(location) }).then((value) => validatedTracking(rankingVisitAccessSchema, value)),
+  openRankingVisit: (token: string, visitKey: string) => publicRequest<RankingVisitAccess>(token, "/visits", visitKey, { method: "POST", body: "{}" }, 20_000).then((value) => validatedTracking(rankingVisitAccessSchema, value)),
+  rankingVisitLocation: (token: string, visitKey: string, location: RankingLocationInput) => publicRequest<RankingVisitAccess>(token, "/visits/location", visitKey, { method: "PATCH", body: JSON.stringify(location) }, 20_000).then((value) => validatedTracking(rankingVisitAccessSchema, value)),
   rankingTrackingLinks: (cursor?: string, accountId?: string) => requestOnline<RankingTrackingLinks>(`${accountId ? `/admin/accounts/${encodeURIComponent(accountId)}/public-ranking-links` : "/workspace/public-rankings/tracking-links"}?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { cache: "no-store" }).then((value) => validatedTracking(rankingTrackingLinksSchema, value)),
   rankingTrackingVisits: (linkId: string, cursor?: string, status?: RankingLocationStatus) => requestOnline<RankingTrackingVisits>(`/workspace/public-rankings/tracking-links/${encodeURIComponent(linkId)}/visits?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${status ? `&status=${status}` : ""}`, { cache: "no-store" }).then((value) => validatedTracking(rankingTrackingVisitsSchema, value)),
   fees: (_workspaceId: string) => request<FeeSummary>("/fees"),
