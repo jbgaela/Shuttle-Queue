@@ -9,7 +9,7 @@ npm run dev
 
 ## Netlify ranking tracking
 
-Deploy with the frontend directory as the Netlify project root. `netlify/edge-functions/ranking-visitor.ts` handles `/api/v2/public/rankings/*`, signs Netlify's observed visitor IP and approximate location, and forwards to the HTTPS `BACKEND_API_BASE_URL`. Configure `PUBLIC_RANKING_EDGE_SECRET` as a server-only Edge Functions environment variable, matching Render. Never use a `NEXT_PUBLIC_` variable for this secret. Other API paths continue through the existing Next.js rewrite.
+Deploy with the frontend directory as the Netlify project root. `netlify/edge-functions/ranking-visitor.ts` handles `/api/v2/public/rankings/*`, signs Netlify's observed visitor IP and approximate location, and forwards to the HTTPS `BACKEND_API_BASE_URL`. Configure `PUBLIC_RANKING_EDGE_SECRET` as a server-only Edge Functions environment variable, matching Render. Never use a `NEXT_PUBLIC_` variable for this secret. Other API paths continue through the existing Next.js rewrite. Render starts with public-ranking access disabled until this matching secret is configured.
 
 Public links use `/rankings/shared/[token]`. The bare `/rankings/share` URL has no corresponding local token contract. Deploy the edge proxy and location gate together with the backend tracking endpoints and database setup, verify a preview, then enable `PUBLIC_RANKING_LOCATION_REQUIRED=true` on Render. The backend's initial `false` rollout setting does not enforce the location requirement on API reads.
 
