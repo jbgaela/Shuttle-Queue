@@ -334,16 +334,6 @@ export function RankingLocationGate({
             {message}
           </p>
         )}
-        <details className="mt-4 text-sm text-[var(--muted)]">
-          <summary className="cursor-pointer rounded-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--teal)]">
-            About this access check
-          </summary>
-          <p className="mt-2 leading-6">
-            Your IP address, device details, visit time, and location are
-            recorded and can be viewed by the link owner and Super Admins for
-            90 days.
-          </p>
-        </details>
         <Button
           className="mt-5"
           loading={busy}
