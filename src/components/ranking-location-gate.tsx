@@ -30,6 +30,7 @@ const locationMessages = {
 type PermissionStateValue = "granted" | "denied" | "prompt" | "unsupported";
 type EnvironmentIssue = "INSECURE_CONTEXT" | "POLICY_BLOCKED" | "UNAVAILABLE";
 type LocationPhase = "idle" | "locating" | "saving";
+type LocationFailureStatus = "DENIED" | "TIMEOUT" | "UNAVAILABLE";
 
 const environmentMessages: Record<EnvironmentIssue, string> = {
   INSECURE_CONTEXT:
@@ -59,6 +60,67 @@ function environmentIssue(): EnvironmentIssue | null {
   return null;
 }
 
+function isFacebookInAppBrowser() {
+  if (typeof navigator === "undefined") return false;
+  return /FBAN|FBAV|FB_IAB|Messenger/i.test(navigator.userAgent);
+}
+
+function requestBrowserLocation(
+  options: PositionOptions,
+): Promise<RankingLocationInput> {
+  return new Promise((resolve) =>
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) =>
+        resolve({
+          status: "GRANTED",
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          accuracy: coords.accuracy,
+        }),
+      (error) =>
+        resolve({
+          status:
+            error.code === 1
+              ? "DENIED"
+              : error.code === 3
+                ? "TIMEOUT"
+                : "UNAVAILABLE",
+        }),
+      options,
+    ),
+  );
+}
+
+async function acquireBrowserLocation() {
+  const precise = await requestBrowserLocation({
+    enableHighAccuracy: true,
+    timeout: 15000,
+    maximumAge: 0,
+  });
+  if (precise.status !== "TIMEOUT" && precise.status !== "UNAVAILABLE") {
+    return precise;
+  }
+
+  return requestBrowserLocation({
+    enableHighAccuracy: false,
+    timeout: 15000,
+    maximumAge: 60000,
+  });
+}
+
+function locationFailureMessage(
+  status: LocationFailureStatus,
+  facebookInAppBrowser: boolean,
+) {
+  if (
+    facebookInAppBrowser &&
+    (status === "TIMEOUT" || status === "UNAVAILABLE")
+  ) {
+    return "Messenger's in-app browser could not provide your location. Use its menu to open this link in your device browser, then retry there.";
+  }
+  return locationMessages[status];
+}
+
 export function RankingLocationGate({
   token,
   children,
@@ -73,6 +135,7 @@ export function RankingLocationGate({
   const [locationPhase, setLocationPhase] =
     useState<LocationPhase>("idle");
   const [online, setOnline] = useState(true);
+  const [facebookInAppBrowser] = useState(isFacebookInAppBrowser);
   const [permissionState, setPermissionState] =
     useState<PermissionStateValue>("unsupported");
   const generation = useRef(0);
@@ -159,27 +222,7 @@ export function RankingLocationGate({
       if (issue) {
         location = { status: "UNAVAILABLE" };
       } else {
-        location = await new Promise<RankingLocationInput>((resolve) =>
-          navigator.geolocation.getCurrentPosition(
-            ({ coords }) =>
-              resolve({
-                status: "GRANTED",
-                latitude: coords.latitude,
-                longitude: coords.longitude,
-                accuracy: coords.accuracy,
-              }),
-            (error) =>
-              resolve({
-                status:
-                  error.code === 1
-                    ? "DENIED"
-                    : error.code === 3
-                      ? "TIMEOUT"
-                      : "UNAVAILABLE",
-              }),
-            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
-          ),
-        );
+        location = await acquireBrowserLocation();
       }
       if (generation.current !== attempt) return;
       setLocationPhase("saving");
@@ -197,7 +240,10 @@ export function RankingLocationGate({
             ? environmentMessages[issue]
             : location.status === "GRANTED"
               ? "Location was not accepted. Please retry."
-              : locationMessages[location.status],
+              : locationFailureMessage(
+                  location.status,
+                  facebookInAppBrowser,
+                ),
         );
       }
     } catch (error) {
@@ -214,7 +260,7 @@ export function RankingLocationGate({
         setLocationPhase("idle");
       }
     }
-  }, [opening.isSuccess, token, visitKey]);
+  }, [facebookInAppBrowser, opening.isSuccess, token, visitKey]);
 
   useEffect(() => {
     if (!opening.isSuccess || accessUntil) return;

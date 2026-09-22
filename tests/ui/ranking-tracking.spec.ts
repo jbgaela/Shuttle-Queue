@@ -31,10 +31,20 @@ async function publicFixture(
     openingCode?: string;
     openingMessage?: string;
     online?: boolean;
+    fallbackOutcome?: string;
+    userAgent?: string;
   } = {},
 ) {
   await page.addInitScript(
-    ({ initial, permissionState, secureContext, policyAllowed, online }) => {
+    ({
+      initial,
+      permissionState,
+      secureContext,
+      policyAllowed,
+      online,
+      fallbackOutcome,
+      userAgent,
+    }) => {
       const permissionListeners = new Set<() => void>();
       const permission = {
         state: permissionState,
@@ -45,7 +55,9 @@ async function publicFixture(
       };
       Object.assign(window, {
         locationTestOutcome: initial,
+        locationTestFallbackOutcome: fallbackOutcome,
         locationTestRequests: 0,
+        locationTestOptions: [] as PositionOptions[],
         setLocationPermission: (next: string) => {
           permission.state = next;
           permissionListeners.forEach((listener) => listener());
@@ -59,6 +71,12 @@ async function publicFixture(
         configurable: true,
         value: online,
       });
+      if (userAgent) {
+        Object.defineProperty(navigator, "userAgent", {
+          configurable: true,
+          value: userAgent,
+        });
+      }
       Object.defineProperty(document, "permissionsPolicy", {
         configurable: true,
         value: { allowsFeature: () => policyAllowed },
@@ -79,13 +97,21 @@ async function publicFixture(
           getCurrentPosition: (
             success: PositionCallback,
             failure: PositionErrorCallback,
+            positionOptions?: PositionOptions,
           ) => {
-            (
-              window as unknown as { locationTestRequests: number }
-            ).locationTestRequests += 1;
-            const result = (
-              window as unknown as { locationTestOutcome: string }
-            ).locationTestOutcome;
+            const state = window as unknown as {
+              locationTestOutcome: string;
+              locationTestFallbackOutcome?: string;
+              locationTestRequests: number;
+              locationTestOptions: PositionOptions[];
+            };
+            state.locationTestRequests += 1;
+            state.locationTestOptions.push(positionOptions ?? {});
+            const result =
+              state.locationTestRequests > 1 &&
+              state.locationTestFallbackOutcome
+                ? state.locationTestFallbackOutcome
+                : state.locationTestOutcome;
             if (result === "GRANTED")
               success({
                 coords: { latitude: 14.6, longitude: 121, accuracy: 12 },
@@ -104,6 +130,8 @@ async function publicFixture(
       secureContext: options.secureContext ?? true,
       policyAllowed: options.policyAllowed ?? true,
       online: options.online ?? true,
+      fallbackOutcome: options.fallbackOutcome,
+      userAgent: options.userAgent,
     },
   );
   const openings = new Set<string>();
@@ -524,6 +552,61 @@ test("rankings wait for saved location; refreshes reuse a visit and reload creat
     page.getByRole("heading", { name: "Location required" }),
   ).toBeVisible();
   expect(state.openings.size).toBe(2);
+});
+
+test("Messenger timeout retries with a network location before blocking access", async ({
+  page,
+}) => {
+  const state = await publicFixture(page, "TIMEOUT", "prompt", {
+    fallbackOutcome: "GRANTED",
+    userAgent: "Mozilla/5.0 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
+  });
+  await page.goto(`/rankings/shared/${token}`);
+  await page
+    .getByRole("button", { name: "Share location and continue" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "LineDrive Afternoon Queue" }),
+  ).toBeVisible();
+  expect(state.outcomes).toEqual(["GRANTED"]);
+  const locationState = await page.evaluate(() => ({
+    requests: (
+      window as unknown as { locationTestRequests: number }
+    ).locationTestRequests,
+    options: (
+      window as unknown as { locationTestOptions: PositionOptions[] }
+    ).locationTestOptions,
+  }));
+  expect(locationState.requests).toBe(2);
+  expect(locationState.options).toEqual([
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 },
+  ]);
+});
+
+test("Messenger explains how to recover when both location attempts time out", async ({
+  page,
+}) => {
+  const state = await publicFixture(page, "TIMEOUT", "prompt", {
+    fallbackOutcome: "TIMEOUT",
+    userAgent: "Mozilla/5.0 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
+  });
+  await page.goto(`/rankings/shared/${token}`);
+  await page
+    .getByRole("button", { name: "Share location and continue" })
+    .click();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText(
+    "Messenger's in-app browser could not provide your location",
+  );
+  expect(state.outcomes).toEqual(["TIMEOUT"]);
+  expect(state.reads()).toBe(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { locationTestRequests: number })
+          .locationTestRequests,
+    ),
+  ).toBe(2);
 });
 
 for (const outcome of ["DENIED", "TIMEOUT", "UNAVAILABLE"]) {
