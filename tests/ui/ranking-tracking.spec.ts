@@ -8,15 +8,20 @@ const linkId = "20000000-0000-4000-8000-000000000001";
 const published = "2026-09-22T07:42:18.000Z";
 const link = { id: linkId, queueMasterId: "owner", issuedAt: published, revokedAt: null, publication: { id: "publication", sessionStartedAt: published, sessionEndedAt: null, finalizedAt: null } };
 
-async function publicFixture(page: Page, outcome = "GRANTED") {
-  await page.addInitScript((initial) => {
-    Object.assign(window, { locationTestOutcome: initial });
+async function publicFixture(page: Page, outcome = "GRANTED", permission = "prompt") {
+  await page.addInitScript(({ initial, permissionState }) => {
+    Object.assign(window, { locationTestOutcome: initial, locationTestRequests: 0 });
+    Object.defineProperty(navigator, "permissions", { configurable: true, value: { query: async () => {
+      if (permissionState === "unsupported") throw new TypeError("Unsupported permission");
+      return { state: permissionState };
+    } } });
     Object.defineProperty(navigator, "geolocation", { configurable: true, value: { getCurrentPosition: (success: PositionCallback, failure: PositionErrorCallback) => {
+      (window as unknown as { locationTestRequests: number }).locationTestRequests += 1;
       const result = (window as unknown as { locationTestOutcome: string }).locationTestOutcome;
       if (result === "GRANTED") success({ coords: { latitude: 14.6, longitude: 121, accuracy: 12 } } as GeolocationPosition);
       else failure({ code: result === "DENIED" ? 1 : result === "TIMEOUT" ? 3 : 2 } as GeolocationPositionError);
     } } });
-  }, outcome);
+  }, { initial: outcome, permissionState: permission });
   const openings = new Set<string>();
   const outcomes: string[] = [];
   let reads = 0;
@@ -40,6 +45,55 @@ async function publicFixture(page: Page, outcome = "GRANTED") {
   });
   return { openings, outcomes, reads: () => reads, failWrites: () => { failWrite = true; } };
 }
+
+test("existing site permission automatically opens rankings once per opening", async ({ page }) => {
+  const state = await publicFixture(page, "GRANTED", "granted");
+  await page.goto(`/rankings/shared/${token}`);
+  await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Visit privacy" })).toContainText("90 days");
+  expect(state.outcomes).toEqual(["GRANTED"]);
+  expect(await page.evaluate(() => (window as unknown as { locationTestRequests: number }).locationTestRequests)).toBe(1);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+  expect(state.openings.size).toBe(2);
+  expect(state.outcomes).toEqual(["GRANTED", "GRANTED"]);
+  await page.evaluate(() => { window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })); window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })); });
+  await expect.poll(() => state.outcomes.length).toBe(3);
+  await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+  expect(state.openings.size).toBe(3);
+});
+
+for (const permission of ["prompt", "denied", "unsupported"]) {
+  test(`${permission} permission does not automatically request location`, async ({ page }) => {
+    const state = await publicFixture(page, "GRANTED", permission);
+    await page.goto(`/rankings/shared/${token}`);
+    await expect(page.getByRole("button", { name: "Share location and continue" })).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { locationTestRequests: number }).locationTestRequests)).toBe(0);
+    expect(state.reads()).toBe(0);
+    await page.getByRole("button", { name: "Share location and continue" }).click();
+    await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+  });
+}
+
+test("existing permission with unavailable device location allows manual retry", async ({ page }) => {
+  const state = await publicFixture(page, "UNAVAILABLE", "granted");
+  await page.goto(`/rankings/shared/${token}`);
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("could not provide a location");
+  expect(state.reads()).toBe(0);
+  expect(state.outcomes).toEqual(["UNAVAILABLE"]);
+  await page.evaluate(() => Object.assign(window, { locationTestOutcome: "GRANTED" }));
+  await page.getByRole("button", { name: "Retry location" }).click();
+  await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
+  expect(state.openings.size).toBe(1);
+});
+
+test("existing permission cannot bypass failed location persistence", async ({ page }) => {
+  const state = await publicFixture(page, "GRANTED", "granted"); state.failWrites();
+  await page.goto(`/rankings/shared/${token}`);
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText("Unable to save location. Please try again.");
+  expect(state.reads()).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { locationTestRequests: number }).locationTestRequests)).toBe(1);
+});
 
 test("rankings wait for saved location; refreshes reuse a visit and reload creates another", async ({ page }) => {
   const state = await publicFixture(page);
