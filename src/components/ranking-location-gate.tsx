@@ -27,6 +27,37 @@ const locationMessages = {
     "Your browser could not provide a location. Enable device location services or try a supported browser, then retry.",
 };
 
+type PermissionStateValue = "granted" | "denied" | "prompt" | "unsupported";
+type EnvironmentIssue = "INSECURE_CONTEXT" | "POLICY_BLOCKED" | "UNAVAILABLE";
+
+const environmentMessages: Record<EnvironmentIssue, string> = {
+  INSECURE_CONTEXT:
+    "Location access requires a secure HTTPS connection. Open the shared link in the deployed site and retry.",
+  POLICY_BLOCKED:
+    "This browser context does not allow location access. Open the shared link directly in your browser and retry.",
+  UNAVAILABLE:
+    "This browser does not provide location access. Enable location services or try a supported browser, then retry.",
+};
+
+function geolocationPolicyAllowsAccess() {
+  if (typeof document === "undefined") return true;
+  const policy = (
+    document as Document & {
+      permissionsPolicy?: { allowsFeature?: (feature: string) => boolean };
+    }
+  ).permissionsPolicy;
+  return policy?.allowsFeature ? policy.allowsFeature("geolocation") : true;
+}
+
+function environmentIssue(): EnvironmentIssue | null {
+  if (typeof window === "undefined" || typeof navigator === "undefined")
+    return null;
+  if (!window.isSecureContext) return "INSECURE_CONTEXT";
+  if (!navigator.geolocation) return "UNAVAILABLE";
+  if (!geolocationPolicyAllowsAccess()) return "POLICY_BLOCKED";
+  return null;
+}
+
 export function RankingLocationGate({
   token,
   children,
@@ -39,8 +70,11 @@ export function RankingLocationGate({
   const [accessUntil, setAccessUntil] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [permissionState, setPermissionState] =
+    useState<PermissionStateValue>("unsupported");
   const generation = useRef(0);
   const locationInFlight = useRef(false);
+  const permissionStatus = useRef<PermissionStatus | null>(null);
   const opening = useQuery({
     queryKey: ["rankingVisit", token, visitKey],
     queryFn: () => api.openRankingVisit(token, visitKey),
@@ -105,33 +139,35 @@ export function RankingLocationGate({
     const attempt = generation.current;
     setBusy(true);
     setMessage("");
-    let location: RankingLocationInput;
-    if (!navigator.geolocation || !window.isSecureContext)
-      location = { status: "UNAVAILABLE" };
-    else
-      location = await new Promise<RankingLocationInput>((resolve) =>
-        navigator.geolocation.getCurrentPosition(
-          ({ coords }) =>
-            resolve({
-              status: "GRANTED",
-              latitude: coords.latitude,
-              longitude: coords.longitude,
-              accuracy: coords.accuracy,
-            }),
-          (error) =>
-            resolve({
-              status:
-                error.code === 1
-                  ? "DENIED"
-                  : error.code === 3
-                    ? "TIMEOUT"
-                    : "UNAVAILABLE",
-            }),
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
-        ),
-      );
-    if (generation.current !== attempt) return;
     try {
+      const issue = environmentIssue();
+      let location: RankingLocationInput;
+      if (issue) {
+        location = { status: "UNAVAILABLE" };
+      } else {
+        location = await new Promise<RankingLocationInput>((resolve) =>
+          navigator.geolocation.getCurrentPosition(
+            ({ coords }) =>
+              resolve({
+                status: "GRANTED",
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+                accuracy: coords.accuracy,
+              }),
+            (error) =>
+              resolve({
+                status:
+                  error.code === 1
+                    ? "DENIED"
+                    : error.code === 3
+                      ? "TIMEOUT"
+                      : "UNAVAILABLE",
+              }),
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+          ),
+        );
+      }
+      if (generation.current !== attempt) return;
       const result = await api.rankingVisitLocation(token, visitKey, location);
       if (generation.current !== attempt) return;
       if (
@@ -142,9 +178,11 @@ export function RankingLocationGate({
         setAccessUntil(Date.parse(result.accessExpiresAt));
       else
         setMessage(
-          location.status === "GRANTED"
-            ? "Location was not accepted. Please retry."
-            : locationMessages[location.status],
+          issue
+            ? environmentMessages[issue]
+            : location.status === "GRANTED"
+              ? "Location was not accepted. Please retry."
+              : locationMessages[location.status],
         );
     } catch (error) {
       if (generation.current === attempt)
@@ -162,48 +200,51 @@ export function RankingLocationGate({
   }, [opening.isSuccess, token, visitKey]);
 
   useEffect(() => {
-    if (!opening.isSuccess || accessUntil || !navigator.permissions?.query)
+    if (!opening.isSuccess || accessUntil) return;
+    if (!navigator.permissions?.query) {
       return;
+    }
     let cancelled = false;
     const attempt = generation.current;
-    // An existing site grant needs no new button click. Prompt/denied states
-    // still require the visitor to use the explicit location control.
+    let removePermissionListener = () => {};
     void navigator.permissions
       .query({ name: "geolocation" })
-      .then((permission) => {
-        if (
-          !cancelled &&
-          generation.current === attempt &&
-          permission.state === "granted"
-        )
-          void shareLocation();
+      .then((status) => {
+        if (cancelled || generation.current !== attempt) return;
+        permissionStatus.current = status;
+        const update = () => {
+          if (cancelled || generation.current !== attempt) return;
+          setPermissionState(status.state);
+          if (status.state === "granted") void shareLocation();
+        };
+        if (typeof status.addEventListener === "function") {
+          status.addEventListener("change", update);
+          removePermissionListener = () => {
+            if (typeof status.removeEventListener === "function")
+              status.removeEventListener("change", update);
+          };
+        }
+        update();
       })
       .catch(() => {
-        // Some browsers do not support querying geolocation permission.
-        // The manual location control remains available.
+        if (!cancelled && generation.current === attempt)
+          setPermissionState("unsupported");
       });
     return () => {
       cancelled = true;
+      removePermissionListener();
+      permissionStatus.current = null;
     };
   }, [accessUntil, opening.isSuccess, shareLocation]);
 
-  if (accessUntil)
-    return (
-      <>
-        {children(visitKey, loseAccess)}
-        <aside
-          aria-label="Visit privacy"
-          className="bg-[var(--paper)] px-4 py-4 text-center text-xs leading-5 text-[var(--muted)]"
-        >
-        </aside>
-      </>
-    );
+  if (accessUntil) return children(visitKey, loseAccess);
   if (opening.isPending && opening.fetchStatus !== "paused")
     return (
       <LoadingState variant="fullPage" label="Preparing shared rankings" />
     );
   const unavailable =
     opening.error instanceof ApiError && opening.error.status === 404;
+  const environment = opening.isSuccess ? environmentIssue() : null;
   return (
     <main className="grid min-h-screen place-items-center bg-[var(--paper)] px-4 py-10">
       <Card className="w-full max-w-lg p-6 sm:p-8">
@@ -229,7 +270,13 @@ export function RankingLocationGate({
             <p role="status" className="mt-3 text-sm text-[var(--muted)]">
               {busy
                 ? "Getting your location and confirming access…"
-                : "Rankings stay hidden until your browser provides a location. Approximate IP location does not unlock this page."}
+                : environment
+                  ? environmentMessages[environment]
+                  : permissionState === "denied"
+                    ? "Location is blocked for this site. Update the browser permission, then check again."
+                    : permissionState === "prompt"
+                      ? "Select Share location and continue, then choose Allow when your browser asks."
+                      : "We need your location to confirm access to these rankings."}
             </p>
             {(message || opening.error || opening.fetchStatus === "paused") && (
               <p role="alert" className="mt-4 text-sm text-[#8d4824]">
@@ -254,9 +301,11 @@ export function RankingLocationGate({
                 ? "Retry connection"
                 : busy
                   ? "Getting location"
-                  : message
-                    ? "Retry location"
-                    : "Share location and continue"}
+                  : permissionState === "denied" || environment
+                    ? "Check location access"
+                    : message
+                      ? "Retry location"
+                      : "Share location and continue"}
             </Button>
           </>
         )}
