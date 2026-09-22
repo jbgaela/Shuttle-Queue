@@ -112,11 +112,14 @@ function locationFailureMessage(
   status: LocationFailureStatus,
   facebookInAppBrowser: boolean,
 ) {
+  if (facebookInAppBrowser && status === "DENIED") {
+    return 'Location permission was denied in Messenger. Open Messenger\'s menu, select "Open in browser," then allow location in Chrome or Safari.';
+  }
   if (
     facebookInAppBrowser &&
     (status === "TIMEOUT" || status === "UNAVAILABLE")
   ) {
-    return "Messenger's in-app browser could not provide your location. Use its menu to open this link in your device browser, then retry there.";
+    return 'Messenger\'s in-app browser could not provide your location. Open Messenger\'s menu, select "Open in browser," then retry in Chrome or Safari.';
   }
   return locationMessages[status];
 }

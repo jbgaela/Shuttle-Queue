@@ -609,6 +609,30 @@ test("Messenger explains how to recover when both location attempts time out", a
   ).toBe(2);
 });
 
+test("Messenger denial directs the visitor to Open in browser", async ({
+  page,
+}) => {
+  const state = await publicFixture(page, "DENIED", "prompt", {
+    userAgent: "Mozilla/5.0 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
+  });
+  await page.goto(`/rankings/shared/${token}`);
+  await page
+    .getByRole("button", { name: "Share location and continue" })
+    .click();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText(
+    'select "Open in browser," then allow location in Chrome or Safari',
+  );
+  expect(state.outcomes).toEqual(["DENIED"]);
+  expect(state.reads()).toBe(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { locationTestRequests: number })
+          .locationTestRequests,
+    ),
+  ).toBe(1);
+});
+
 for (const outcome of ["DENIED", "TIMEOUT", "UNAVAILABLE"]) {
   test(`${outcome.toLowerCase()} location is recorded and rankings stay hidden`, async ({
     page,
