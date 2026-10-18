@@ -1,4 +1,4 @@
-import { expect, test, type Route } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { guidedSnapshot } from "./guided-fixtures";
 
@@ -110,6 +110,79 @@ test.describe("History correction layout", () => {
     await expect(page.getByRole("heading", { name: "The queue log." })).toBeVisible();
   });
 
+  async function typeWithoutRefocusing(page: Page, field: Locator, text: string) {
+    const original = await field.elementHandle();
+    const initialValue = await field.inputValue();
+    let typed = "";
+    for (const character of text) {
+      await page.keyboard.type(character);
+      typed += character;
+      await expect(field).toBeFocused();
+      await expect(field).toHaveValue(initialValue + typed);
+      expect(await field.evaluate((element, previous) => element === previous, original)).toBe(true);
+    }
+  }
+
+  for (const viewport of [
+    { name: "phone", width: 390, height: 844 },
+    { name: "tablet", width: 768, height: 1024 },
+    { name: "desktop", width: 1440, height: 900 },
+  ]) {
+    test(`${viewport.name} history search keeps focus through query loading and empty results`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      const search = page.getByRole("textbox", { name: "Search history by player name" });
+      const matches = page.locator('[data-testid^="history-match-history-match-"]');
+      await expect(matches).toHaveCount(2);
+      await search.click();
+      const original = await search.elementHandle();
+      await typeWithoutRefocusing(page, search, "Alexandria Tablet");
+      await expect(matches).toHaveCount(2);
+      await page.keyboard.press("ControlOrMeta+A");
+      await page.keyboard.press("Backspace");
+      await expect(search).toBeFocused();
+      await expect(search).toHaveValue("");
+      await typeWithoutRefocusing(page, search, "Nobody");
+      await expect(page.getByText("No matching games", { exact: true })).toBeVisible();
+      await expect(matches).toHaveCount(0);
+      await expect(search).toBeFocused();
+      expect(await search.evaluate((element, previous) => element === previous, original)).toBe(true);
+      await page.keyboard.press("ControlOrMeta+A");
+      await page.keyboard.press("Backspace");
+      await expect(matches).toHaveCount(2);
+      await expect(search).toBeFocused();
+    });
+
+    test(`${viewport.name} history correction textboxes retain focus while typing`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      const match = page.getByTestId("history-match-history-match-1");
+      await match.getByTestId("history-match-toggle").click();
+      await match.getByRole("button", { name: "Edit score" }).focus();
+      await page.keyboard.press("Enter");
+      const scoreDialog = page.getByRole("dialog", { name: "Correct the score" });
+      const score = scoreDialog.locator('input[aria-label*="game 1 score"]').first();
+      await score.click();
+      await page.keyboard.press("ControlOrMeta+A");
+      await page.keyboard.press("Backspace");
+      await typeWithoutRefocusing(page, score, "21");
+      const scoreReason = scoreDialog.getByPlaceholder("Score correction", { exact: true });
+      await scoreReason.click();
+      await typeWithoutRefocusing(page, scoreReason, "Updated final score");
+      await page.keyboard.press("Escape");
+      await expect(scoreDialog).toHaveCount(0);
+      await expect(match.getByRole("button", { name: "Edit score" })).toBeFocused();
+
+      await match.getByRole("button", { name: "Edit players" }).focus();
+      await page.keyboard.press("Enter");
+      const playersDialog = page.getByRole("dialog", { name: "Correct the players" });
+      const playersReason = playersDialog.getByPlaceholder("Participant correction", { exact: true });
+      await playersReason.click();
+      await typeWithoutRefocusing(page, playersReason, "Updated player assignment");
+      await page.keyboard.press("Escape");
+      await expect(playersDialog).toHaveCount(0);
+      await expect(match.getByRole("button", { name: "Edit players" })).toBeFocused();
+    });
+  }
+
   test("keeps correction actions inside the expanded match", async ({ page }) => {
     const firstMatch = page.getByTestId("history-match-history-match-1");
     const secondMatch = page.getByTestId("history-match-history-match-2");
@@ -122,7 +195,8 @@ test.describe("History correction layout", () => {
     await expect(firstMatch.getByRole("button", { name: "Edit players" })).toBeVisible();
     await expect(secondMatch.getByRole("button", { name: "Edit score" })).toHaveCount(0);
 
-    await firstMatch.getByRole("button", { name: "Edit score" }).click();
+    await firstMatch.getByRole("button", { name: "Edit score" }).focus();
+    await page.keyboard.press("Enter");
     const scoreDialog = page.getByRole("dialog", { name: "Correct the score" });
     await expect(scoreDialog).toBeVisible();
     await expect(scoreDialog.locator("footer")).toBeVisible();
