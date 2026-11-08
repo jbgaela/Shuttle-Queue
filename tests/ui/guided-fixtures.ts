@@ -41,12 +41,44 @@ export function guidedSnapshot() {
   return {
     schemaVersion: 2,
     queueMasterId: "account-1",
-    settings: { id: "guided-settings", pointsToWin: 21, winBy: 2, scoreCap: null, bestOf: 1, minimumRestMinutes: 0, lateArrivalGraceMinutes: 15, defaultFeeMode: "NONE", defaultFixedFeeMinor: null, currencyCode: "PHP", timeZone: "Asia/Manila", defaultLateArrivalCutoffTime: null, version: 1 },
-    workspace: { startedAt, endedAt: null, lateArrivalCutoffAt: null, matchmakingAlgorithm: "v13-undefeated-ordered-gap-fallback", matchmakingRevision: 1, version: 1 },
+    settings: {
+      id: "guided-settings",
+      pointsToWin: 21,
+      winBy: 2,
+      scoreCap: null,
+      bestOf: 1,
+      minimumRestMinutes: 0,
+      lateArrivalGraceMinutes: 15,
+      defaultFeeMode: "NONE",
+      defaultFixedFeeMinor: null,
+      currencyCode: "PHP",
+      timeZone: "Asia/Manila",
+      defaultLateArrivalCutoffTime: null,
+      version: 1,
+    },
+    workspace: {
+      startedAt,
+      endedAt: null,
+      lateArrivalCutoffAt: null,
+      matchmakingAlgorithm: "v13-undefeated-ordered-gap-fallback",
+      matchmakingRevision: 1,
+      version: 1,
+    },
     players,
     queuePlayers,
     synergyTeams: [],
-    courts: [{ id: "guided-court-1", name: "Court 1", normalizedName: "court-1", displayOrder: 0, status: "AVAILABLE", currentMatchId: null, closedAt: null, version: 1 }],
+    courts: [
+      {
+        id: "guided-court-1",
+        name: "Court 1",
+        normalizedName: "court-1",
+        displayOrder: 0,
+        status: "AVAILABLE",
+        currentMatchId: null,
+        closedAt: null,
+        version: 1,
+      },
+    ],
     matches: [],
     feeConfig: null,
     payments: [],
@@ -67,16 +99,31 @@ export async function mockGuidedApi(route: Route) {
   }
   const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
   if (path === "/auth/me") {
-    await route.fulfill({ json: { data: { user: { id: "account-1", username: "guided-a11y-test", role: "QUEUE_MASTER" }, csrfToken: "test-token" } }, headers });
+    await route.fulfill({
+      json: {
+        data: {
+          user: { id: "account-1", username: "guided-a11y-test", role: "QUEUE_MASTER" },
+          csrfToken: "test-token",
+        },
+      },
+      headers,
+    });
     return;
   }
   if (path === "/sync/snapshot") {
-    await route.fulfill({ json: { data: { snapshot: guidedSnapshot(), cloudRevision: 1 } }, headers });
+    await route.fulfill({
+      json: { data: { snapshot: guidedSnapshot(), cloudRevision: 1 } },
+      headers,
+    });
     return;
   }
   if (path === "/workspace/public-rankings") {
     await route.fulfill({ json: { data: { current: null, archives: [] } }, headers });
     return;
   }
-  await route.fulfill({ status: 404, json: { error: { message: "Unexpected Guided test request" } }, headers });
+  await route.fulfill({
+    status: 404,
+    json: { error: { message: "Unexpected Guided test request" } },
+    headers,
+  });
 }

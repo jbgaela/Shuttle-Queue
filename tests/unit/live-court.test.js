@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { liveCourtStatusLabel, participantSkillLabel, playerGenderKind, playerGenderLabel } from "../../src/lib/live-court.ts";
+import {
+  liveCourtStatusLabel,
+  participantSkillLabel,
+  playerGenderKind,
+  playerGenderLabel,
+} from "../../src/lib/live-court.ts";
 
 test("live court chooses the male silhouette and accessible label", () => {
   assert.equal(playerGenderKind("MALE"), "MALE");

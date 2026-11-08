@@ -1,9 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRankingExportCanvas, formatRankingExportDate, rankingExportFilename, rankingExportRows, saveRankingsToDevice } from "../../src/lib/rankings-image.ts";
-import { partitionPublicRankingRows, partitionRankingRows } from "../../src/lib/ranking-presentation.ts";
+import {
+  createRankingExportCanvas,
+  formatRankingExportDate,
+  rankingExportFilename,
+  rankingExportRows,
+  saveRankingsToDevice,
+} from "../../src/lib/rankings-image.ts";
+import {
+  partitionPublicRankingRows,
+  partitionRankingRows,
+} from "../../src/lib/ranking-presentation.ts";
 
-const ranking = (overrides = {}) => ({ rank: 1, queuePlayerId: "queue-1", sessionPlayerId: "queue-1", player: "Alice Santos", playerId: "player-1", gender: "FEMALE", skillLevel: "BEGINNER", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000, pointsFor: 84, pointsAgainst: 60, pointDifferential: 24, ...overrides });
+const ranking = (overrides = {}) => ({
+  rank: 1,
+  queuePlayerId: "queue-1",
+  sessionPlayerId: "queue-1",
+  player: "Alice Santos",
+  playerId: "player-1",
+  gender: "FEMALE",
+  skillLevel: "BEGINNER",
+  matchesPlayed: 5,
+  wins: 3,
+  losses: 2,
+  winRateBasisPoints: 6000,
+  pointsFor: 84,
+  pointsAgainst: 60,
+  pointDifferential: 24,
+  ...overrides,
+});
 
 test("ranking export formats the requested long date and stable filename", () => {
   const date = new Date(2026, 7, 15);
@@ -13,67 +38,140 @@ test("ranking export formats the requested long date and stable filename", () =>
 
 test("export rows put ranked players first and retain zero-game players for the separate section", () => {
   const rows = rankingExportRows([
-    ranking({ rank: 2, player: "Bob", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
-    ranking({ rank: 1, player: "Alice", matchesPlayed: 8, wins: 8, losses: 0, winRateBasisPoints: 10000 }),
+    ranking({
+      rank: 2,
+      player: "Bob",
+      matchesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      winRateBasisPoints: 0,
+    }),
+    ranking({
+      rank: 1,
+      player: "Alice",
+      matchesPlayed: 8,
+      wins: 8,
+      losses: 0,
+      winRateBasisPoints: 10000,
+    }),
   ]);
-  assert.deepEqual(rows.map((row) => row.player), ["Alice", "Bob"]);
-  assert.deepEqual(rows.map((row) => ({ rank: row.rank, section: row.section })), [
-    { rank: 1, section: "RANKED" },
-    { rank: null, section: "DID_NOT_PLAY" },
-  ]);
-  assert.deepEqual(rows.map((row) => ({ games: row.games, record: row.record, winRate: row.winRate })), [
-    { games: 8, record: "8W / 0L", winRate: "100%" },
-    { games: 0, record: "0W / 0L", winRate: "0%" },
-  ]);
-  assert.deepEqual(rows.map((row) => row.rankingScore), ["—", "—"]);
+  assert.deepEqual(
+    rows.map((row) => row.player),
+    ["Alice", "Bob"],
+  );
+  assert.deepEqual(
+    rows.map((row) => ({ rank: row.rank, section: row.section })),
+    [
+      { rank: 1, section: "RANKED" },
+      { rank: null, section: "DID_NOT_PLAY" },
+    ],
+  );
+  assert.deepEqual(
+    rows.map((row) => ({ games: row.games, record: row.record, winRate: row.winRate })),
+    [
+      { games: 8, record: "8W / 0L", winRate: "100%" },
+      { games: 0, record: "0W / 0L", winRate: "0%" },
+    ],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.rankingScore),
+    ["—", "—"],
+  );
 });
 
 test("export rows accept public ranking data without signed-in identifiers", () => {
-  const rows = rankingExportRows([{
-    rank: null,
-    player: "Public Player",
-    matchesPlayed: 5,
-    wins: 4,
-    losses: 1,
-    winRateBasisPoints: 8000,
-    eligible: true,
-    rankingScoreBasisPoints: 8125,
-    seededDrawUsed: false,
-  }]);
-  assert.deepEqual(rows, [{
-    rank: 1,
-    player: "Public Player",
-    games: 5,
-    record: "4W / 1L",
-    winRate: "80%",
-    rankingScore: "81.3%",
-    section: "RANKED",
-  }]);
+  const rows = rankingExportRows([
+    {
+      rank: null,
+      player: "Public Player",
+      matchesPlayed: 5,
+      wins: 4,
+      losses: 1,
+      winRateBasisPoints: 8000,
+      eligible: true,
+      rankingScoreBasisPoints: 8125,
+      seededDrawUsed: false,
+    },
+  ]);
+  assert.deepEqual(rows, [
+    {
+      rank: 1,
+      player: "Public Player",
+      games: 5,
+      record: "4W / 1L",
+      winRate: "80%",
+      rankingScore: "81.3%",
+      section: "RANKED",
+    },
+  ]);
 });
 
 test("private export keeps provisional players in the ranked table", () => {
   const rows = rankingExportRows([
-    ranking({ player: "Provisional Player", matchesPlayed: 2, wins: 2, losses: 0, winRateBasisPoints: 10000, eligible: false, gamesNeeded: 3, rankingScoreBasisPoints: 4125 }),
-    ranking({ player: "Qualified Player", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000, eligible: true, rank: 2 }),
+    ranking({
+      player: "Provisional Player",
+      matchesPlayed: 2,
+      wins: 2,
+      losses: 0,
+      winRateBasisPoints: 10000,
+      eligible: false,
+      gamesNeeded: 3,
+      rankingScoreBasisPoints: 4125,
+    }),
+    ranking({
+      player: "Qualified Player",
+      matchesPlayed: 5,
+      wins: 3,
+      losses: 2,
+      winRateBasisPoints: 6000,
+      eligible: true,
+      rank: 2,
+    }),
   ]);
-  assert.deepEqual(rows.map(({ player, rank, section }) => ({ player, rank, section })), [
-    { player: "Qualified Player", rank: 1, section: "RANKED" },
-    { player: "Provisional Player (Provisional)", rank: 11, section: "RANKED" },
-  ]);
+  assert.deepEqual(
+    rows.map(({ player, rank, section }) => ({ player, rank, section })),
+    [
+      { player: "Qualified Player", rank: 1, section: "RANKED" },
+      { player: "Provisional Player (Provisional)", rank: 11, section: "RANKED" },
+    ],
+  );
 });
 
 test("public export omits prize labels, score, and eligibility sections", () => {
-  const rows = rankingExportRows([
-    ranking({ player: "Short Sample", matchesPlayed: 2, wins: 2, losses: 0, winRateBasisPoints: 10000, eligible: false, gamesNeeded: 3 }),
-    ranking({ player: "Qualified Sample", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000 }),
-    ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
-  ], { variant: "public" });
-  assert.deepEqual(rows.map(({ player, rank, section }) => ({ player, rank, section })), [
-    { player: "Qualified Sample", rank: 1, section: "RANKED" },
-    { player: "Short Sample", rank: 11, section: "RANKED" },
-    { player: "No Games", rank: null, section: "DID_NOT_PLAY" },
-  ]);
-  assert.equal(rows.some((row) => row.rankingScore !== undefined), false);
+  const rows = rankingExportRows(
+    [
+      ranking({
+        player: "Short Sample",
+        matchesPlayed: 2,
+        wins: 2,
+        losses: 0,
+        winRateBasisPoints: 10000,
+        eligible: false,
+        gamesNeeded: 3,
+      }),
+      ranking({
+        player: "Qualified Sample",
+        matchesPlayed: 5,
+        wins: 3,
+        losses: 2,
+        winRateBasisPoints: 6000,
+      }),
+      ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
+    ],
+    { variant: "public" },
+  );
+  assert.deepEqual(
+    rows.map(({ player, rank, section }) => ({ player, rank, section })),
+    [
+      { player: "Qualified Sample", rank: 1, section: "RANKED" },
+      { player: "Short Sample", rank: 11, section: "RANKED" },
+      { player: "No Games", rank: null, section: "DID_NOT_PLAY" },
+    ],
+  );
+  assert.equal(
+    rows.some((row) => row.rankingScore !== undefined),
+    false,
+  );
 });
 
 function canvasEnvironment() {
@@ -93,8 +191,21 @@ function canvasEnvironment() {
     createLinearGradient: () => ({ addColorStop() {} }),
   };
   const anchors = [];
-  const canvas = { width: 0, height: 0, getContext: () => context, toBlob: (callback) => callback(new Blob(["png"], { type: "image/png" })) };
-  const document = { createElement: (tag) => tag === "canvas" ? canvas : (() => { const anchor = { href: "", download: "", click: () => anchors.push(anchor) }; return anchor; })() };
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => context,
+    toBlob: (callback) => callback(new Blob(["png"], { type: "image/png" })),
+  };
+  const document = {
+    createElement: (tag) =>
+      tag === "canvas"
+        ? canvas
+        : (() => {
+            const anchor = { href: "", download: "", click: () => anchors.push(anchor) };
+            return anchor;
+          })(),
+  };
   return { canvas, document, drawnText, anchors };
 }
 
@@ -106,7 +217,10 @@ for (const variant of ["private", "public"]) {
     ];
     const options = variant === "public" ? { variant: "public" } : {};
     const partition = variant === "public" ? partitionPublicRankingRows : partitionRankingRows;
-    assert.deepEqual(rankingExportRows(input, options).map(({ rank }) => rank), partition(input).ranked.map(({ rank }) => rank));
+    assert.deepEqual(
+      rankingExportRows(input, options).map(({ rank }) => rank),
+      partition(input).ranked.map(({ rank }) => rank),
+    );
     const environment = canvasEnvironment();
     const previousDocument = globalThis.document;
     globalThis.document = environment.document;
@@ -114,7 +228,10 @@ for (const variant of ["private", "public"]) {
       createRankingExportCanvas(input, new Date(2026, 7, 15), options);
       assert.ok(environment.drawnText.includes("11"));
       assert.ok(environment.drawnText.includes("1"));
-      assert.equal(environment.drawnText.includes("Provisional (Provisional)"), variant !== "public");
+      assert.equal(
+        environment.drawnText.includes("Provisional (Provisional)"),
+        variant !== "public",
+      );
     } finally {
       globalThis.document = previousDocument;
     }
@@ -126,16 +243,27 @@ test("canvas export includes every player and adapts for long names", () => {
   const previousDocument = globalThis.document;
   globalThis.document = environment.document;
   try {
-    const canvas = createRankingExportCanvas([
-      ranking({ rank: 1, player: "A very long player name that should wrap across the export row" }),
-      ranking({ rank: 2, player: "Bob" }),
-      ranking({ rank: 3, player: "Carol" }),
-    ], new Date(2026, 7, 15));
+    const canvas = createRankingExportCanvas(
+      [
+        ranking({
+          rank: 1,
+          player: "A very long player name that should wrap across the export row",
+        }),
+        ranking({ rank: 2, player: "Bob" }),
+        ranking({ rank: 3, player: "Carol" }),
+      ],
+      new Date(2026, 7, 15),
+    );
     assert.ok(canvas.height > 208 + 64 + 3 * 76);
     assert.ok(environment.drawnText.includes("A very long player name that should"));
     assert.ok(environment.drawnText.includes("Bob"));
     assert.ok(environment.drawnText.includes("Carol"));
-    assert.equal(environment.drawnText.includes("Ranks start after 1 completed game · prize eligibility after 5"), false);
+    assert.equal(
+      environment.drawnText.includes(
+        "Ranks start after 1 completed game · prize eligibility after 5",
+      ),
+      false,
+    );
   } finally {
     globalThis.document = previousDocument;
   }
@@ -146,10 +274,20 @@ test("canvas export renders zero-game players only in the Did not play section",
   const previousDocument = globalThis.document;
   globalThis.document = environment.document;
   try {
-    createRankingExportCanvas([
-      ranking({ rank: 1, player: "Alice" }),
-      ranking({ rank: 2, player: "Bob", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
-    ], new Date(2026, 7, 15));
+    createRankingExportCanvas(
+      [
+        ranking({ rank: 1, player: "Alice" }),
+        ranking({
+          rank: 2,
+          player: "Bob",
+          matchesPlayed: 0,
+          wins: 0,
+          losses: 0,
+          winRateBasisPoints: 0,
+        }),
+      ],
+      new Date(2026, 7, 15),
+    );
     assert.ok(environment.drawnText.includes("Did not play"));
     assert.ok(environment.drawnText.includes("Bob"));
     assert.equal(environment.drawnText.filter((value) => value === "0W / 0L").length, 0);
@@ -165,12 +303,40 @@ test("public canvas export uses the aligned five-column layout and compact no-ga
   const previousDocument = globalThis.document;
   globalThis.document = environment.document;
   try {
-    const canvas = createRankingExportCanvas([
-      ranking({ player: "Short Sample", matchesPlayed: 2, wins: 2, losses: 0, winRateBasisPoints: 10000 }),
-      ranking({ player: "Qualified Sample", matchesPlayed: 5, wins: 3, losses: 2, winRateBasisPoints: 6000 }),
-      ranking({ player: "No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
-      ranking({ player: "Another No Games", matchesPlayed: 0, wins: 0, losses: 0, winRateBasisPoints: 0 }),
-    ], new Date(2026, 7, 15), { variant: "public" });
+    const canvas = createRankingExportCanvas(
+      [
+        ranking({
+          player: "Short Sample",
+          matchesPlayed: 2,
+          wins: 2,
+          losses: 0,
+          winRateBasisPoints: 10000,
+        }),
+        ranking({
+          player: "Qualified Sample",
+          matchesPlayed: 5,
+          wins: 3,
+          losses: 2,
+          winRateBasisPoints: 6000,
+        }),
+        ranking({
+          player: "No Games",
+          matchesPlayed: 0,
+          wins: 0,
+          losses: 0,
+          winRateBasisPoints: 0,
+        }),
+        ranking({
+          player: "Another No Games",
+          matchesPlayed: 0,
+          wins: 0,
+          losses: 0,
+          winRateBasisPoints: 0,
+        }),
+      ],
+      new Date(2026, 7, 15),
+      { variant: "public" },
+    );
     assert.ok(canvas.height > 208 + 64 + 2 * 76);
     assert.ok(environment.drawnText.includes("WIN RATE"));
     assert.ok(environment.drawnText.includes("Did not play"));
@@ -212,7 +378,10 @@ test("canvas failures reject without producing a download", async () => {
   const previousDocument = globalThis.document;
   globalThis.document = { createElement: () => ({ getContext: () => null }) };
   try {
-    await assert.rejects(() => saveRankingsToDevice([ranking()]), /could not create an image canvas/i);
+    await assert.rejects(
+      () => saveRankingsToDevice([ranking()]),
+      /could not create an image canvas/i,
+    );
   } finally {
     globalThis.document = previousDocument;
   }

@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MapPinned } from "lucide-react";
 import { api, ApiError, type RankingLocationInput } from "@/lib/api";
@@ -21,8 +15,7 @@ export function newRankingVisitKey() {
 const locationMessages = {
   DENIED:
     "Location permission was denied. Enable location for this site in your browser settings, then retry.",
-  TIMEOUT:
-    "Your location request timed out. Check that location services are enabled, then retry.",
+  TIMEOUT: "Your location request timed out. Check that location services are enabled, then retry.",
   UNAVAILABLE:
     "Your browser could not provide a location. Enable device location services or try a supported browser, then retry.",
 };
@@ -52,8 +45,7 @@ function geolocationPolicyAllowsAccess() {
 }
 
 function environmentIssue(): EnvironmentIssue | null {
-  if (typeof window === "undefined" || typeof navigator === "undefined")
-    return null;
+  if (typeof window === "undefined" || typeof navigator === "undefined") return null;
   if (!window.isSecureContext) return "INSECURE_CONTEXT";
   if (!navigator.geolocation) return "UNAVAILABLE";
   if (!geolocationPolicyAllowsAccess()) return "POLICY_BLOCKED";
@@ -65,9 +57,7 @@ function isFacebookInAppBrowser() {
   return /FBAN|FBAV|FB_IAB|Messenger/i.test(navigator.userAgent);
 }
 
-function requestBrowserLocation(
-  options: PositionOptions,
-): Promise<RankingLocationInput> {
+function requestBrowserLocation(options: PositionOptions): Promise<RankingLocationInput> {
   return new Promise((resolve) =>
     navigator.geolocation.getCurrentPosition(
       ({ coords }) =>
@@ -79,12 +69,7 @@ function requestBrowserLocation(
         }),
       (error) =>
         resolve({
-          status:
-            error.code === 1
-              ? "DENIED"
-              : error.code === 3
-                ? "TIMEOUT"
-                : "UNAVAILABLE",
+          status: error.code === 1 ? "DENIED" : error.code === 3 ? "TIMEOUT" : "UNAVAILABLE",
         }),
       options,
     ),
@@ -108,18 +93,12 @@ async function acquireBrowserLocation() {
   });
 }
 
-function locationFailureMessage(
-  status: LocationFailureStatus,
-  facebookInAppBrowser: boolean,
-) {
+function locationFailureMessage(status: LocationFailureStatus, facebookInAppBrowser: boolean) {
   if (facebookInAppBrowser && status === "DENIED") {
     return 'Location permission was denied in Messenger. Open Messenger\'s menu, select "Open in browser," then allow location in Chrome or Safari.';
   }
-  if (
-    facebookInAppBrowser &&
-    (status === "TIMEOUT" || status === "UNAVAILABLE")
-  ) {
-    return 'Messenger\'s in-app browser could not provide your location. Open Messenger\'s menu, select "Open in browser," then retry in Chrome or Safari.';
+  if (facebookInAppBrowser && (status === "TIMEOUT" || status === "UNAVAILABLE")) {
+    return "Messenger's in-app browser could not provide your location. Open Messenger's menu, select \"Open in browser,\" then retry in Chrome or Safari.";
   }
   return locationMessages[status];
 }
@@ -135,12 +114,10 @@ export function RankingLocationGate({
   const [visitKey, setVisitKey] = useState(newRankingVisitKey);
   const [accessUntil, setAccessUntil] = useState<number | null>(null);
   const [message, setMessage] = useState("");
-  const [locationPhase, setLocationPhase] =
-    useState<LocationPhase>("idle");
+  const [locationPhase, setLocationPhase] = useState<LocationPhase>("idle");
   const [online, setOnline] = useState(true);
   const [facebookInAppBrowser] = useState(isFacebookInAppBrowser);
-  const [permissionState, setPermissionState] =
-    useState<PermissionStateValue>("unsupported");
+  const [permissionState, setPermissionState] = useState<PermissionStateValue>("unsupported");
   const generation = useRef(0);
   const locationInFlight = useRef(false);
   const permissionStatus = useRef<PermissionStatus | null>(null);
@@ -197,10 +174,7 @@ export function RankingLocationGate({
 
   useEffect(() => {
     if (!accessUntil) return;
-    const timer = window.setTimeout(
-      loseAccess,
-      Math.max(0, accessUntil - Date.now()),
-    );
+    const timer = window.setTimeout(loseAccess, Math.max(0, accessUntil - Date.now()));
     const checkExpiry = () => {
       if (Date.now() >= accessUntil) loseAccess();
     };
@@ -243,18 +217,13 @@ export function RankingLocationGate({
             ? environmentMessages[issue]
             : location.status === "GRANTED"
               ? "Location was not accepted. Please retry."
-              : locationFailureMessage(
-                  location.status,
-                  facebookInAppBrowser,
-                ),
+              : locationFailureMessage(location.status, facebookInAppBrowser),
         );
       }
     } catch (error) {
       if (generation.current === attempt) {
         setMessage(
-          error instanceof Error
-            ? error.message
-            : "Unable to save location. Please retry.",
+          error instanceof Error ? error.message : "Unable to save location. Please retry.",
         );
       }
     } finally {
@@ -291,8 +260,7 @@ export function RankingLocationGate({
         update();
       })
       .catch(() => {
-        if (!cancelled && generation.current === attempt)
-          setPermissionState("unsupported");
+        if (!cancelled && generation.current === attempt) setPermissionState("unsupported");
       });
     return () => {
       cancelled = true;
@@ -303,13 +271,10 @@ export function RankingLocationGate({
 
   if (accessUntil) return children(visitKey, loseAccess);
   if (opening.isPending && opening.fetchStatus !== "paused") {
-    return (
-      <LoadingState variant="fullPage" label="Preparing shared rankings" />
-    );
+    return <LoadingState variant="fullPage" label="Preparing shared rankings" />;
   }
 
-  const unavailable =
-    opening.error instanceof ApiError && opening.error.status === 404;
+  const unavailable = opening.error instanceof ApiError && opening.error.status === 404;
   const offline = !online || opening.fetchStatus === "paused";
   if (offline) {
     return (
@@ -330,8 +295,7 @@ export function RankingLocationGate({
     );
   }
   if (opening.isError) {
-    const requestId =
-      opening.error instanceof ApiError ? opening.error.requestId : undefined;
+    const requestId = opening.error instanceof ApiError ? opening.error.requestId : undefined;
     return (
       <GateScreen
         heading="Unable to open rankings"
@@ -350,11 +314,7 @@ export function RankingLocationGate({
   return (
     <main className="grid min-h-screen place-items-center bg-[var(--paper)] px-4 py-10">
       <Card className="w-full max-w-lg p-6 sm:p-8">
-        <MapPinned
-          aria-hidden="true"
-          className="text-[var(--teal)]"
-          size={32}
-        />
+        <MapPinned aria-hidden="true" className="text-[var(--teal)]" size={32} />
         <h1 className="display mt-4 text-3xl">
           {locationPhase === "locating"
             ? "Getting your location"
@@ -426,25 +386,15 @@ function GateScreen({
   return (
     <main className="grid min-h-screen place-items-center bg-[var(--paper)] px-4 py-10">
       <Card className="w-full max-w-lg p-6 sm:p-8">
-        <MapPinned
-          aria-hidden="true"
-          className="text-[var(--teal)]"
-          size={32}
-        />
+        <MapPinned aria-hidden="true" className="text-[var(--teal)]" size={32} />
         <h1 className="display mt-4 text-3xl">{heading}</h1>
-        <p className="mt-4 text-sm leading-6 text-[var(--muted)]">
-          {description}
-        </p>
+        <p className="mt-4 text-sm leading-6 text-[var(--muted)]">{description}</p>
         {alert && (
           <p role="alert" className="mt-4 text-sm text-[#8d4824]">
             {alert}
           </p>
         )}
-        {requestId && (
-          <p className="mt-2 text-xs text-[var(--muted)]">
-            Reference: {requestId}
-          </p>
-        )}
+        {requestId && <p className="mt-2 text-xs text-[var(--muted)]">Reference: {requestId}</p>}
         {actionLabel && (
           <Button
             className="mt-5"

@@ -14,10 +14,7 @@ const visitor = {
   },
 };
 
-function installEnvironment(
-  context: TestContext,
-  initial: Record<string, string | undefined>,
-) {
+function installEnvironment(context: TestContext, initial: Record<string, string | undefined>) {
   let environment = initial;
   const globals = globalThis as typeof globalThis & { Netlify?: unknown };
   const previous = globals.Netlify;
@@ -83,18 +80,17 @@ test("configuration failures are bounded, identified, and never forwarded", asyn
   for (const testCase of cases) {
     setEnvironment(testCase.environment);
     const response = await rankingVisitor(
-      new Request(
-        "https://site.example.test/api/v2/public/rankings/token/visits",
-        { method: "POST", body: "{}" },
-      ),
+      new Request("https://site.example.test/api/v2/public/rankings/token/visits", {
+        method: "POST",
+        body: "{}",
+      }),
       visitor,
     );
     assert.equal(response.status, 503, testCase.name);
     assert.deepEqual(await response.json(), {
       error: {
         code: "EDGE_CONFIGURATION_ERROR",
-        message:
-          "Shared rankings are temporarily unavailable. Please try again later.",
+        message: "Shared rankings are temporarily unavailable. Please try again later.",
       },
       requestId: visitor.requestId,
     });
@@ -111,61 +107,49 @@ test("valid configuration forwards signed context and strips untrusted headers",
   });
   const body = JSON.stringify({ status: "DENIED" });
   let upstreamCalls = 0;
-  context.mock.method(
-    globalThis,
-    "fetch",
-    async (url: URL, init: RequestInit) => {
-      upstreamCalls += 1;
-      assert.equal(
-        url.href,
-        "https://api.example.test/api/v2/public/rankings/token/visits/location",
-      );
-      const headers = new Headers(init.headers);
-      assert.equal(headers.get("cookie"), null);
-      assert.equal(headers.get("authorization"), null);
-      assert.equal(headers.get("x-forwarded-for"), null);
-      assert.equal(headers.get("x-ranking-visit-key"), "a".repeat(64));
-      const metadata = headers.get("x-ranking-edge-metadata")!;
-      const decoded = JSON.parse(
-        Buffer.from(metadata, "base64url").toString(),
-      );
-      assert.equal(decoded.ip, visitor.ip);
-      assert.equal(decoded.city, "Manila");
-      assert.equal(decoded.userAgent, "Test Browser");
-      const digest = createHash("sha256").update(body).digest("hex");
-      const expected = createHmac("sha256", secret)
-        .update(["PATCH", url.pathname, digest, metadata].join("\n"))
-        .digest("hex");
-      assert.equal(headers.get("x-ranking-edge-signature"), expected);
-      return Response.json(
-        { data: {} },
-        {
-          headers: {
-            "set-cookie": "unwanted=value",
-            ratelimit: "remaining=3",
-          },
+  context.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
+    upstreamCalls += 1;
+    assert.equal(url.href, "https://api.example.test/api/v2/public/rankings/token/visits/location");
+    const headers = new Headers(init.headers);
+    assert.equal(headers.get("cookie"), null);
+    assert.equal(headers.get("authorization"), null);
+    assert.equal(headers.get("x-forwarded-for"), null);
+    assert.equal(headers.get("x-ranking-visit-key"), "a".repeat(64));
+    const metadata = headers.get("x-ranking-edge-metadata")!;
+    const decoded = JSON.parse(Buffer.from(metadata, "base64url").toString());
+    assert.equal(decoded.ip, visitor.ip);
+    assert.equal(decoded.city, "Manila");
+    assert.equal(decoded.userAgent, "Test Browser");
+    const digest = createHash("sha256").update(body).digest("hex");
+    const expected = createHmac("sha256", secret)
+      .update(["PATCH", url.pathname, digest, metadata].join("\n"))
+      .digest("hex");
+    assert.equal(headers.get("x-ranking-edge-signature"), expected);
+    return Response.json(
+      { data: {} },
+      {
+        headers: {
+          "set-cookie": "unwanted=value",
+          ratelimit: "remaining=3",
         },
-      );
-    },
-  );
+      },
+    );
+  });
 
   const response = await rankingVisitor(
-    new Request(
-      "https://site.example.test/api/v2/public/rankings/token/visits/location",
-      {
-        method: "PATCH",
-        headers: {
-          "content-type": "application/json",
-          cookie: "session=secret",
-          authorization: "Bearer forged",
-          "user-agent": "Test Browser",
-          "x-ranking-edge-metadata": "forged",
-          "x-forwarded-for": "127.0.0.1",
-          "x-ranking-visit-key": "a".repeat(64),
-        },
-        body,
+    new Request("https://site.example.test/api/v2/public/rankings/token/visits/location", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        cookie: "session=secret",
+        authorization: "Bearer forged",
+        "user-agent": "Test Browser",
+        "x-ranking-edge-metadata": "forged",
+        "x-forwarded-for": "127.0.0.1",
+        "x-ranking-visit-key": "a".repeat(64),
       },
-    ),
+      body,
+    }),
     visitor,
   );
 
@@ -176,10 +160,10 @@ test("valid configuration forwards signed context and strips untrusted headers",
   assert.equal(response.headers.get("ratelimit"), "remaining=3");
 
   const oversized = await rankingVisitor(
-    new Request(
-      "https://site.example.test/api/v2/public/rankings/token/visits",
-      { method: "POST", body: "x".repeat(4097) },
-    ),
+    new Request("https://site.example.test/api/v2/public/rankings/token/visits", {
+      method: "POST",
+      body: "x".repeat(4097),
+    }),
     visitor,
   );
   assert.equal(oversized.status, 413);
@@ -197,10 +181,10 @@ test("upstream connection failures return a retryable identified error", async (
   });
 
   const response = await rankingVisitor(
-    new Request(
-      "https://site.example.test/api/v2/public/rankings/token/visits",
-      { method: "POST", body: "{}" },
-    ),
+    new Request("https://site.example.test/api/v2/public/rankings/token/visits", {
+      method: "POST",
+      body: "{}",
+    }),
     visitor,
   );
 
@@ -231,10 +215,10 @@ test("upstream statuses and error envelopes pass through unchanged", async (cont
   );
 
   const response = await rankingVisitor(
-    new Request(
-      "https://site.example.test/api/v2/public/rankings/token/visits",
-      { method: "POST", body: "{}" },
-    ),
+    new Request("https://site.example.test/api/v2/public/rankings/token/visits", {
+      method: "POST",
+      body: "{}",
+    }),
     visitor,
   );
 

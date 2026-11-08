@@ -1,22 +1,37 @@
 import type { NextConfig } from "next";
 import { withSerwist } from "@serwist/turbopack";
 
-const backendApiBaseUrl = (process.env.BACKEND_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v2").replace(/\/$/, "");
+const backendApiBaseUrl = (
+  process.env.BACKEND_API_BASE_URL ??
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  "http://localhost:4000/api/v2"
+).replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   distDir: process.env.UI_TEST_DIST_DIR ?? ".next",
-  allowedDevOrigins: ['192.168.8.232'],
+  allowedDevOrigins: ["192.168.8.232"],
   async headers() {
-    return [{ source: "/rankings/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "Permissions-Policy", value: "geolocation=(self)" }] }];
+    return [
+      {
+        source: "/rankings/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store" },
+          { key: "Permissions-Policy", value: "geolocation=(self)" },
+        ],
+      },
+    ];
   },
   async rewrites() {
     return [{ source: "/api/v2/:path*", destination: `${backendApiBaseUrl}/:path*` }];
   },
   webpack: (config) => {
     config.resolve ??= {};
-    config.resolve.extensionAlias = { ...(config.resolve.extensionAlias ?? {}), ".js": [".ts", ".tsx", ".js"] };
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      ".js": [".ts", ".tsx", ".js"],
+    };
     return config;
   },
 };

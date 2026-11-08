@@ -1,7 +1,10 @@
 import type { DomainFeeConfig, DomainQueuePlayer } from "./index.js";
 
 export function allocateFinalFeeAmounts(
-  config: Pick<DomainFeeConfig, "mode" | "fixedAmountPerPlayerMinor" | "expectedQueueCostMinor" | "noShowPenaltyMinor">,
+  config: Pick<
+    DomainFeeConfig,
+    "mode" | "fixedAmountPerPlayerMinor" | "expectedQueueCostMinor" | "noShowPenaltyMinor"
+  >,
   players: ReadonlyArray<Pick<DomainQueuePlayer, "id" | "matchesPlayed">>,
 ) {
   const ordered = [...players].sort((left, right) => left.id.localeCompare(right.id));
@@ -13,11 +16,12 @@ export function allocateFinalFeeAmounts(
     const remaining = Math.max(0, (config.expectedQueueCostMinor ?? 0) - penalty * noShows.length);
     const base = played.length ? Math.floor(remaining / played.length) : 0;
     const remainder = played.length ? remaining % played.length : 0;
-    played.forEach((player, index) => allocations.set(player.id, base + (index < remainder ? 1 : 0)));
+    played.forEach((player, index) =>
+      allocations.set(player.id, base + (index < remainder ? 1 : 0)),
+    );
   } else {
     const fixed = Math.max(0, config.fixedAmountPerPlayerMinor ?? 0);
     for (const player of played) allocations.set(player.id, fixed);
   }
   return allocations;
 }
-

@@ -13,7 +13,12 @@ const snapshot = (overrides = {}) => ({
 });
 
 test("local player deletion creates a destructive preview with the deleted name", () => {
-  const cloud = snapshot({ players: [{ id: "p1", displayName: "Alice" }, { id: "p2", displayName: "Bob" }] });
+  const cloud = snapshot({
+    players: [
+      { id: "p1", displayName: "Alice" },
+      { id: "p2", displayName: "Bob" },
+    ],
+  });
   const local = snapshot({ players: [{ id: "p2", displayName: "Bob" }] });
   const preview = createSyncPreview(local, cloud, 7, false);
 
@@ -24,7 +29,12 @@ test("local player deletion creates a destructive preview with the deleted name"
 
 test("additions and edits without removals are safe to upload in the background", () => {
   const cloud = snapshot({ players: [{ id: "p1", displayName: "Alice" }] });
-  const local = snapshot({ players: [{ id: "p1", displayName: "Alice Updated" }, { id: "p2", displayName: "Bob" }] });
+  const local = snapshot({
+    players: [
+      { id: "p1", displayName: "Alice Updated" },
+      { id: "p2", displayName: "Bob" },
+    ],
+  });
   const preview = createSyncPreview(local, cloud, 8, false);
 
   assert.equal(preview.removed.players, 0);

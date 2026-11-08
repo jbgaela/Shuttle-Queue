@@ -6,26 +6,50 @@ test.use({ serviceWorkers: "block" });
 async function mockFocusWorkspace(page: Page, inProgress = false) {
   const snapshot = guidedSnapshot();
   const startedAt = snapshot.workspace.startedAt;
-  const matches = inProgress ? [{
-    id: "focus-match", courtId: "guided-court-1", status: "IN_PROGRESS", source: "MANUAL",
-    matchmakingMode: null, suggestionKey: null, suggestionExplanation: null, algorithmVersion: null,
-    pointsToWin: 21, winBy: 2, scoreCap: null, bestOf: 1,
-    queuedAt: startedAt, startedAt, completedAt: null, cancelledAt: null, winnerTeam: null, version: 1,
-    participants: snapshot.queuePlayers.map((player, index) => ({
-      id: `focus-participant-${index}`, matchId: "focus-match", queuePlayerId: player.id,
-      team: index < 2 ? "A" : "B", teamSlot: index % 2 + 1,
-    })),
-    scoreRevisions: [],
-  }] : [];
+  const matches = inProgress
+    ? [
+        {
+          id: "focus-match",
+          courtId: "guided-court-1",
+          status: "IN_PROGRESS",
+          source: "MANUAL",
+          matchmakingMode: null,
+          suggestionKey: null,
+          suggestionExplanation: null,
+          algorithmVersion: null,
+          pointsToWin: 21,
+          winBy: 2,
+          scoreCap: null,
+          bestOf: 1,
+          queuedAt: startedAt,
+          startedAt,
+          completedAt: null,
+          cancelledAt: null,
+          winnerTeam: null,
+          version: 1,
+          participants: snapshot.queuePlayers.map((player, index) => ({
+            id: `focus-participant-${index}`,
+            matchId: "focus-match",
+            queuePlayerId: player.id,
+            team: index < 2 ? "A" : "B",
+            teamSlot: (index % 2) + 1,
+          })),
+          scoreRevisions: [],
+        },
+      ]
+    : [];
   if (inProgress) {
     snapshot.courts[0]!.status = "OCCUPIED";
     Object.assign(snapshot.courts[0]!, { currentMatchId: "focus-match" });
-    for (const player of snapshot.queuePlayers) Object.assign(player, { status: "PLAYING", currentMatchId: "focus-match" });
+    for (const player of snapshot.queuePlayers)
+      Object.assign(player, { status: "PLAYING", currentMatchId: "focus-match" });
   }
   let revision = 1;
   await page.route("**/api/v2/**", async (route) => {
     if (new URL(route.request().url()).pathname === "/api/v2/sync/snapshot") {
-      await route.fulfill({ json: { data: { snapshot: { ...snapshot, matches }, cloudRevision: revision } } });
+      await route.fulfill({
+        json: { data: { snapshot: { ...snapshot, matches }, cloudRevision: revision } },
+      });
       return;
     }
     await mockGuidedApi(route);
@@ -50,7 +74,11 @@ async function typeWithoutRefocusing(page: Page, field: Locator, text: string) {
 }
 
 async function checkDialogKeys(page: Page, dialog: Locator) {
-  const controls = dialog.locator("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]").filter({ visible: true });
+  const controls = dialog
+    .locator(
+      "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]",
+    )
+    .filter({ visible: true });
   await controls.last().focus();
   await page.keyboard.press("Tab");
   await expect(controls.first()).toBeFocused();
@@ -66,9 +94,14 @@ for (const viewport of [
   { name: "desktop", width: 1440, height: 900 },
 ]) {
   test.describe(viewport.name, () => {
-    test.use({ viewport: { width: viewport.width, height: viewport.height }, hasTouch: viewport.name !== "desktop" });
+    test.use({
+      viewport: { width: viewport.width, height: viewport.height },
+      hasTouch: viewport.name !== "desktop",
+    });
 
-    test("directory search keeps its element, focus, and value through filtering and refresh", async ({ page }) => {
+    test("directory search keeps its element, focus, and value through filtering and refresh", async ({
+      page,
+    }) => {
       const refresh = await mockFocusWorkspace(page);
       await page.getByRole("button", { name: "Players", exact: true }).click();
       const search = page.getByRole("searchbox", { name: "Search player directory" });
@@ -82,10 +115,14 @@ for (const viewport of [
       await page.keyboard.press("Backspace");
       await expect(editButtons).toHaveCount(4);
       await refresh();
-      await expect(page.getByRole("button", { name: "Edit Guided Player Refreshed", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Edit Guided Player Refreshed", exact: true }),
+      ).toBeVisible();
       await expect(search).toBeFocused();
       await expect(search).toHaveValue("Guided Player ");
-      expect(await search.evaluate((element, previous) => element === previous, original)).toBe(true);
+      expect(await search.evaluate((element, previous) => element === previous, original)).toBe(
+        true,
+      );
       await typeWithoutRefocusing(page, search, "1");
       await expect(editButtons).toHaveCount(1);
       await page.keyboard.press("ControlOrMeta+A");
@@ -107,14 +144,18 @@ for (const viewport of [
       await page.keyboard.press("End");
       await typeWithoutRefocusing(page, name, " Updated");
       await refresh();
-      await expect(page.getByRole("button", { name: "Edit Guided Player Refreshed", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Edit Guided Player Refreshed", exact: true }),
+      ).toBeVisible();
       await expect(name).toBeFocused();
       await expect(name).toHaveValue("Guided Player 1 Updated");
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
     });
 
-    test("manual player search keeps autofocus and survives matchmaker updates", async ({ page }) => {
+    test("manual player search keeps autofocus and survives matchmaker updates", async ({
+      page,
+    }) => {
       await mockFocusWorkspace(page);
       await page.getByRole("button", { name: "Queue", exact: true }).click();
       await page.getByRole("button", { name: "Manual", exact: true }).click();
@@ -156,7 +197,9 @@ for (const viewport of [
       await typeWithoutRefocusing(page, score, "21");
       await expect(score).toHaveValue("21");
       await refresh();
-      await expect(page.locator(".live-team-player-name").filter({ hasText: "Guided Player Refreshed" })).toBeVisible();
+      await expect(
+        page.locator(".live-team-player-name").filter({ hasText: "Guided Player Refreshed" }),
+      ).toBeVisible();
       await expect(score).toBeFocused();
       await expect(score).toHaveValue("21");
       await checkDialogKeys(page, dialog);

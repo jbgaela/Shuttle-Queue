@@ -19,6 +19,16 @@ export function hasPlayerNameConflict(
   excludedPlayerId?: string,
 ) {
   const normalizedName = normalizePlayerName(displayName);
-  return players.some((player) => player.id !== excludedPlayerId && normalizePlayerName(player.displayName) === normalizedName)
-    || queuePlayers.some((player) => player.playerId !== excludedPlayerId && normalizePlayerName(player.displayName) === normalizedName);
+  return (
+    players.some(
+      (player) =>
+        player.id !== excludedPlayerId &&
+        normalizePlayerName(player.displayName) === normalizedName,
+    ) ||
+    queuePlayers.some(
+      (player) =>
+        player.playerId !== excludedPlayerId &&
+        normalizePlayerName(player.displayName) === normalizedName,
+    )
+  );
 }

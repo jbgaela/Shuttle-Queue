@@ -4,7 +4,9 @@ import { guidedSnapshot } from "./guided-fixtures";
 
 test.use({ serviceWorkers: "block" });
 
-type HistorySnapshot = ReturnType<typeof guidedSnapshot> & { matches: Array<Record<string, unknown>> };
+type HistorySnapshot = ReturnType<typeof guidedSnapshot> & {
+  matches: Array<Record<string, unknown>>;
+};
 
 function historySnapshot(): HistorySnapshot {
   const snapshot = guidedSnapshot() as unknown as HistorySnapshot;
@@ -13,10 +15,34 @@ function historySnapshot(): HistorySnapshot {
   snapshot.queuePlayers[0]!.displayName = snapshot.players[0]!.displayName;
   snapshot.courts[0]!.name = "Court 1 — Long Court Name for Wrapping";
   const participants = [
-    { id: "history-match-1-participant-1", matchId: "history-match-1", queuePlayerId: "guided-queue-1", team: "A", teamSlot: 1 },
-    { id: "history-match-1-participant-2", matchId: "history-match-1", queuePlayerId: "guided-queue-2", team: "A", teamSlot: 2 },
-    { id: "history-match-1-participant-3", matchId: "history-match-1", queuePlayerId: "guided-queue-3", team: "B", teamSlot: 1 },
-    { id: "history-match-1-participant-4", matchId: "history-match-1", queuePlayerId: "guided-queue-4", team: "B", teamSlot: 2 },
+    {
+      id: "history-match-1-participant-1",
+      matchId: "history-match-1",
+      queuePlayerId: "guided-queue-1",
+      team: "A",
+      teamSlot: 1,
+    },
+    {
+      id: "history-match-1-participant-2",
+      matchId: "history-match-1",
+      queuePlayerId: "guided-queue-2",
+      team: "A",
+      teamSlot: 2,
+    },
+    {
+      id: "history-match-1-participant-3",
+      matchId: "history-match-1",
+      queuePlayerId: "guided-queue-3",
+      team: "B",
+      teamSlot: 1,
+    },
+    {
+      id: "history-match-1-participant-4",
+      matchId: "history-match-1",
+      queuePlayerId: "guided-queue-4",
+      team: "B",
+      teamSlot: 2,
+    },
   ];
   snapshot.matches = [
     {
@@ -43,7 +69,31 @@ function historySnapshot(): HistorySnapshot {
       currentRevisionId: "history-revision-1",
       version: 1,
       participants,
-      scoreRevisions: [{ id: "history-revision-1", revisionNumber: 1, winnerTeam: "A", games: [{ id: "history-game-1", scoreRevisionId: "history-revision-1", gameNumber: 1, teamAScore: 21, teamBScore: 18, winnerTeam: "A" }, { id: "history-game-2", scoreRevisionId: "history-revision-1", gameNumber: 2, teamAScore: 21, teamBScore: 19, winnerTeam: "A" }] }],
+      scoreRevisions: [
+        {
+          id: "history-revision-1",
+          revisionNumber: 1,
+          winnerTeam: "A",
+          games: [
+            {
+              id: "history-game-1",
+              scoreRevisionId: "history-revision-1",
+              gameNumber: 1,
+              teamAScore: 21,
+              teamBScore: 18,
+              winnerTeam: "A",
+            },
+            {
+              id: "history-game-2",
+              scoreRevisionId: "history-revision-1",
+              gameNumber: 2,
+              teamAScore: 21,
+              teamBScore: 19,
+              winnerTeam: "A",
+            },
+          ],
+        },
+      ],
     },
     {
       id: "history-match-2",
@@ -68,8 +118,29 @@ function historySnapshot(): HistorySnapshot {
       winnerTeam: "B",
       currentRevisionId: "history-revision-2",
       version: 1,
-      participants: participants.map((participant, index) => ({ ...participant, id: `history-match-2-participant-${index + 1}`, matchId: "history-match-2", team: participant.team === "A" ? "B" : "A" })),
-      scoreRevisions: [{ id: "history-revision-2", revisionNumber: 1, winnerTeam: "B", games: [{ id: "history-game-2-1", scoreRevisionId: "history-revision-2", gameNumber: 1, teamAScore: 18, teamBScore: 21, winnerTeam: "B" }] }],
+      participants: participants.map((participant, index) => ({
+        ...participant,
+        id: `history-match-2-participant-${index + 1}`,
+        matchId: "history-match-2",
+        team: participant.team === "A" ? "B" : "A",
+      })),
+      scoreRevisions: [
+        {
+          id: "history-revision-2",
+          revisionNumber: 1,
+          winnerTeam: "B",
+          games: [
+            {
+              id: "history-game-2-1",
+              scoreRevisionId: "history-revision-2",
+              gameNumber: 1,
+              teamAScore: 18,
+              teamBScore: 21,
+              winnerTeam: "B",
+            },
+          ],
+        },
+      ],
     },
   ];
   return snapshot;
@@ -88,18 +159,33 @@ async function mockHistoryApi(route: Route) {
   }
   const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
   if (path === "/auth/me") {
-    await route.fulfill({ json: { data: { user: { id: "account-1", username: "history-ui-test", role: "QUEUE_MASTER" }, csrfToken: "test-token" } }, headers });
+    await route.fulfill({
+      json: {
+        data: {
+          user: { id: "account-1", username: "history-ui-test", role: "QUEUE_MASTER" },
+          csrfToken: "test-token",
+        },
+      },
+      headers,
+    });
     return;
   }
   if (path === "/sync/snapshot") {
-    await route.fulfill({ json: { data: { snapshot: historySnapshot(), cloudRevision: 1 } }, headers });
+    await route.fulfill({
+      json: { data: { snapshot: historySnapshot(), cloudRevision: 1 } },
+      headers,
+    });
     return;
   }
   if (path === "/workspace/public-rankings") {
     await route.fulfill({ json: { data: { current: null, archives: [] } }, headers });
     return;
   }
-  await route.fulfill({ status: 404, json: { error: { message: "Unexpected History test request" } }, headers });
+  await route.fulfill({
+    status: 404,
+    json: { error: { message: "Unexpected History test request" } },
+    headers,
+  });
 }
 
 test.describe("History correction layout", () => {
@@ -119,7 +205,9 @@ test.describe("History correction layout", () => {
       typed += character;
       await expect(field).toBeFocused();
       await expect(field).toHaveValue(initialValue + typed);
-      expect(await field.evaluate((element, previous) => element === previous, original)).toBe(true);
+      expect(await field.evaluate((element, previous) => element === previous, original)).toBe(
+        true,
+      );
     }
   }
 
@@ -128,7 +216,9 @@ test.describe("History correction layout", () => {
     { name: "tablet", width: 768, height: 1024 },
     { name: "desktop", width: 1440, height: 900 },
   ]) {
-    test(`${viewport.name} history search keeps focus through query loading and empty results`, async ({ page }) => {
+    test(`${viewport.name} history search keeps focus through query loading and empty results`, async ({
+      page,
+    }) => {
       await page.setViewportSize(viewport);
       const search = page.getByRole("textbox", { name: "Search history by player name" });
       const matches = page.locator('[data-testid^="history-match-history-match-"]');
@@ -145,14 +235,18 @@ test.describe("History correction layout", () => {
       await expect(page.getByText("No matching games", { exact: true })).toBeVisible();
       await expect(matches).toHaveCount(0);
       await expect(search).toBeFocused();
-      expect(await search.evaluate((element, previous) => element === previous, original)).toBe(true);
+      expect(await search.evaluate((element, previous) => element === previous, original)).toBe(
+        true,
+      );
       await page.keyboard.press("ControlOrMeta+A");
       await page.keyboard.press("Backspace");
       await expect(matches).toHaveCount(2);
       await expect(search).toBeFocused();
     });
 
-    test(`${viewport.name} history correction textboxes retain focus while typing`, async ({ page }) => {
+    test(`${viewport.name} history correction textboxes retain focus while typing`, async ({
+      page,
+    }) => {
       await page.setViewportSize(viewport);
       const match = page.getByTestId("history-match-history-match-1");
       await match.getByTestId("history-match-toggle").click();
@@ -174,7 +268,9 @@ test.describe("History correction layout", () => {
       await match.getByRole("button", { name: "Edit players" }).focus();
       await page.keyboard.press("Enter");
       const playersDialog = page.getByRole("dialog", { name: "Correct the players" });
-      const playersReason = playersDialog.getByPlaceholder("Participant correction", { exact: true });
+      const playersReason = playersDialog.getByPlaceholder("Participant correction", {
+        exact: true,
+      });
       await playersReason.click();
       await typeWithoutRefocusing(page, playersReason, "Updated player assignment");
       await page.keyboard.press("Escape");
@@ -201,7 +297,9 @@ test.describe("History correction layout", () => {
     await expect(scoreDialog).toBeVisible();
     await expect(scoreDialog.locator("footer")).toBeVisible();
     await scoreDialog.getByRole("button", { name: "Save score correction" }).click();
-    await expect(scoreDialog.getByRole("alert")).toContainText("Enter a different score before saving.");
+    await expect(scoreDialog.getByRole("alert")).toContainText(
+      "Enter a different score before saving.",
+    );
     await scoreDialog.locator('input[aria-label*="game 1 score"]').nth(1).fill("19");
     await scoreDialog.getByRole("button", { name: "Save score correction" }).click();
     await expect(scoreDialog).toBeHidden();
@@ -212,7 +310,9 @@ test.describe("History correction layout", () => {
     await expect(playerDialog).toBeVisible();
     await expect(playerDialog.getByRole("combobox")).toHaveCount(4);
     await playerDialog.getByRole("button", { name: "Save player correction" }).click();
-    await expect(playerDialog.getByRole("alert")).toContainText("Choose a different lineup before saving.");
+    await expect(playerDialog.getByRole("alert")).toContainText(
+      "Choose a different lineup before saving.",
+    );
     await playerDialog.getByRole("button", { name: "Cancel" }).click();
     await expect(playerDialog).toBeHidden();
 
@@ -230,9 +330,14 @@ test.describe("History correction layout", () => {
     const dialog = page.getByRole("dialog", { name: "Correct the score" });
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("footer")).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Save score correction" })).toHaveCSS("min-height", "44px");
+    await expect(dialog.getByRole("button", { name: "Save score correction" })).toHaveCSS(
+      "min-height",
+      "44px",
+    );
     await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    );
     expect(overflow).toBe(false);
 
     const axe = await new AxeBuilder({ page }).analyze();

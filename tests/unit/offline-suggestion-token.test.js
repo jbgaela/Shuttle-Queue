@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeLocalSuggestion, persistedSuggestionKey } from "../../src/lib/offline/suggestion-token.ts";
+import {
+  decodeLocalSuggestion,
+  persistedSuggestionKey,
+} from "../../src/lib/offline/suggestion-token.ts";
 
 const payload = {
   algorithmVersion: "v11-guided-matchmaking-optimized-search",
@@ -24,7 +27,8 @@ test("offline Guided tokens decode with the canonical key and persisted key", ()
 test("offline token decoding rejects unknown fields, stale expiry, and invalid teams", () => {
   assert.throws(() => decodeLocalSuggestion(encode({ ...payload, extra: true })));
   assert.throws(() => decodeLocalSuggestion(encode({ ...payload, expiresAt: Date.now() - 1 })));
-  assert.throws(() => decodeLocalSuggestion(encode({ ...payload, teamB: ["a", "d"], key: "a,b|a,d" })));
+  assert.throws(() =>
+    decodeLocalSuggestion(encode({ ...payload, teamB: ["a", "d"], key: "a,b|a,d" })),
+  );
   assert.equal(persistedSuggestionKey(null, "encoded-token"), "encoded-token");
 });
-

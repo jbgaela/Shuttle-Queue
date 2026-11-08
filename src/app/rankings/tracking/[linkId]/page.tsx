@@ -4,5 +4,11 @@ import { RankingTrackingBoundary, RankingTrackingTable } from "@/components/rank
 
 export default function TrackingPage() {
   const { linkId } = useParams<{ linkId: string }>();
-  return <RankingTrackingBoundary>{(user) => <RankingTrackingTable key={`${user.id}:${linkId}`} linkId={linkId} ownerKey={user.id} />}</RankingTrackingBoundary>;
+  return (
+    <RankingTrackingBoundary>
+      {(user) => (
+        <RankingTrackingTable key={`${user.id}:${linkId}`} linkId={linkId} ownerKey={user.id} />
+      )}
+    </RankingTrackingBoundary>
+  );
 }

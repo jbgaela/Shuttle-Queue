@@ -35,7 +35,12 @@ export function snapshotCounts(snapshot: CloudSnapshotV2): SyncRecordCounts {
   };
 }
 
-export function createSyncPreview(local: CloudSnapshotV2, cloud: CloudSnapshotV2, cloudRevision: number, cloudChanged: boolean): SyncPreview {
+export function createSyncPreview(
+  local: CloudSnapshotV2,
+  cloud: CloudSnapshotV2,
+  cloudRevision: number,
+  cloudChanged: boolean,
+): SyncPreview {
   const removedPlayers = idsMissingFrom(cloud.players, local.players);
   const removedQueuePlayers = idsMissingFrom(cloud.queuePlayers, local.queuePlayers);
   const removedCourts = idsMissingFrom(cloud.courts, local.courts);
@@ -59,5 +64,12 @@ export function createSyncPreview(local: CloudSnapshotV2, cloud: CloudSnapshotV2
 }
 
 export function hasDestructiveSyncChanges(preview: SyncPreview) {
-  return preview.removed.players > 0 || preview.removed.queuePlayers > 0 || preview.removed.courts > 0 || preview.removed.matches > 0 || preview.removed.payments > 0 || preview.removed.feeConfig > 0;
+  return (
+    preview.removed.players > 0 ||
+    preview.removed.queuePlayers > 0 ||
+    preview.removed.courts > 0 ||
+    preview.removed.matches > 0 ||
+    preview.removed.payments > 0 ||
+    preview.removed.feeConfig > 0
+  );
 }

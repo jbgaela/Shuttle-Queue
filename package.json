@@ -23,7 +23,9 @@
     "test:visual": "playwright test tests/ui/visual.spec.ts --workers=1",
     "test:visual:update": "playwright test tests/ui/visual.spec.ts --update-snapshots",
     "test:ui-quality": "npm run test:responsive && npm run test:a11y && npm run test:workflows && npm run test:visual",
-    "test:ui:debug": "playwright test tests/ui --debug"
+    "test:ui:debug": "playwright test tests/ui --debug",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@hookform/resolvers": "5.7.1",
@@ -54,6 +56,7 @@
     "esbuild": "0.28.1",
     "eslint": "9.39.2",
     "eslint-config-next": "16.3.0",
+    "prettier": "3.9.10",
     "serwist": "9.5.12",
     "shadcn": "4.16.2",
     "tailwindcss": "4.3.3",

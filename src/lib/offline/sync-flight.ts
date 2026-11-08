@@ -1,4 +1,8 @@
-export function singleFlightByKey<T>(flights: Map<string, Promise<T>>, key: string, task: () => Promise<T>) {
+export function singleFlightByKey<T>(
+  flights: Map<string, Promise<T>>,
+  key: string,
+  task: () => Promise<T>,
+) {
   const existing = flights.get(key);
   if (existing) return existing;
   const flight = task().finally(() => {

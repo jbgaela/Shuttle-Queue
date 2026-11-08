@@ -15,10 +15,7 @@ type EdgeConfiguration = {
 };
 
 type ConfigurationFailureReason =
-  | "missing_secret"
-  | "short_secret"
-  | "missing_backend_url"
-  | "invalid_backend_url";
+  "missing_secret" | "short_secret" | "missing_backend_url" | "invalid_backend_url";
 
 declare const Netlify: {
   env: { get(name: string): string | undefined };
@@ -28,16 +25,9 @@ const encoder = new TextEncoder();
 const allowedMethods = new Set(["GET", "POST", "PATCH"]);
 
 const hex = (bytes: ArrayBuffer) =>
-  Array.from(new Uint8Array(bytes), (value) =>
-    value.toString(16).padStart(2, "0"),
-  ).join("");
+  Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
 
-function failure(
-  status: number,
-  code: string,
-  message: string,
-  requestId: string,
-) {
+function failure(status: number, code: string, message: string, requestId: string) {
   return Response.json(
     { error: { code, message }, requestId },
     { status, headers: { "Cache-Control": "no-store" } },
@@ -101,10 +91,7 @@ async function readBoundedBody(request: Request) {
   return body;
 }
 
-export default async function rankingVisitor(
-  request: Request,
-  context: EdgeContext,
-) {
+export default async function rankingVisitor(request: Request, context: EdgeContext) {
   const result = readConfiguration();
   if (result.reason) {
     console.error(
@@ -119,12 +106,7 @@ export default async function rankingVisitor(
   }
 
   if (!allowedMethods.has(request.method)) {
-    return failure(
-      405,
-      "METHOD_NOT_ALLOWED",
-      "Method not allowed.",
-      context.requestId,
-    );
+    return failure(405, "METHOD_NOT_ALLOWED", "Method not allowed.", context.requestId);
   }
   if (request.headers.get("content-encoding")) {
     return failure(
@@ -161,9 +143,7 @@ export default async function rankingVisitor(
       country: context.geo?.country?.name?.slice(0, 200) ?? null,
     }),
   );
-  const metadata = btoa(
-    Array.from(metadataBytes, (byte) => String.fromCharCode(byte)).join(""),
-  )
+  const metadata = btoa(Array.from(metadataBytes, (byte) => String.fromCharCode(byte)).join(""))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
@@ -180,12 +160,7 @@ export default async function rankingVisitor(
       "HMAC",
       key,
       encoder.encode(
-        [
-          request.method,
-          destination.pathname + destination.search,
-          digest,
-          metadata,
-        ].join("\n"),
+        [request.method, destination.pathname + destination.search, digest, metadata].join("\n"),
       ),
     ),
   );
@@ -216,9 +191,7 @@ export default async function rankingVisitor(
       headers: responseHeaders,
     });
   } catch {
-    console.error(
-      `[ranking-visitor] upstream_unavailable requestId=${context.requestId}`,
-    );
+    console.error(`[ranking-visitor] upstream_unavailable requestId=${context.requestId}`);
     return failure(
       503,
       "UPSTREAM_UNAVAILABLE",

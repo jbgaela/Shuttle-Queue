@@ -4,14 +4,21 @@ import path from "node:path";
 const testPort = process.env.UI_TEST_PORT ?? "3100";
 const baseURL = process.env.UI_TEST_BASE_URL ?? `http://127.0.0.1:${testPort}`;
 const frontendRoot = path.resolve(__dirname);
-const outputDir = process.env.UI_TEST_OUTPUT_DIR ?? path.join(process.env.TEMP ?? ".", "badminton-queue-test-artifacts");
-const reportDir = process.env.UI_TEST_REPORT_DIR ?? path.join(process.env.TEMP ?? ".", "badminton-queue-playwright-report");
+const outputDir =
+  process.env.UI_TEST_OUTPUT_DIR ??
+  path.join(process.env.TEMP ?? ".", "badminton-queue-test-artifacts");
+const reportDir =
+  process.env.UI_TEST_REPORT_DIR ??
+  path.join(process.env.TEMP ?? ".", "badminton-queue-playwright-report");
 const serverMode = process.env.UI_TEST_SERVER_MODE ?? "dev";
-const nextBinary = process.platform === "win32" ? ".\\node_modules\\.bin\\next.cmd" : "node_modules/.bin/next";
-const serverCommand = serverMode === "production"
-  ? `${nextBinary} start --hostname 127.0.0.1 --port ${testPort}`
-  : `${nextBinary} dev --webpack --hostname 127.0.0.1 --port ${testPort}`;
-const distDir = process.env.UI_TEST_DIST_DIR ?? (serverMode === "production" ? ".next" : ".next-ui-test");
+const nextBinary =
+  process.platform === "win32" ? ".\\node_modules\\.bin\\next.cmd" : "node_modules/.bin/next";
+const serverCommand =
+  serverMode === "production"
+    ? `${nextBinary} start --hostname 127.0.0.1 --port ${testPort}`
+    : `${nextBinary} dev --webpack --hostname 127.0.0.1 --port ${testPort}`;
+const distDir =
+  process.env.UI_TEST_DIST_DIR ?? (serverMode === "production" ? ".next" : ".next-ui-test");
 
 export default defineConfig({
   testDir: "./tests/ui",

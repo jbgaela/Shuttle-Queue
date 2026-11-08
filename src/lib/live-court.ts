@@ -1,5 +1,9 @@
 function pretty(value: string) {
-  return value.toLowerCase().split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
+  return value
+    .toLowerCase()
+    .split("_")
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 export type PlayerGenderKind = "MALE" | "FEMALE" | "NEUTRAL";

@@ -1,12 +1,21 @@
 import type { PublicRankingPublication, PublicRankingPublicationResponse } from "./api";
 
-const emptyPublicRankingPublications: PublicRankingPublicationResponse = { current: null, archives: [] };
+const emptyPublicRankingPublications: PublicRankingPublicationResponse = {
+  current: null,
+  archives: [],
+};
 
-export function visiblePublicRankingPublication(response: PublicRankingPublicationResponse | undefined, optimistic: PublicRankingPublication | null): PublicRankingPublication | null {
+export function visiblePublicRankingPublication(
+  response: PublicRankingPublicationResponse | undefined,
+  optimistic: PublicRankingPublication | null,
+): PublicRankingPublication | null {
   return response?.current ?? optimistic;
 }
 
-export function publishedPublicRankingState(previous: PublicRankingPublicationResponse | undefined, publication: PublicRankingPublication): PublicRankingPublicationResponse {
+export function publishedPublicRankingState(
+  previous: PublicRankingPublicationResponse | undefined,
+  publication: PublicRankingPublication,
+): PublicRankingPublicationResponse {
   const current = previous ?? emptyPublicRankingPublications;
   return {
     current: publication,
@@ -14,7 +23,10 @@ export function publishedPublicRankingState(previous: PublicRankingPublicationRe
   };
 }
 
-export function revokedPublicRankingState(previous: PublicRankingPublicationResponse | undefined, publication: PublicRankingPublication): PublicRankingPublicationResponse {
+export function revokedPublicRankingState(
+  previous: PublicRankingPublicationResponse | undefined,
+  publication: PublicRankingPublication,
+): PublicRankingPublicationResponse {
   const current = previous ?? emptyPublicRankingPublications;
   return {
     current: current.current?.id === publication.id ? null : current.current,

@@ -4,8 +4,15 @@ import { mockGuidedApi } from "./guided-fixtures";
 
 test.use({ serviceWorkers: "block" });
 
-test("the signed-out entry screen exposes a labelled, keyboard-accessible sign-in form", async ({ page }) => {
-  await page.route("**/api/v2/auth/me", (route) => route.fulfill({ status: 401, json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } } }));
+test("the signed-out entry screen exposes a labelled, keyboard-accessible sign-in form", async ({
+  page,
+}) => {
+  await page.route("**/api/v2/auth/me", (route) =>
+    route.fulfill({
+      status: 401,
+      json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } },
+    }),
+  );
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Badminton Queueing System" })).toBeVisible();
   await expect(page.getByLabel("Username")).toBeVisible();
@@ -27,7 +34,9 @@ test("the signed-out entry screen exposes a labelled, keyboard-accessible sign-i
   expect(results.violations).toEqual([]);
 });
 
-test("the signed-in Guided queue exposes counts, banner semantics, and keyboard focus", async ({ page }) => {
+test("the signed-in Guided queue exposes counts, banner semantics, and keyboard focus", async ({
+  page,
+}) => {
   await page.route("**/api/v2/**", mockGuidedApi);
   await page.goto("/");
   await page.getByRole("button", { name: "Queue" }).click();
@@ -40,7 +49,9 @@ test("the signed-in Guided queue exposes counts, banner semantics, and keyboard 
   await expect(mode).toHaveAttribute("aria-describedby", "guided-mode-help");
   await expect(page.locator("#guided-mode-help")).toContainText("Ready: 2 learners / 2 guides");
   await banner.getByRole("button", { name: "Generate Guided lineup" }).click();
-  await expect.poll(() => page.evaluate(() => document.activeElement?.id ?? "")).toMatch(/matchmaker-heading|guided-(suggestion|no-match)-result/);
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.id ?? ""))
+    .toMatch(/matchmaker-heading|guided-(suggestion|no-match)-result/);
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations.filter((violation) => violation.impact === "critical")).toEqual([]);
