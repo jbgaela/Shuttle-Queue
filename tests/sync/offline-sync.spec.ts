@@ -233,6 +233,208 @@ test("offline match and player work remains available in history, rankings, and 
   await expect(page.getByText("Offline UI player", { exact: true })).toBeVisible();
 });
 
+test("offline visible controls correct scores, cancel matches, collect payments, and check players in and out", async ({
+  page,
+  context,
+}, info) => {
+  await login(page, `browser-${info.project.name}-ui-offline-controls`);
+  const setup = await page.evaluate(async () => {
+    const accountId = await window.syncTest.repository.currentAccountId();
+    const snapshot = (await window.syncTest.database.readSnapshot(accountId))!;
+    const queuePlayers = snapshot.queuePlayers;
+    const lockedPlayerIds = new Set(snapshot.synergyTeams![0]!.queuePlayerIds);
+    const unpairedPlayerIds = queuePlayers
+      .filter((player) => !lockedPlayerIds.has(player.id))
+      .map((player) => player.id);
+    const team = (start: number): [string, string] => [
+      unpairedPlayerIds[start]!,
+      unpairedPlayerIds[start + 1]!,
+    ];
+    return {
+      completedTeamA: snapshot.synergyTeams![0]!.queuePlayerIds,
+      completedTeamB: team(0),
+      queuedCancelTeamA: team(2),
+      queuedCancelTeamB: team(4),
+      playingCancelTeamA: team(6),
+      playingCancelTeamB: team(8),
+      courtId: snapshot.courts[0]!.id,
+      paymentPlayerId: unpairedPlayerIds[9]!,
+      paymentPlayerName: queuePlayers.find((player) => player.id === unpairedPlayerIds[9]!)!
+        .displayName,
+    };
+  });
+  const createManualMatch = (teamA: string[], teamB: string[]) =>
+    page.evaluate(
+      ({ teamA, teamB }) => window.syncTest.api.createManualMatch("workspace", { teamA, teamB }),
+      { teamA, teamB },
+    );
+  const completedMatch = await createManualMatch(setup.completedTeamA, setup.completedTeamB);
+  const queuedMatch = await createManualMatch(setup.queuedCancelTeamA, setup.queuedCancelTeamB);
+  const playingMatch = await createManualMatch(setup.playingCancelTeamA, setup.playingCancelTeamB);
+  expect(["clean", "uploaded"]).toContain((await sync(page)).state);
+  await page.reload();
+  await expect(page.getByTestId("offline-workspace-ready")).toBeAttached();
+  await bridge(page);
+
+  const completedCourtSelect = page.locator(`#queued-court-${completedMatch.id}`);
+  await completedCourtSelect.selectOption(setup.courtId);
+  const completedQueuedCard = completedCourtSelect.locator("xpath=../..");
+  await completedQueuedCard.getByRole("button", { name: "Start match", exact: true }).click();
+  await expect(page.getByText("Queued match started.", { exact: true })).toBeVisible();
+  expect(["clean", "uploaded"]).toContain((await sync(page)).state);
+
+  await context.setOffline(true);
+  await page.getByRole("button", { name: "Enter final score", exact: true }).click();
+  const scoreDialog = page.getByRole("dialog", { name: "Record the score" });
+  await scoreDialog
+    .getByLabel(/game 1 score$/)
+    .nth(0)
+    .fill("31");
+  await scoreDialog
+    .getByLabel(/game 1 score$/)
+    .nth(1)
+    .fill("12");
+  await scoreDialog.getByRole("button", { name: "Confirm final score" }).click();
+  await expect(
+    page.getByText("Result saved. Court is available again.", { exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  const historyMatch = page.getByTestId(`history-match-${completedMatch.id}`);
+  await expect(historyMatch).toBeVisible();
+  await historyMatch.getByTestId("history-match-toggle").click();
+  await historyMatch.getByRole("button", { name: "Edit score", exact: true }).click();
+  const correctionDialog = page.getByRole("dialog", { name: "Correct the score" });
+  await correctionDialog
+    .getByLabel(/game 1 score$/)
+    .nth(0)
+    .fill("31");
+  await correctionDialog
+    .getByLabel(/game 1 score$/)
+    .nth(1)
+    .fill("17");
+  await correctionDialog.getByPlaceholder("Score correction").fill("Offline visible correction");
+  await correctionDialog.getByRole("button", { name: "Save score correction" }).click();
+  await expect(page.getByText("Score correction saved.", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Live", exact: true }).click();
+  const queuedCancelSelect = page.locator(`#queued-court-${queuedMatch.id}`);
+  const queuedCancelCard = queuedCancelSelect.locator("xpath=../..");
+  await expect(queuedCancelCard).toBeVisible();
+  await queuedCancelCard.getByRole("button", { name: "Discard matchup", exact: true }).click();
+  const queuedCancelDialog = page.getByRole("dialog", { name: "Discard this matchup?" });
+  await queuedCancelDialog.getByRole("button", { name: "Discard match", exact: true }).click();
+  await expect(page.getByText("Matchup discarded.", { exact: true })).toBeVisible();
+
+  const playingCancelSelect = page.locator(`#queued-court-${playingMatch.id}`);
+  const playingCancelCard = playingCancelSelect.locator("xpath=../..");
+  await expect(playingCancelCard).toBeVisible();
+  await playingCancelSelect.selectOption(setup.courtId);
+  await playingCancelCard.getByRole("button", { name: "Start match", exact: true }).click();
+  await expect(page.getByText("Queued match started.", { exact: true }).last()).toBeVisible();
+  await page.getByRole("button", { name: "Cancel match", exact: true }).click();
+  const playingCancelDialog = page.getByRole("dialog", { name: "Discard this matchup?" });
+  await playingCancelDialog.getByRole("button", { name: "Discard match", exact: true }).click();
+  await expect(page.getByText("Matchup discarded.", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check out", exact: true }).nth(1)).toBeEnabled();
+  await page.getByRole("button", { name: "Check out", exact: true }).nth(1).click();
+  await expect
+    .poll(async () =>
+      (await local(page)).snapshot!.queuePlayers.some((player) => player.status === "CHECKED_OUT"),
+    )
+    .toBe(true);
+  const checkedOutState = await local(page);
+  const checkedOutPlayer = checkedOutState.snapshot!.queuePlayers.find(
+    (player) => player.status === "CHECKED_OUT",
+  )!;
+  expect(checkedOutState.meta?.dirty).toBe(true);
+  await page.getByRole("button", { name: /^Not checked in/ }).click();
+  await expect(page.getByRole("button", { name: /^Not checked in 1$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check in", exact: true }).nth(1)).toBeEnabled();
+  await page.getByRole("button", { name: "Check in", exact: true }).nth(1).click();
+  await expect(page.getByRole("button", { name: /^Waiting 12$/ })).toBeVisible();
+  await expect
+    .poll(
+      async () =>
+        (await local(page)).snapshot!.queuePlayers.find(
+          (player) => player.id === checkedOutPlayer.id,
+        )?.status,
+    )
+    .toBe("WAITING");
+  const checkedInState = await local(page);
+  expect(
+    checkedInState.snapshot!.queuePlayers.find((player) => player.id === checkedOutPlayer.id),
+  ).toMatchObject({ status: "WAITING", checkedOutAt: null });
+  expect(
+    checkedInState.snapshot!.queuePlayers.find((player) => player.id === checkedOutPlayer.id)
+      ?.checkedInAt,
+  ).toBeTruthy();
+
+  await page.getByRole("button", { name: "Fees", exact: true }).click();
+  const paymentCard = page.getByTestId("log-payment-card");
+  const paymentPlayer = paymentCard.getByRole("combobox", { name: "Player" });
+  await paymentPlayer.click();
+  await page
+    .getByRole("listbox", { name: "Payable players" })
+    .getByRole("option", { name: new RegExp(setup.paymentPlayerName) })
+    .click();
+  await paymentCard.getByRole("textbox", { name: "Amount", exact: true }).fill("12.50");
+  await paymentCard.getByRole("button", { name: "Record collection", exact: true }).click();
+  await expect(page.getByText("Payment recorded.", { exact: true })).toBeVisible();
+
+  const offline = await local(page);
+  expect(offline.meta?.dirty).toBe(true);
+  const correctedMatch = offline.snapshot!.matches.find((match) => match.id === completedMatch.id)!;
+  expect(correctedMatch.status).toBe("COMPLETED");
+  expect(correctedMatch.scoreRevisions.at(-1)?.games[0]).toMatchObject({
+    teamAScore: 31,
+    teamBScore: 17,
+  });
+  expect(correctedMatch.scoreRevisions.at(-1)?.reason).toBe("Offline visible correction");
+  expect(offline.snapshot!.matches.find((match) => match.id === queuedMatch.id)?.status).toBe(
+    "CANCELLED",
+  );
+  expect(offline.snapshot!.matches.find((match) => match.id === playingMatch.id)?.status).toBe(
+    "CANCELLED",
+  );
+  expect(offline.snapshot!.courts.find((court) => court.id === setup.courtId)?.status).toBe(
+    "AVAILABLE",
+  );
+  expect(
+    offline.snapshot!.payments.filter(
+      (payment) => payment.queuePlayerId === setup.paymentPlayerId && payment.amountMinor === 1250,
+    ),
+  ).toHaveLength(1);
+
+  await context.setOffline(false);
+  expect(["clean", "uploaded"]).toContain((await sync(page)).state);
+  const remote = (await cloud(page)).snapshot as NonNullable<typeof offline.snapshot>;
+  expect(
+    remote.matches.find((match) => match.id === completedMatch.id)?.scoreRevisions.at(-1),
+  ).toMatchObject({
+    reason: "Offline visible correction",
+    games: [{ teamAScore: 31, teamBScore: 17 }],
+  });
+  expect(remote.matches.find((match) => match.id === queuedMatch.id)?.status).toBe("CANCELLED");
+  expect(remote.matches.find((match) => match.id === playingMatch.id)?.status).toBe("CANCELLED");
+  expect(
+    remote.payments.filter(
+      (payment) => payment.queuePlayerId === setup.paymentPlayerId && payment.amountMinor === 1250,
+    ),
+  ).toHaveLength(1);
+  expect(remote.queuePlayers.find((player) => player.id === checkedOutPlayer.id)).toMatchObject({
+    status: "WAITING",
+    checkedOutAt: null,
+  });
+  expect(
+    remote.queuePlayers.find((player) => player.id === checkedOutPlayer.id)?.checkedInAt,
+  ).toBeTruthy();
+  await assertPersisted(page);
+});
+
 test("a held cloud request times out while visible offline edits still save", async ({
   page,
   context,
