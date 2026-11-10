@@ -1,6 +1,10 @@
+import { routeApi } from "./api-fixture";
 import { expect, test, type Route } from "@playwright/test";
 
-test.use({ serviceWorkers: "block" });
+test.beforeEach(async ({ context }) => {
+  await context.grantPermissions(["geolocation"]);
+  await context.setGeolocation({ latitude: 14.6, longitude: 121 });
+});
 
 const TABLET_VIEWPORTS = [
   { name: "portrait", width: 744, height: 1133 },
@@ -686,6 +690,20 @@ async function mockPublicRankingApi(route: Route) {
     return;
   }
   const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
+  if (/^\/public\/rankings\/(public-token|empty-token)\/visits(?:\/location)?$/.test(path)) {
+    const granted = path.endsWith("/location");
+    await route.fulfill({
+      json: {
+        data: {
+          visitId: route.request().headers()["x-ranking-visit-key"],
+          status: granted ? "GRANTED" : "PENDING",
+          accessExpiresAt: granted ? new Date(Date.now() + 3600_000).toISOString() : null,
+        },
+      },
+      headers: corsHeaders,
+    });
+    return;
+  }
   if (path === "/public/rankings/public-token" || path === "/public/rankings/empty-token") {
     const rankings = path.endsWith("empty-token")
       ? []
@@ -860,7 +878,7 @@ test.describe("tablet Live court layout", () => {
   for (const viewport of TABLET_VIEWPORTS) {
     test(`${viewport.name} shows four courts above the fold`, async ({ page }) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.route("**/api/v2/**", mockLiveApi);
+      await routeApi(page, "**/api/v2/**", mockLiveApi);
       await page.goto("/");
       await expect(page.getByRole("heading", { name: "Courts at a glance." })).toBeVisible();
       await expectTabletGrid(page, viewport);
@@ -906,7 +924,7 @@ test.describe("responsive regressions", () => {
     guidedUiState.suggestionRequests = 0;
     guidedUiState.matchCreationRequests = 0;
     await page.setViewportSize({ width: 1024, height: 768 });
-    await page.route("**/api/v2/**", (route) => mockQueueApi(route, guidedQueueLayoutSnapshot));
+    await routeApi(page, "**/api/v2/**", (route) => mockQueueApi(route, guidedQueueLayoutSnapshot));
     await page.goto("/");
     await page.getByRole("button", { name: "Queue" }).click();
     await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();
@@ -922,7 +940,7 @@ test.describe("responsive regressions", () => {
 
   test("mobile keeps one column and full action labels", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockLiveApi);
+    await routeApi(page, "**/api/v2/**", mockLiveApi);
     await page.goto("/");
     const cards = page.getByTestId("live-court-card");
     await expect(cards).toHaveCount(4);
@@ -938,7 +956,7 @@ test.describe("responsive regressions", () => {
 
   test("desktop keeps the existing two-column card sizing and labels", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.route("**/api/v2/**", mockLiveApi);
+    await routeApi(page, "**/api/v2/**", mockLiveApi);
     await page.goto("/");
     const cards = page.getByTestId("live-court-card");
     await expect(cards).toHaveCount(4);
@@ -959,7 +977,7 @@ test.describe("responsive regressions", () => {
       page,
     }) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.route("**/api/v2/**", mockQueueApi);
+      await routeApi(page, "**/api/v2/**", mockQueueApi);
       await page.goto("/");
       await page.getByRole("button", { name: "Queue" }).click();
       await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();
@@ -998,7 +1016,7 @@ test.describe("responsive regressions", () => {
       page,
     }) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.route("**/api/v2/**", mockFeesApi);
+      await routeApi(page, "**/api/v2/**", mockFeesApi);
       await page.goto("/");
       await page.getByRole("button", { name: "Fees" }).click();
       await expect(page.getByRole("heading", { name: "Log a payment." })).toBeVisible();
@@ -1043,7 +1061,7 @@ test.describe("responsive regressions", () => {
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockFeesApi);
+    await routeApi(page, "**/api/v2/**", mockFeesApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Fees" }).click();
     const control = page.getByTestId("no-show-penalty-control");
@@ -1062,7 +1080,7 @@ test.describe("responsive regressions", () => {
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockFeesApi);
+    await routeApi(page, "**/api/v2/**", mockFeesApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Fees" }).click();
     const card = page.getByTestId("log-payment-card");
@@ -1113,7 +1131,7 @@ test.describe("responsive regressions", () => {
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
@@ -1127,7 +1145,7 @@ test.describe("responsive regressions", () => {
   test("publishing uses the authoritative cloud workspace version", async ({ page }) => {
     resetRankingApiState();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
@@ -1145,7 +1163,7 @@ test.describe("responsive regressions", () => {
     resetRankingApiState();
     rankingApiState.publishConflictsRemaining = 1;
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
@@ -1159,14 +1177,17 @@ test.describe("responsive regressions", () => {
     resetRankingApiState();
     rankingApiState.cloudStartedAt = "2026-01-01T00:00:00.000Z";
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     await page.getByRole("button", { name: "Publish this session" }).click();
-    await expect(page.locator("main").getByRole("alert")).toContainText(
-      "session changed on another device",
-    );
+    await expect(
+      page
+        .locator("main")
+        .getByRole("alert")
+        .filter({ hasText: "session changed on another device" }),
+    ).toContainText("session changed on another device");
     expect(rankingApiState.publishedVersions).toEqual([]);
   });
 
@@ -1174,14 +1195,14 @@ test.describe("responsive regressions", () => {
     resetRankingApiState();
     rankingApiState.cloudVersion = null;
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     await page.getByRole("button", { name: "Publish this session" }).click();
-    await expect(page.locator("main").getByRole("alert")).toContainText(
-      "version could not be verified",
-    );
+    await expect(
+      page.locator("main").getByRole("alert").filter({ hasText: "version could not be verified" }),
+    ).toContainText("version could not be verified");
     expect(rankingApiState.publishedVersions).toEqual([]);
   });
 
@@ -1191,7 +1212,7 @@ test.describe("responsive regressions", () => {
     resetRankingApiState();
     rankingApiState.revokePublications = true;
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
@@ -1222,7 +1243,7 @@ test.describe("responsive regressions", () => {
     rankingApiState.revokePublications = true;
     rankingApiState.revokeFailure = "VERSION_CONFLICT";
     await page.setViewportSize({ width: 744, height: 1133 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
@@ -1246,7 +1267,7 @@ test.describe("responsive regressions", () => {
 
   test("signed-in ranking history shows duration and participant summaries", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockRankingApi);
+    await routeApi(page, "**/api/v2/**", mockRankingApi);
     await page.goto("/");
     await page.getByRole("button", { name: "Rankings" }).click();
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
@@ -1279,7 +1300,7 @@ test.describe("responsive regressions", () => {
 
   test("public rankings omit prize labels and keep compact no-game players", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await routeApi(page, "**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/public-token");
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     const earlyRow = page.getByRole("button").filter({ hasText: "Early Player" });
@@ -1315,7 +1336,7 @@ test.describe("responsive regressions", () => {
 
   test("public ranking history shows player stats only after expanding a row", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await routeApi(page, "**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/public-token");
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     const playedRow = page.getByRole("button").filter({ hasText: "Played Player" });
@@ -1348,7 +1369,7 @@ test.describe("responsive regressions", () => {
   });
 
   test("public rankings can save the current leaderboard to the device", async ({ page }) => {
-    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await routeApi(page, "**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/public-token");
     const saveButton = page.getByRole("button", { name: "Save to device" });
     await expect(saveButton).toBeVisible();
@@ -1360,7 +1381,7 @@ test.describe("responsive regressions", () => {
   });
 
   test("public rankings disable saving when the leaderboard is empty", async ({ page }) => {
-    await page.route("**/api/v2/**", mockPublicRankingApi);
+    await routeApi(page, "**/api/v2/**", mockPublicRankingApi);
     await page.goto("/rankings/shared/empty-token");
     await expect(page.getByRole("button", { name: "Save to device" })).toBeDisabled();
   });

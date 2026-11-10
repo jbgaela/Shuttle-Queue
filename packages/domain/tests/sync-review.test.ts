@@ -51,6 +51,35 @@ test("three-way merges independent fields but requires review for the same field
   assert.equal(resolved.conflicts.length, 0);
   assert.equal(resolved.snapshot.players[0]!.displayName, "Alice Local");
 });
+test("match participant ordering does not create a false review conflict", () => {
+  const base = fixture(),
+    local = fixture(),
+    cloud = fixture();
+  const match: CloudSnapshotV2["matches"][number] = {
+    id: "match",
+    status: "QUEUED",
+    source: "MANUAL",
+    pointsToWin: 21,
+    winBy: 2,
+    scoreCap: null,
+    bestOf: 1,
+    queuedAt: "2026-01-01T00:00:00.000Z",
+    version: 1,
+    participants: [
+      { id: "participant-a", matchId: "match", queuePlayerId: "queue-a", team: "A", teamSlot: 1 },
+      { id: "participant-b", matchId: "match", queuePlayerId: "queue-b", team: "B", teamSlot: 1 },
+    ],
+    scoreRevisions: [],
+  };
+  base.matches = [match];
+  cloud.matches = [{ ...match, participants: [...match.participants].reverse() }];
+  local.matches = [{ ...match, status: "IN_PROGRESS", startedAt: "2026-01-01T00:01:00.000Z" }];
+
+  const merged = reviewSyncSnapshots(local, cloud, base);
+
+  assert.equal(merged.conflicts.length, 0);
+  assert.equal(merged.snapshot.matches[0]!.status, "IN_PROGRESS");
+});
 test("delete versus edit remains reviewable and an unchanged deletion stays deleted", () => {
   const base = fixture(),
     local = fixture(),

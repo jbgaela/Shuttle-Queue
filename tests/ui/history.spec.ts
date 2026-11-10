@@ -1,8 +1,7 @@
+import { routeApi } from "./api-fixture";
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { guidedSnapshot } from "./guided-fixtures";
-
-test.use({ serviceWorkers: "block" });
 
 type HistorySnapshot = ReturnType<typeof guidedSnapshot> & {
   matches: Array<Record<string, unknown>>;
@@ -190,7 +189,7 @@ async function mockHistoryApi(route: Route) {
 
 test.describe("History correction layout", () => {
   test.beforeEach(async ({ page }) => {
-    await page.route("**/api/v2/**", mockHistoryApi);
+    await routeApi(page, "**/api/v2/**", mockHistoryApi);
     await page.goto("/");
     await page.getByRole("button", { name: "History" }).click();
     await expect(page.getByRole("heading", { name: "The queue log." })).toBeVisible();

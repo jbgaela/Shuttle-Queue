@@ -17,7 +17,7 @@ export default defineConfig({
     serviceWorkers: "allow",
     locale: "en-US",
     timezoneId: "Asia/Manila",
-    trace: "retain-on-failure",
+    trace: "on",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
   },

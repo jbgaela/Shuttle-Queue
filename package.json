@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "npm run build:domain && next dev",
     "build:domain": "tsc -p packages/domain/tsconfig.json",
-    "build": "npm run build:domain && next build --webpack",
+    "build": "npm run build:domain && node scripts/prepare-offline-build.mjs && next build --webpack",
     "start": "next start",
     "typecheck": "npm run build:domain && tsc -p tsconfig.json --noEmit",
     "lint": "eslint src tests netlify playwright.config.ts next.config.ts --ext .ts,.tsx",

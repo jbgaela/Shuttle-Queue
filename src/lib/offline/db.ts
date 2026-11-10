@@ -39,6 +39,7 @@ type SnapshotRow = {
   pendingUpload?: SnapshotUploadBatch | undefined;
   metadata?: SyncMetadata;
   updatedAt: string;
+  readinessProbe?: string;
 };
 
 export type SnapshotUploadBatch = {

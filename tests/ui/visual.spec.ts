@@ -1,6 +1,6 @@
+import { routeApi } from "./api-fixture";
 import { expect, test } from "@playwright/test";
 
-test.use({ serviceWorkers: "block" });
 test.skip(
   ({ browserName }) => browserName !== "chromium",
   "Visual workflow is intentionally Chromium-only.",
@@ -15,7 +15,7 @@ for (const viewport of [
   test(`the entry screen remains usable at ${viewport.width}x${viewport.height}`, async ({
     page,
   }) => {
-    await page.route("**/api/v2/auth/me", async (route) => {
+    await routeApi(page, "**/api/v2/auth/me", async (route) => {
       await route.fulfill({
         status: 401,
         json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } },

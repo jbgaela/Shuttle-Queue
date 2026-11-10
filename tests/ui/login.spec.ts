@@ -1,8 +1,8 @@
+import { routeApi } from "./api-fixture";
 import { expect, test } from "@playwright/test";
 
-test.use({ serviceWorkers: "block" });
 test.beforeEach(async ({ page }) => {
-  await page.route("**/api/v2/auth/me", (route) =>
+  await routeApi(page, "**/api/v2/auth/me", (route) =>
     route.fulfill({
       status: 401,
       json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } },
@@ -21,7 +21,7 @@ for (const viewport of [
     page,
   }) => {
     await page.setViewportSize(viewport);
-    await page.route("**/api/v2/auth/login", (route) =>
+    await routeApi(page, "**/api/v2/auth/login", (route) =>
       route.fulfill({
         status: 400,
         json: {
@@ -65,7 +65,7 @@ test("password visibility preserves input and pending submission prevents duplic
     release = resolve;
   });
   let submissions = 0;
-  await page.route("**/api/v2/auth/login", async (route) => {
+  await routeApi(page, "**/api/v2/auth/login", async (route) => {
     submissions += 1;
     await pending;
     await route.fulfill({ status: 400, json: { error: { message: "Invalid credentials." } } });

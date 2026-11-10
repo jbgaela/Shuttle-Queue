@@ -94,6 +94,12 @@ import {
   syncAccount,
   type SyncPreview,
 } from "@/lib/offline/repository";
+import {
+  assertOfflineDeviceCapabilities,
+  prepareOfflineUi,
+  verifyAccountData,
+  type OfflinePreparationProgress,
+} from "@/lib/offline/readiness";
 import { liveCourtStatusLabel, participantSkillLabel, playerGenderLabel } from "@/lib/live-court";
 import { SyncConflictReview } from "@/components/sync-conflict-review";
 import { PlayerGenderIcon } from "@/components/player-gender-icon";
@@ -806,34 +812,140 @@ function OfflineBootstrap({
 }) {
   const queryClient = useQueryClient();
   const [ready, setReady] = useState(false);
+  const [progress, setProgress] = useState<OfflinePreparationProgress>({
+    stage: "checking-device",
+  });
   const [error, setError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
+  const [updatePending, setUpdatePending] = useState(false);
+  const [cloudPending, setCloudPending] = useState(false);
+  const [reloadRequired, setReloadRequired] = useState(false);
+  const accountChanged = useRef(false);
+  const attemptController = useRef<AbortController | null>(null);
   useEffect(() => onAuthRequired(() => onSessionRequired()), [onSessionRequired]);
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    let timedOut = false;
+    accountChanged.current = false;
+    const controller = new AbortController();
+    attemptController.current = controller;
+    let attemptTimer = 0;
+    const notify = (next: OfflinePreparationProgress) => {
+      if (!cancelled && !timedOut && !accountChanged.current) setProgress(next);
+    };
+    const prepare = async () => {
+      setReady(false);
+      setError(null);
+      setReloadRequired(false);
+      setUpdatePending(false);
+      setCloudPending(false);
+      notify({ stage: "checking-device" });
+      const buildId = process.env.NEXT_PUBLIC_OFFLINE_BUILD_ID ?? "";
+      if (!buildId)
+        throw new Error("This app build has no offline version identifier. Rebuild and retry.");
+
+      assertOfflineDeviceCapabilities();
+      notify({ stage: "preparing-ui" });
+      const ui = await prepareOfflineUi(buildId, (counts) =>
+        notify({ stage: "preparing-ui", ...counts }),
+      );
+      if (cancelled || timedOut || accountChanged.current) return;
+      setUpdatePending(ui.updatePending);
+
+      notify({ stage: "preparing-account" });
       await saveProfile({
         accountId: user.id,
         username: user.username,
         role: user.role,
         updatedAt: new Date().toISOString(),
       });
-      try {
-        await syncAccount(user.id);
-        queryClient.invalidateQueries();
-      } catch (reason) {
-        if (isAuthRequired(reason)) onSessionRequired();
-        else if (!(await hasSnapshot(user.id))) {
-          if (!cancelled) setError(errorMessage(reason));
-          return;
+      if (cancelled || timedOut || accountChanged.current) return;
+      let syncState: "synced" | "pending" = "pending";
+      if (navigator.onLine) {
+        try {
+          const result = await syncAccount(user.id, "background", {
+            signal: controller.signal,
+          });
+          syncState = result.state === "pending" ? "pending" : "synced";
+        } catch (reason) {
+          if (isAuthRequired(reason)) onSessionRequired();
+          if (!(await hasSnapshot(user.id))) throw reason;
         }
+      } else {
+        await syncAccount(user.id);
       }
-      if (!cancelled) setReady(true);
-    })();
+      if (!(await hasSnapshot(user.id)))
+        throw new Error(
+          "This account has no saved offline queue. Connect and retry to download it.",
+        );
+      if (cancelled || timedOut || accountChanged.current) return;
+      queryClient.invalidateQueries();
+
+      notify({ stage: "verifying" });
+      const storage = await verifyAccountData(user.id);
+      if (cancelled || timedOut || accountChanged.current) return;
+      setProgress({ stage: "verifying", persistentStorage: storage.persistentStorage });
+      setCloudPending(syncState === "pending");
+      setReady(true);
+    };
+    const timeout = new Promise<never>((_resolve, reject) => {
+      attemptTimer = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new Error("Offline preparation took too long. Check your connection and retry."));
+      }, 120_000);
+    });
+    void Promise.race([prepare(), timeout])
+      .catch((reason: unknown) => {
+        if (cancelled || accountChanged.current) return;
+        setError(errorMessage(reason));
+        setProgress({ stage: "blocked" });
+        if (isAuthRequired(reason)) onSessionRequired();
+      })
+      .finally(() => window.clearTimeout(attemptTimer));
     return () => {
       cancelled = true;
+      controller.abort();
+      if (attemptController.current === controller) attemptController.current = null;
+      window.clearTimeout(attemptTimer);
     };
-  }, [user, queryClient, onSessionRequired]);
+  }, [user.id, user.username, user.role, queryClient, onSessionRequired, retryToken]);
   useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      setReady(false);
+      setRetryToken((current) => current + 1);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key !== "shuttle-queue-current-account" ||
+        (event.newValue === user.id && event.oldValue === user.id)
+      )
+        return;
+      accountChanged.current = true;
+      attemptController.current?.abort();
+      setReady(false);
+      setReloadRequired(true);
+      setError(
+        "The account changed in another tab. Reload this tab to continue; this account's saved work is preserved.",
+      );
+      setProgress({ stage: "blocked" });
+    };
+    const onPersistence = (event: Event) => {
+      const granted = (event as CustomEvent<boolean>).detail;
+      setProgress((current) => ({ ...current, persistentStorage: granted }));
+    };
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("shuttle-queue-storage-persistence", onPersistence);
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("shuttle-queue-storage-persistence", onPersistence);
+    };
+  }, [user.id]);
+  useEffect(() => {
+    if (!ready) return;
     const attempt = () => {
       if (!navigator.onLine) return;
       void syncAccount(user.id)
@@ -853,8 +965,9 @@ function OfflineBootstrap({
       document.removeEventListener("visibilitychange", onVisible);
       window.clearInterval(timer);
     };
-  }, [user.id, queryClient, onSessionRequired]);
+  }, [ready, user.id, queryClient, onSessionRequired]);
   useEffect(() => {
+    if (!ready) return;
     let shared = false;
     let cancelled = false;
     const publishSync = async () => {
@@ -890,29 +1003,98 @@ function OfflineBootstrap({
       if (timer !== undefined) window.clearTimeout(timer);
       window.removeEventListener("shuttle-queue-public-sharing", onSharing);
     };
-  }, [user.id, queryClient]);
-  if (error)
+  }, [ready, user.id, queryClient]);
+  if (!ready)
     return (
       <main className="grid min-h-screen place-items-center px-5">
-        <Card className="max-w-md p-6">
-          <h1 className="display text-3xl">Download required</h1>
-          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-            Sign in once while online to download this account for offline use.
+        <Card className="w-full max-w-md p-6">
+          <h1 className="display text-3xl">
+            {error ? "Offline preparation paused" : "Preparing your offline workspace"}
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]" aria-live="polite">
+            {progress.stage === "checking-device" && "Checking this browser's offline storage."}
+            {progress.stage === "preparing-ui" && "Preparing the app files for offline use."}
+            {progress.stage === "preparing-account" && "Checking this account's saved queue."}
+            {progress.stage === "verifying" && "Verifying that offline files and data are saved."}
+            {progress.stage === "blocked" &&
+              "The workspace stays closed until preparation succeeds."}
           </p>
-          <p
-            role="alert"
-            className="mt-4 rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]"
-          >
-            {error}
-          </p>
-          <Button className="mt-5 w-full" onClick={() => window.location.reload()}>
-            Try again
-          </Button>
+          {progress.stage === "preparing-ui" &&
+            progress.total !== undefined &&
+            progress.total > 0 && (
+              <div className="mt-4">
+                <progress
+                  className="h-2 w-full accent-[var(--teal)]"
+                  value={progress.verified ?? 0}
+                  max={progress.total}
+                  aria-label="Offline app files verified"
+                />
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  {progress.verified ?? 0} of {progress.total} app files verified
+                </p>
+              </div>
+            )}
+          {progress.persistentStorage === false && (
+            <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
+              This browser declined protected storage. The app works offline now, but the browser
+              may remove saved files later.
+            </p>
+          )}
+          {error && (
+            <p
+              role="alert"
+              className="mt-4 rounded-2xl bg-[#fff0e4] px-4 py-3 text-sm text-[#8d4824]"
+            >
+              {error}
+            </p>
+          )}
+          {!error && (
+            <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
+              Account changes and offline edits remain saved on this device while preparation runs.
+            </p>
+          )}
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+            {error && (
+              <UiButton
+                className="w-full"
+                onClick={() => {
+                  if (reloadRequired) window.location.reload();
+                  else setRetryToken((current) => current + 1);
+                }}
+              >
+                {reloadRequired ? "Reload this tab" : "Try again"}
+              </UiButton>
+            )}
+            <UiButton variant="quiet" className="w-full" onClick={onLogout}>
+              Sign out and keep data
+            </UiButton>
+          </div>
         </Card>
       </main>
     );
-  if (!ready) return <LoadingState variant="fullPage" label="Preparing your offline workspace" />;
-  return <AppShell user={user} onLogout={onLogout} />;
+  return (
+    <>
+      <div
+        className="sr-only"
+        role="status"
+        data-testid="offline-workspace-ready"
+        data-build-id={process.env.NEXT_PUBLIC_OFFLINE_BUILD_ID}
+      >
+        Offline workspace verified.{" "}
+        {cloudPending ? "Cloud sync is pending." : "Cloud sync status is available in Settings."}
+      </div>
+      <AppShell user={user} onLogout={onLogout} />
+      {(updatePending || progress.persistentStorage === false) && (
+        <div className="fixed bottom-3 right-3 z-[70] max-w-xs rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-xs text-[var(--muted)] shadow-lg">
+          {updatePending &&
+            "A newer app version will be checked the next time you open the workspace."}
+          {updatePending && progress.persistentStorage === false && <br />}
+          {progress.persistentStorage === false &&
+            "Offline data is saved, but this browser may clear stored files later."}
+        </div>
+      )}
+    </>
+  );
 }
 
 function EmptyState({
@@ -7371,17 +7553,12 @@ function QueueViewContent({ sessionId }: { sessionId: string }) {
               </Button>
             </div>
             <div
-              role="row"
+              role="group"
+              aria-label="Queue columns and sorting"
               className={`hidden ${QUEUE_TABLE_GRID_COLUMNS} items-center gap-2 border-b border-[var(--line)] bg-[#fbfdfb] px-3 py-3 text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)] md:grid`}
             >
               {QUEUE_SORT_LABELS.map((option) => (
-                <span
-                  key={option.key}
-                  role="columnheader"
-                  {...(sort.key === option.key
-                    ? { "aria-sort": sort.direction === "asc" ? "ascending" : "descending" }
-                    : {})}
-                >
+                <span key={option.key}>
                   <button
                     type="button"
                     className="focus-ring flex min-h-11 w-full items-center justify-between gap-1 rounded px-1 text-left"
@@ -7395,8 +7572,8 @@ function QueueViewContent({ sessionId }: { sessionId: string }) {
                   </button>
                 </span>
               ))}
-              <span role="columnheader">Status</span>
-              <span role="columnheader">Action</span>
+              <span>Status</span>
+              <span>Action</span>
             </div>
             {queueQuery.isPending ? (
               <div className="space-y-2 p-4">

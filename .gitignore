@@ -4,10 +4,12 @@ node_modules/
 # Next.js and build output
 .next/
 .next-build/
+.next-build-b/
 .next-ui-test/
 out/
 dist/
 build/
+public/offline-build.json
 
 # Test and tooling output
 coverage/

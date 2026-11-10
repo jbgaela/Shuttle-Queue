@@ -6,6 +6,8 @@ import {
 } from "./ranking-tracking-validation.ts";
 export type ApiEnvelope<T> = { data: T; requestId?: string; meta?: unknown };
 const baseUrl = "/api/v2";
+const REQUEST_TIMEOUT_MS = 15_000;
+const SYNC_REQUEST_TIMEOUT_MS = 60_000;
 let csrfTokenCache: string | null = null;
 let csrfRefreshPromise: Promise<string | null> | null = null;
 let publicSharingActive =
@@ -116,19 +118,24 @@ function hydrateQueueFields<T>(value: T): T {
   return result as T;
 }
 
-async function refreshCsrfToken() {
+async function refreshCsrfToken(timeoutMs = REQUEST_TIMEOUT_MS) {
   if (typeof window === "undefined") return null;
   if (csrfRefreshPromise) return csrfRefreshPromise;
   const refresh = (async () => {
-    const authResponse = await fetch(`${baseUrl}/auth/me`, {
-      credentials: "include",
-      cache: "no-store",
-    });
-    const authPayload = await authResponse.json().catch(() => ({}));
+    const { response: authResponse, payload: rawAuthPayload } =
+      await fetchJsonWithDeadline<unknown>(
+        `${baseUrl}/auth/me`,
+        { credentials: "include", cache: "no-store" },
+        timeoutMs,
+      );
+    const authPayload = rawAuthPayload as {
+      data?: { csrfToken?: unknown };
+      error?: { code?: unknown };
+    } | null;
     const freshToken = authPayload?.data?.csrfToken;
     if (authResponse.status === 401 && authPayload?.error?.code === "AUTH_REQUIRED")
       notifyAuthRequired("/auth/me");
-    if (!authResponse.ok || !freshToken) return null;
+    if (!authResponse.ok || typeof freshToken !== "string") return null;
     saveCsrfToken(freshToken);
     return freshToken;
   })();
@@ -140,11 +147,67 @@ async function refreshCsrfToken() {
   }
 }
 
+async function fetchJsonWithDeadline<T>(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+) {
+  const controller = new AbortController();
+  const callerSignal = init.signal;
+  let timedOut = false;
+  const onCallerAbort = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) onCallerAbort();
+  else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+  const timeout = globalThis.setTimeout(
+    () => {
+      timedOut = true;
+      controller.abort();
+    },
+    Math.max(1, timeoutMs),
+  );
+
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    let payload: T;
+    try {
+      payload = (await response.json()) as T;
+    } catch (reason) {
+      if (
+        timedOut ||
+        callerSignal?.aborted ||
+        (reason instanceof Error && reason.name === "AbortError")
+      )
+        throw reason;
+      payload = {} as T;
+    }
+    return { response, payload };
+  } catch (reason) {
+    if (timedOut)
+      throw new ApiError(
+        503,
+        "REQUEST_TIMEOUT",
+        "The request took too long. Your local work is saved. Check your connection and retry.",
+      );
+    throw reason;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  }
+}
+
 async function requestOnline<T>(
   path: string,
   init?: RequestInit,
   allowCsrfResync = true,
+  deadlineAt = Date.now() +
+    (path.startsWith("/sync/") ? SYNC_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
 ): Promise<T> {
+  if (typeof window !== "undefined" && !navigator.onLine)
+    throw new ApiError(
+      503,
+      "NETWORK_REQUIRED",
+      "Connect to the internet to use this feature. Your saved offline queue is still available.",
+    );
   const csrfToken = readCsrfToken();
   const requestInit: RequestInit = {
     ...init,
@@ -156,17 +219,25 @@ async function requestOnline<T>(
     },
   };
   if (path === "/auth/me" && !requestInit.cache) requestInit.cache = "no-store";
-  const response = await fetch(`${baseUrl}${path}`, requestInit);
-  const payload = await response.json().catch(() => ({}));
+  const { response, payload: rawPayload } = await fetchJsonWithDeadline<unknown>(
+    `${baseUrl}${path}`,
+    requestInit,
+    deadlineAt - Date.now(),
+  );
+  const payload = rawPayload as {
+    data?: T;
+    error?: { code?: unknown; message?: unknown; details?: unknown };
+    requestId?: unknown;
+  } | null;
   if (
     response.status === 403 &&
     payload?.error?.code === "CSRF_INVALID" &&
     allowCsrfResync &&
     typeof window !== "undefined"
   ) {
-    const freshToken = await refreshCsrfToken();
+    const freshToken = await refreshCsrfToken(deadlineAt - Date.now());
     if (freshToken) {
-      return requestOnline(path, init, false);
+      return requestOnline(path, init, false, deadlineAt);
     }
   }
   if (!response.ok) {
@@ -183,7 +254,8 @@ async function requestOnline<T>(
     if (apiError.status === 401 && apiError.code === "AUTH_REQUIRED") notifyAuthRequired(path);
     throw apiError;
   }
-  if (payload?.data?.csrfToken) saveCsrfToken(payload.data.csrfToken);
+  const responseData = payload?.data as (T & { csrfToken?: unknown }) | undefined;
+  if (typeof responseData?.csrfToken === "string") saveCsrfToken(responseData.csrfToken);
   if (
     (path === "/auth/login" || path === "/auth/logout") &&
     typeof BroadcastChannel !== "undefined"
@@ -192,7 +264,7 @@ async function requestOnline<T>(
     channel.postMessage("changed");
     channel.close();
   }
-  const data = (payload as ApiEnvelope<T>).data;
+  const data = payload?.data as T;
   return path.startsWith("/sync/") ? data : hydrateQueueFields(data);
 }
 

@@ -1,13 +1,12 @@
+import { routeApi } from "./api-fixture";
 import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { mockGuidedApi } from "./guided-fixtures";
 
-test.use({ serviceWorkers: "block" });
-
 test("the signed-out entry screen exposes a labelled, keyboard-accessible sign-in form", async ({
   page,
 }) => {
-  await page.route("**/api/v2/auth/me", (route) =>
+  await routeApi(page, "**/api/v2/auth/me", (route) =>
     route.fulfill({
       status: 401,
       json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } },
@@ -37,7 +36,7 @@ test("the signed-out entry screen exposes a labelled, keyboard-accessible sign-i
 test("the signed-in Guided queue exposes counts, banner semantics, and keyboard focus", async ({
   page,
 }) => {
-  await page.route("**/api/v2/**", mockGuidedApi);
+  await routeApi(page, "**/api/v2/**", mockGuidedApi);
   await page.goto("/");
   await page.getByRole("button", { name: "Queue" }).click();
   await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();

@@ -10,15 +10,14 @@ const outputDir =
 const reportDir =
   process.env.UI_TEST_REPORT_DIR ??
   path.join(process.env.TEMP ?? ".", "badminton-queue-playwright-report");
-const serverMode = process.env.UI_TEST_SERVER_MODE ?? "dev";
+const serverMode = process.env.UI_TEST_SERVER_MODE ?? "production";
 const nextBinary =
   process.platform === "win32" ? ".\\node_modules\\.bin\\next.cmd" : "node_modules/.bin/next";
 const serverCommand =
   serverMode === "production"
-    ? `${nextBinary} start --hostname 127.0.0.1 --port ${testPort}`
+    ? `npm run build && ${nextBinary} start --hostname 127.0.0.1 --port ${testPort}`
     : `${nextBinary} dev --webpack --hostname 127.0.0.1 --port ${testPort}`;
-const distDir =
-  process.env.UI_TEST_DIST_DIR ?? (serverMode === "production" ? ".next" : ".next-ui-test");
+const distDir = process.env.UI_TEST_DIST_DIR ?? ".next-ui-test";
 
 export default defineConfig({
   testDir: "./tests/ui",
@@ -32,6 +31,7 @@ export default defineConfig({
   reporter: [["list"], ["html", { outputFolder: reportDir, open: "never" }]],
   use: {
     baseURL,
+    serviceWorkers: "allow",
     locale: "en-US",
     timezoneId: "UTC",
     colorScheme: "light",
@@ -50,7 +50,7 @@ export default defineConfig({
     command: serverCommand,
     cwd: frontendRoot,
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: process.env.UI_TEST_EXTERNAL_SERVER === "1" || !process.env.CI,
     timeout: 120_000,
     env: { UI_TEST_DIST_DIR: distDir },
     gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },

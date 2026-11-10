@@ -1,7 +1,6 @@
+import { routeApi } from "./api-fixture";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { guidedSnapshot, mockGuidedApi } from "./guided-fixtures";
-
-test.use({ serviceWorkers: "block" });
 
 async function mockFocusWorkspace(page: Page, inProgress = false) {
   const snapshot = guidedSnapshot();
@@ -45,7 +44,7 @@ async function mockFocusWorkspace(page: Page, inProgress = false) {
       Object.assign(player, { status: "PLAYING", currentMatchId: "focus-match" });
   }
   let revision = 1;
-  await page.route("**/api/v2/**", async (route) => {
+  await routeApi(page, "**/api/v2/**", async (route) => {
     if (new URL(route.request().url()).pathname === "/api/v2/sync/snapshot") {
       await route.fulfill({
         json: { data: { snapshot: { ...snapshot, matches }, cloudRevision: revision } },

@@ -1,12 +1,11 @@
+import { routeApi } from "./api-fixture";
 import { expect, test } from "@playwright/test";
 import { mockGuidedApi } from "./guided-fixtures";
-
-test.use({ serviceWorkers: "block" });
 
 test("the queue entry workflow keeps the sign-in action available without creating a match", async ({
   page,
 }) => {
-  await page.route("**/api/v2/auth/me", (route) =>
+  await routeApi(page, "**/api/v2/auth/me", (route) =>
     route.fulfill({
       status: 401,
       json: { error: { code: "AUTH_REQUIRED", message: "Sign in required" } },
@@ -19,7 +18,7 @@ test("the queue entry workflow keeps the sign-in action available without creati
 });
 
 test("the Guided banner requests a suggestion without creating a match", async ({ page }) => {
-  await page.route("**/api/v2/**", mockGuidedApi);
+  await routeApi(page, "**/api/v2/**", mockGuidedApi);
   const createdRequests: string[] = [];
   page.on("request", (request) => {
     if (request.method() === "POST" && request.url().includes("/matches"))

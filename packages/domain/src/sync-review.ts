@@ -27,14 +27,31 @@ const ignored = new Set([
   "amountDueMinor",
   "skillWeight",
 ]);
-const comparable = (row: any): any =>
-  row && typeof row === "object" && !Array.isArray(row)
-    ? Object.fromEntries(
-        Object.entries(row)
-          .filter(([key]) => !ignored.has(key))
-          .sort(([a], [b]) => a.localeCompare(b)),
-      )
-    : row;
+const comparable = (value: any): any => {
+  if (Array.isArray(value)) return value.map(comparable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !ignored.has(key))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, nested]) => [key, comparable(nested)]),
+  );
+};
+const comparableMatch = (match: any) =>
+  comparable({
+    ...match,
+    participants: [...(match?.participants ?? [])].sort(
+      (a, b) => a.team.localeCompare(b.team) || a.teamSlot - b.teamSlot || a.id.localeCompare(b.id),
+    ),
+    scoreRevisions: [...(match?.scoreRevisions ?? [])]
+      .map((revision) => ({
+        ...revision,
+        games: [...(revision.games ?? [])].sort(
+          (a, b) => a.gameNumber - b.gameNumber || a.id.localeCompare(b.id),
+        ),
+      }))
+      .sort((a, b) => a.revisionNumber - b.revisionNumber || a.id.localeCompare(b.id)),
+  });
 
 /** Three-way merge before clock-based normalization. Missing baselines are conservative. */
 export function reviewSyncSnapshots(
@@ -54,9 +71,10 @@ export function reviewSyncSnapshots(
     previous: any,
     kind: SyncConflict["kind"] = "edit",
   ) => {
-    if (equal(comparable(left), comparable(right))) return copy(right);
-    if (base && equal(comparable(left), comparable(previous))) return copy(right);
-    if (base && equal(comparable(right), comparable(previous))) return copy(left);
+    const normalize = collection === "matches" ? comparableMatch : comparable;
+    if (equal(normalize(left), normalize(right))) return copy(right);
+    if (base && equal(normalize(left), normalize(previous))) return copy(right);
+    if (base && equal(normalize(right), normalize(previous))) return copy(left);
     const key = `${collection}/${id}/${field}`;
     const selected = choices[key];
     if (selected?.choice === "local") return copy(left);

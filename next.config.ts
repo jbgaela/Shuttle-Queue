@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withSerwist } from "@serwist/turbopack";
+import { offlineBuildId } from "./offline-build";
 
 const backendApiBaseUrl = (
   process.env.BACKEND_API_BASE_URL ??
@@ -8,12 +9,18 @@ const backendApiBaseUrl = (
 ).replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
+  generateBuildId: async () => offlineBuildId,
+  env: { NEXT_PUBLIC_OFFLINE_BUILD_ID: offlineBuildId },
   reactStrictMode: true,
   poweredByHeader: false,
   distDir: process.env.UI_TEST_DIST_DIR ?? ".next",
   allowedDevOrigins: ["192.168.8.232"],
   async headers() {
     return [
+      {
+        source: "/",
+        headers: [{ key: "X-Shuttle-Build-Id", value: offlineBuildId }],
+      },
       {
         source: "/rankings/:path*",
         headers: [

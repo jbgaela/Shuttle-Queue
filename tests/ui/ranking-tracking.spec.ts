@@ -1,8 +1,8 @@
+import { routeApi } from "./api-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { mockGuidedApi } from "./guided-fixtures";
+import { guidedSnapshot, mockGuidedApi } from "./guided-fixtures";
 
-test.use({ serviceWorkers: "block" });
 const token = "10000000-0000-4000-8000-000000000001";
 const linkId = "20000000-0000-4000-8000-000000000001";
 const published = "2026-09-22T07:42:18.000Z";
@@ -138,7 +138,7 @@ async function publicFixture(
   let reads = 0;
   let failWrite = false;
   let remainingOpeningFailures = options.openingFailure ? Infinity : 0;
-  await page.route("**/api/v2/public/rankings/**", async (route) => {
+  await routeApi(page, "**/api/v2/public/rankings/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const key = route.request().headers()["x-ranking-visit-key"] ?? "";
     if (path.endsWith("/visits")) {
@@ -552,7 +552,7 @@ test("a failed location write never unlocks the rankings", async ({ page }) => {
 });
 
 test("revoked links do not ask for location", async ({ page }) => {
-  await page.route("**/api/v2/public/rankings/**", (route) =>
+  await routeApi(page, "**/api/v2/public/rankings/**", (route) =>
     route.fulfill({
       status: 404,
       json: { error: { code: "NOT_FOUND", message: "Unavailable" } },
@@ -580,7 +580,7 @@ test("tracking shows Manila time, filters and paginates with accessible mobile l
   page,
 }) => {
   const requests: URL[] = [];
-  await page.route("**/api/v2/**", async (route) => {
+  await routeApi(page, "**/api/v2/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/auth/me")) {
       await route.fulfill({
@@ -646,7 +646,7 @@ test("tracking requires authentication and clears details on a session failure",
   page,
 }) => {
   let authenticated = true;
-  await page.route("**/api/v2/**", async (route) => {
+  await routeApi(page, "**/api/v2/**", async (route) => {
     if (!authenticated) {
       await route.fulfill({
         status: 401,
@@ -680,7 +680,7 @@ test("tracking requires authentication and clears details on a session failure",
 test("rankings expose Track beside Revoke and keep revoked link history reachable", async ({
   page,
 }) => {
-  await page.route("**/api/v2/**", async (route) => {
+  await routeApi(page, "**/api/v2/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/workspace/public-rankings")) {
       await route.fulfill({
@@ -730,7 +730,7 @@ test("rankings expose Track beside Revoke and keep revoked link history reachabl
 });
 
 test("Super Admin can navigate from an account to its issued links", async ({ page }) => {
-  await page.route("**/api/v2/**", async (route) => {
+  await routeApi(page, "**/api/v2/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/auth/me")) {
       await route.fulfill({
@@ -760,6 +760,14 @@ test("Super Admin can navigate from an account to its issued links", async ({ pa
               sessionCount: 1,
             },
           ],
+        },
+      });
+      return;
+    }
+    if (path.endsWith("/sync/snapshot")) {
+      await route.fulfill({
+        json: {
+          data: { snapshot: { ...guidedSnapshot(), queueMasterId: "admin" }, cloudRevision: 1 },
         },
       });
       return;
