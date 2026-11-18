@@ -11,6 +11,12 @@ export type SyncConflict = {
   kind: "edit" | "identity" | "session";
 };
 export type SyncChoices = Record<string, SyncChoice>;
+export type SessionResetMarker = {
+  resetId: string;
+  previousStartedAt: string;
+  baseCloudRevision: number;
+};
+export const SESSION_RESET_CONFLICT_KEY = "workspace/main/$session-reset";
 type Row = Record<string, any>;
 const copy = <T>(value: T): T => structuredClone(value);
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -297,4 +303,57 @@ export function reviewSyncSnapshots(
     });
   }
   return { snapshot, conflicts };
+}
+
+/** Resolves a fresh-session replacement while merging reusable account data normally. */
+export function reviewSessionResetSnapshots(
+  local: CloudSnapshotV2,
+  cloud: CloudSnapshotV2,
+  base: CloudSnapshotV2 | undefined,
+  marker: SessionResetMarker,
+  cloudRevision: number,
+  choices: SyncChoices = {},
+) {
+  const sessionMatchesReference =
+    cloudRevision === marker.baseCloudRevision &&
+    cloud.workspace.startedAt === marker.previousStartedAt;
+  const resetChoice = choices[SESSION_RESET_CONFLICT_KEY]?.choice;
+  const accountLocal = copy(local);
+  const sessionCollections = [
+    "workspace",
+    "queuePlayers",
+    "synergyTeams",
+    "courts",
+    "matches",
+    "feeConfig",
+    "payments",
+    "audits",
+  ] as const;
+  for (const collection of sessionCollections)
+    (accountLocal as any)[collection] = copy(cloud[collection]);
+
+  const accountChoices = { ...choices };
+  delete accountChoices[SESSION_RESET_CONFLICT_KEY];
+  const accountReview = reviewSyncSnapshots(accountLocal, cloud, base, accountChoices);
+  const conflicts = [...accountReview.conflicts];
+  const resetNeedsReview =
+    !sessionMatchesReference && resetChoice !== "local" && resetChoice !== "cloud";
+  if (resetNeedsReview)
+    conflicts.push({
+      key: SESSION_RESET_CONFLICT_KEY,
+      collection: "workspace",
+      id: "main",
+      field: "$session-reset",
+      local: copy(local.workspace),
+      cloud: copy(cloud.workspace),
+      kind: "session",
+    });
+
+  if (conflicts.length) return { snapshot: accountReview.snapshot, conflicts };
+
+  const selectedSession =
+    resetChoice === "local" || (sessionMatchesReference && resetChoice !== "cloud") ? local : cloud;
+  for (const collection of sessionCollections)
+    (accountReview.snapshot as any)[collection] = copy(selectedSession[collection]);
+  return { snapshot: accountReview.snapshot, conflicts };
 }

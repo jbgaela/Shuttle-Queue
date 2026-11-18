@@ -9221,8 +9221,8 @@ function ScoringSetupDialog({
       {fresh && (
         <p className="mb-4 rounded-2xl bg-[#fff0e4] p-3 text-sm text-[#8d4824]">
           All current queue activity, including open matches, completed scores, payments, rankings,
-          and history, will be permanently deleted. Player profiles and account defaults will
-          remain.
+          and history, will be permanently deleted. Unsynced changes from this session on this
+          device will also be discarded. Player profiles and account defaults will remain.
         </p>
       )}
       <fieldset disabled={pending} className="space-y-4">
@@ -9326,12 +9326,15 @@ function QueueSettingsControls({
   session: SessionSummary;
   onReset: (session: SessionSummary) => void;
 }) {
+  const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const reset = useMutation({
     mutationFn: (target: number) => api.startFreshQueue(session.version, target),
     onSuccess: (updated) => {
       setConfirmOpen(false);
       onReset(updated);
+      void queryClient.invalidateQueries({ queryKey: ["publicRankingPublications"] });
+      window.dispatchEvent(new Event("shuttle-queue-public-sharing"));
       toast.success("Queue cleared. Ready for a fresh match.");
     },
   });

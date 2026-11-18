@@ -2173,7 +2173,11 @@ export function historyDurationSeconds(startedAt?: string | null, completedAt?: 
   );
 }
 
-export { reviewSyncSnapshots } from "./sync-review.js";
-export type { SyncChoice, SyncChoices, SyncConflict } from "./sync-review.js";
+export {
+  reviewSessionResetSnapshots,
+  reviewSyncSnapshots,
+  SESSION_RESET_CONFLICT_KEY,
+} from "./sync-review.js";
+export type { SessionResetMarker, SyncChoice, SyncChoices, SyncConflict } from "./sync-review.js";
 
 export { sessionScoring, scoringState, validateScoringTarget } from "./session-scoring.js";
