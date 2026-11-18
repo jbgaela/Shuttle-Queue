@@ -11372,12 +11372,6 @@ function RankingsView({ sessionId, session }: { sessionId: string; session?: Ses
       {sessionForSharing && <RankingsSharingControls session={sessionForSharing} />}
       <RankingTrackingLinks />
       <Card className="overflow-hidden p-0">
-        <div className="border-b border-[var(--line)] bg-[#fbfdfb] px-4 py-3 text-xs leading-5 text-[var(--muted)]">
-          Live rankings use a confidence-adjusted win score, then win rate, total point difference,
-          point percentage, and games played. Players tied on every measure share a rank. Players
-          with at least 5 completed games rank ahead of provisional players; ranks 1–10 are reserved
-          for eligible players, and everyone in the top three ranks shares prize eligibility.
-        </div>
         {rankingsQuery.isPending ? (
           <div className="p-6 text-sm text-[var(--muted)]">Loading rankings…</div>
         ) : rankingsQuery.isError ? (

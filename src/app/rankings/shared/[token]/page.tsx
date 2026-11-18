@@ -373,10 +373,6 @@ function AuthorizedPublicRankings({
               Match history is not available for this older shared session.
             </p>
           )}
-          <p className="border-b border-[var(--line)] px-4 py-3 text-xs leading-5 text-[var(--muted)]">
-            Rankings use a confidence-adjusted win score, then win rate, total point difference,
-            point percentage, and games played. Players tied on every measure share a rank.
-          </p>
           {data.rankings.length === 0 ? (
             <div className="p-8 text-center text-sm text-[var(--muted)]">
               No players have joined this queue yet.
