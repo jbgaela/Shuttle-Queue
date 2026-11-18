@@ -87,7 +87,7 @@ export function rankingExportRows(
       rankingScore:
         ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined
           ? "—"
-          : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
+          : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%`,
       section: "RANKED" as const,
     })),
     ...didNotPlay.map((ranking) => ({
@@ -99,7 +99,7 @@ export function rankingExportRows(
       rankingScore:
         ranking.rankingScoreBasisPoints === null || ranking.rankingScoreBasisPoints === undefined
           ? "—"
-          : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%${ranking.seededDrawUsed ? " (draw)" : ""}`,
+          : `${(ranking.rankingScoreBasisPoints / 100).toFixed(1)}%`,
       section: "DID_NOT_PLAY" as const,
     })),
   ];

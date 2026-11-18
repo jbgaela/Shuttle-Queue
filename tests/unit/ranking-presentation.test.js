@@ -136,3 +136,23 @@ test("presentation promotes eligible rows from a legacy server order and reserve
     ],
   );
 });
+
+test("presentation preserves shared performance ranks and dense rank groups", () => {
+  const result = partitionRankingRows([
+    row("provisional-two", 4, 11),
+    row("tied-bravo", 5, 2),
+    row("after-tie", 5, 4),
+    row("tied-alpha", 5, 2),
+    row("provisional-one", 4, 11),
+  ]);
+  assert.deepEqual(
+    result.ranked.map(({ player, rank }) => ({ player, rank })),
+    [
+      { player: "tied-bravo", rank: 1 },
+      { player: "tied-alpha", rank: 1 },
+      { player: "after-tie", rank: 2 },
+      { player: "provisional-two", rank: 11 },
+      { player: "provisional-one", rank: 11 },
+    ],
+  );
+});

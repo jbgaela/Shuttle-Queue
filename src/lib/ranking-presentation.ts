@@ -37,6 +37,23 @@ function isPrizeEligible<T extends RankingPresentationRow>(row: T) {
   return row.matchesPlayed >= PRIZE_RANKING_MIN_MATCHES && row.eligible !== false;
 }
 
+function denseRankRows<T extends RankingPresentationRow>(rows: T[], firstRank: number) {
+  let rank = firstRank - 1;
+  let previousSourceRank: number | null | undefined;
+  return rows.map((row, index) => {
+    const sourceRank = typeof row.rank === "number" ? row.rank : null;
+    if (
+      index === 0 ||
+      sourceRank === null ||
+      previousSourceRank === null ||
+      sourceRank !== previousSourceRank
+    )
+      rank += 1;
+    previousSourceRank = sourceRank;
+    return { ...row, rank };
+  });
+}
+
 function rankedRows<T extends RankingPresentationRow>(rows: T[]) {
   const played = rows
     .filter((row) => row.matchesPlayed > 0)
@@ -44,11 +61,13 @@ function rankedRows<T extends RankingPresentationRow>(rows: T[]) {
     .sort(compareRankingOrder);
   const eligible = played.filter(isPrizeEligible);
   const provisional = played.filter((row) => !isPrizeEligible(row));
-  const provisionalRankStart = Math.max(PRIZE_RANKING_RESERVED_PLACES, eligible.length) + 1;
-  return [
-    ...eligible.map((row, index) => ({ ...row, rank: index + 1 })),
-    ...provisional.map((row, index) => ({ ...row, rank: provisionalRankStart + index })),
-  ];
+  const rankedEligible = denseRankRows(eligible, 1);
+  const lastEligibleRank = rankedEligible.length
+    ? rankedEligible[rankedEligible.length - 1]!.rank
+    : 0;
+  const provisionalRankStart = Math.max(PRIZE_RANKING_RESERVED_PLACES, lastEligibleRank) + 1;
+  const rankedProvisional = denseRankRows(provisional, provisionalRankStart);
+  return [...rankedEligible, ...rankedProvisional];
 }
 
 /** Split ranking rows into the numbered leaderboard and unranked roster sections. */
