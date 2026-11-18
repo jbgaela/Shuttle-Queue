@@ -946,64 +946,114 @@ function OfflineBootstrap({
   }, [user.id]);
   useEffect(() => {
     if (!ready) return;
-    const attempt = () => {
-      if (!navigator.onLine) return;
-      void syncAccount(user.id)
-        .then(() => queryClient.invalidateQueries())
-        .catch((reason) => {
-          if (isAuthRequired(reason)) onSessionRequired();
+    let syncing = false;
+    let syncAgain = false;
+    let retryPaused = false;
+    let retryAttempt = 0;
+    let retryTimer: number | undefined;
+    const retryDelays = [2_000, 5_000, 10_000, 30_000];
+    const clearRetry = () => {
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
+    function scheduleRetry() {
+      clearRetry();
+      const delay = retryDelays[Math.min(retryAttempt, retryDelays.length - 1)];
+      retryAttempt += 1;
+      retryTimer = window.setTimeout(attempt, delay);
+    }
+    function attempt() {
+      if (!navigator.onLine || retryPaused) return;
+      if (syncing) {
+        syncAgain = true;
+        return;
+      }
+      clearRetry();
+      syncing = true;
+      let succeeded = false;
+      void syncAccount(user.id, "background")
+        .then(async (result) => {
+          succeeded = result.state !== "pending";
+          if (succeeded) {
+            retryAttempt = 0;
+            await queryClient.invalidateQueries();
+          }
+        })
+        .catch(async (reason) => {
+          if (isAuthRequired(reason)) {
+            retryPaused = true;
+            onSessionRequired();
+            return;
+          }
+          const meta = await getMeta(user.id).catch(() => undefined);
+          if (meta?.review || meta?.syncAttention === "manual") {
+            retryPaused = true;
+            return;
+          }
+          scheduleRetry();
+        })
+        .finally(() => {
+          syncing = false;
+          const shouldSyncAgain = syncAgain && succeeded && !retryPaused;
+          syncAgain = false;
+          if (shouldSyncAgain) attempt();
         });
+    }
+    const onLocalMutation = (event: Event) => {
+      const detail = (event as CustomEvent<{ accountId: string }>).detail;
+      if (detail?.accountId === user.id) attempt();
+    };
+    const onSyncReviewResolved = (event: Event) => {
+      const detail = (event as CustomEvent<{ accountId: string }>).detail;
+      if (detail?.accountId !== user.id) return;
+      void getMeta(user.id).then((meta) => {
+        retryPaused = false;
+        retryAttempt = 0;
+        if (meta?.dirty) attempt();
+      });
     };
     const onVisible = () => {
       if (document.visibilityState === "visible") attempt();
     };
     window.addEventListener("online", attempt);
+    window.addEventListener("shuttle-queue-local-mutation", onLocalMutation);
+    window.addEventListener("shuttle-queue-sync-review-resolved", onSyncReviewResolved);
     document.addEventListener("visibilitychange", onVisible);
     const timer = window.setInterval(attempt, 60_000);
     return () => {
       window.removeEventListener("online", attempt);
+      window.removeEventListener("shuttle-queue-local-mutation", onLocalMutation);
+      window.removeEventListener("shuttle-queue-sync-review-resolved", onSyncReviewResolved);
       document.removeEventListener("visibilitychange", onVisible);
       window.clearInterval(timer);
+      clearRetry();
     };
   }, [ready, user.id, queryClient, onSessionRequired]);
   useEffect(() => {
     if (!ready) return;
     let shared = false;
     let cancelled = false;
-    const publishSync = async () => {
+    const refreshPublicSharingState = async () => {
       if (!navigator.onLine) return;
       try {
         const publications = await api.publicRankingPublications();
         shared = Boolean(publications.current);
         setPublicSharingActive(shared);
-        if (shared) await syncAccount(user.id, "background");
       } catch {
         /* the normal sync/status panel reports connectivity problems */
       }
       if (!cancelled && shared) queryClient.invalidateQueries();
     };
-    let timer: number | undefined;
-    const schedule = () => {
-      if (!cancelled)
-        timer = window.setTimeout(
-          async () => {
-            await publishSync();
-            schedule();
-          },
-          shared ? 8_000 : 30_000,
-        );
-    };
     const onSharing = () => {
-      void publishSync().then(schedule);
+      void refreshPublicSharingState();
     };
-    void publishSync().then(schedule);
+    void refreshPublicSharingState();
     window.addEventListener("shuttle-queue-public-sharing", onSharing);
     return () => {
       cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
       window.removeEventListener("shuttle-queue-public-sharing", onSharing);
     };
-  }, [ready, user.id, queryClient]);
+  }, [ready, queryClient]);
   if (!ready)
     return (
       <main className="grid min-h-screen place-items-center px-5">
@@ -8395,6 +8445,7 @@ function OfflineSyncPanel({ accountId: providedAccountId }: { accountId: string 
   );
   const [storage, setStorage] = useState<Awaited<ReturnType<typeof storageEstimate>>>(null);
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<"replace" | "remove" | "download" | null>(null);
   const [preview, setPreview] = useState<SyncPreview | null>(null);
@@ -8413,15 +8464,21 @@ function OfflineSyncPanel({ accountId: providedAccountId }: { accountId: string 
       setOnline(navigator.onLine);
       void refresh();
     };
+    const onSyncActivity = (event: Event) => {
+      const detail = (event as CustomEvent<{ accountId: string; syncing: boolean }>).detail;
+      if (detail?.accountId === accountId) setSyncing(detail.syncing);
+    };
     window.addEventListener("online", onStatus);
     window.addEventListener("offline", onStatus);
     window.addEventListener("shuttle-queue-offline-change", onStatus);
+    window.addEventListener("shuttle-queue-sync-activity", onSyncActivity);
     return () => {
       window.removeEventListener("online", onStatus);
       window.removeEventListener("offline", onStatus);
       window.removeEventListener("shuttle-queue-offline-change", onStatus);
+      window.removeEventListener("shuttle-queue-sync-activity", onSyncActivity);
     };
-  }, [providedAccountId, refresh]);
+  }, [providedAccountId, accountId, refresh]);
   const runSync = async () => {
     if (!accountId) return;
     setBusy(true);
@@ -8490,13 +8547,14 @@ function OfflineSyncPanel({ accountId: providedAccountId }: { accountId: string 
   };
   const used = storage?.usage ? `${Math.round(storage.usage / 1024 / 1024)} MB` : "—";
   const quota = storage?.quota ? `${Math.round(storage.quota / 1024 / 1024)} MB` : "—";
-  const statusLabel = busy
-    ? "Merging changes"
-    : meta?.review
-      ? "Review needed"
-      : meta?.dirty
-        ? "Pending changes"
-        : "Up to date";
+  const statusLabel =
+    busy || syncing
+      ? "Syncing"
+      : meta?.review || meta?.syncAttention === "manual"
+        ? "Needs review"
+        : meta?.dirty
+          ? "Saved on this device"
+          : "Cloud confirmed";
   const previewBody =
     "The server will merge this device's changes with newer cloud transactions. Incompatible changes require your review.";
   return (

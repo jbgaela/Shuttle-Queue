@@ -73,7 +73,9 @@ import {
   getMeta,
   hasSnapshot,
   markSyncAttention,
-  notifyOfflineChange,
+  notifyOfflineMutation,
+  notifySyncActivity,
+  notifySyncReviewResolved,
   offlineDb,
   prepareSnapshotUpload,
   readSnapshot,
@@ -99,6 +101,7 @@ const id = () =>
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const uploadFlights = new Map<string, Promise<SyncResult>>();
+const syncFollowUps = new Set<string>();
 const now = () => new Date().toISOString();
 const PLAYER_NAME_CONFLICT_MESSAGE =
   "A player with this name has already been created or is already in the current queue.";
@@ -892,7 +895,7 @@ async function mutate<T>(
     | Omit<LocalAuditEvent, "id" | "accountId" | "createdAt">
     | (() => Omit<LocalAuditEvent, "id" | "accountId" | "createdAt">),
 ) {
-  return offlineDb.transaction(
+  const result = await offlineDb.transaction(
     "rw",
     offlineDb.snapshots,
     offlineDb.meta,
@@ -936,6 +939,8 @@ async function mutate<T>(
       return result;
     },
   );
+  notifyOfflineMutation(accountId);
+  return result;
 }
 async function addPlayers(accountId: string, body: Record<string, unknown>) {
   return mutate(accountId, "PLAYERS_ADDED", (snapshot) => {
@@ -2828,7 +2833,7 @@ async function freshQueue(accountId: string, body: Record<string, unknown> = {})
     typeof navigator !== "undefined" && navigator.locks
       ? await navigator.locks.request(`shuttle-queue-sync:${accountId}`, reset)
       : await reset();
-  notifyOfflineChange();
+  notifyOfflineMutation(accountId);
   return workspace;
 }
 
@@ -3595,61 +3600,32 @@ export async function syncAccount(
   options?: { signal?: AbortSignal },
 ): Promise<SyncResult> {
   void trigger;
+  const existingFlight = uploadFlights.get(accountId);
+  if (existingFlight) {
+    syncFollowUps.add(accountId);
+    return existingFlight;
+  }
   const deadline = createSyncDeadline(options?.signal);
 
   try {
     return await coordinateSync(
       accountId,
       async () => {
-        let local = await getMeta(accountId);
-        if (typeof navigator !== "undefined" && !navigator.onLine)
-          return { state: "pending", cloudRevision: local?.baseCloudRevision ?? 0 };
+        notifySyncActivity(accountId, true);
         try {
-          const remote = await remoteSnapshot(deadline.signal);
-          if (!local || !(await hasSnapshot(accountId)) || !local.dirty) {
-            let installed = false;
-            await offlineDb.transaction(
-              "rw",
-              offlineDb.snapshots,
-              offlineDb.meta,
-              offlineDb.audits,
-              async () => {
-                const latest = await getMeta(accountId);
-                if (latest?.dirty) return;
-                if (
-                  !latest ||
-                  !(await hasSnapshot(accountId)) ||
-                  remote.cloudRevision > latest.baseCloudRevision
-                ) {
-                  await replaceSnapshot(
-                    accountId,
-                    remote.snapshot,
-                    remote.cloudRevision,
-                    remote.metadata,
-                  );
-                  installed = true;
-                }
-              },
-            );
-            if (installed) return { state: "downloaded", cloudRevision: remote.cloudRevision };
-            local = await getMeta(accountId);
-            if (!local?.dirty) return { state: "clean", cloudRevision: remote.cloudRevision };
+          for (;;) {
+            syncFollowUps.delete(accountId);
+            const result = await syncAccountPass(accountId, deadline.signal);
+            if (result.state === "pending") return result;
+            const requestedAgain = syncFollowUps.delete(accountId);
+            const latest = await getMeta(accountId);
+            if (!requestedAgain && !latest?.dirty) return result;
+            if (typeof navigator !== "undefined" && !navigator.onLine)
+              return { state: "pending", cloudRevision: latest?.baseCloudRevision ?? 0 };
           }
-          return await uploadLocalSnapshotInternal(
-            accountId,
-            local!.baseCloudRevision,
-            undefined,
-            deadline.signal,
-          );
-        } catch (error) {
-          const details = reviewDetails(error);
-          await recordSyncFailure(
-            accountId,
-            error instanceof Error ? error.message : "Sync failed. Pending work is preserved.",
-            details,
-            error instanceof ApiError && error.code === "SYNC_REVIEW_STALE",
-          );
-          throw error;
+        } finally {
+          syncFollowUps.delete(accountId);
+          notifySyncActivity(accountId, false);
         }
       },
       deadline.signal,
@@ -3664,14 +3640,70 @@ export async function syncAccount(
   }
 }
 
+async function syncAccountPass(accountId: string, signal: AbortSignal): Promise<SyncResult> {
+  let local = await getMeta(accountId);
+  if (typeof navigator !== "undefined" && !navigator.onLine)
+    return { state: "pending", cloudRevision: local?.baseCloudRevision ?? 0 };
+
+  try {
+    const remote = await remoteSnapshot(signal);
+    if (!local || !(await hasSnapshot(accountId)) || !local.dirty) {
+      let installed = false;
+      await offlineDb.transaction(
+        "rw",
+        offlineDb.snapshots,
+        offlineDb.meta,
+        offlineDb.audits,
+        async () => {
+          const latest = await getMeta(accountId);
+          if (latest?.dirty) return;
+          if (
+            !latest ||
+            !(await hasSnapshot(accountId)) ||
+            remote.cloudRevision > latest.baseCloudRevision
+          ) {
+            await replaceSnapshot(
+              accountId,
+              remote.snapshot,
+              remote.cloudRevision,
+              remote.metadata,
+            );
+            installed = true;
+          }
+        },
+      );
+      if (installed) return { state: "downloaded", cloudRevision: remote.cloudRevision };
+      local = await getMeta(accountId);
+      if (!local?.dirty) return { state: "clean", cloudRevision: remote.cloudRevision };
+    }
+
+    return await uploadLocalSnapshotInternal(
+      accountId,
+      local!.baseCloudRevision,
+      undefined,
+      signal,
+    );
+  } catch (error) {
+    const details = reviewDetails(error);
+    await recordSyncFailure(
+      accountId,
+      error instanceof Error ? error.message : "Sync failed. Pending work is preserved.",
+      details,
+      error instanceof ApiError && error.code === "SYNC_REVIEW_STALE",
+    );
+    throw error;
+  }
+}
+
 export async function resolveSyncConflicts(
   accountId: string,
   resolutions: import("./domain-compat").SyncChoices,
   options?: { signal?: AbortSignal },
 ): Promise<SyncResult> {
   const deadline = createSyncDeadline(options?.signal);
+  notifySyncActivity(accountId, true);
   try {
-    return await coordinateSync(
+    const result = await coordinateSync(
       accountId,
       async () => {
         const local = await getMeta(accountId);
@@ -3696,12 +3728,15 @@ export async function resolveSyncConflicts(
       },
       deadline.signal,
     );
+    notifySyncReviewResolved(accountId);
+    return result;
   } catch (error) {
     if (!deadline.timedOut()) throw error;
     const timeoutError = syncTimeoutError();
     await recordSyncFailure(accountId, timeoutError.message);
     throw timeoutError;
   } finally {
+    notifySyncActivity(accountId, false);
     deadline.dispose();
   }
 }

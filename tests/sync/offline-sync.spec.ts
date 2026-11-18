@@ -192,7 +192,7 @@ test("session scoring setup survives offline reload and records matching final s
     .not.toBe(previousStartedAt);
   const resetStartedAt = (await local(page)).snapshot!.workspace.startedAt;
   expect((await local(page)).row?.pendingUpload).toBeUndefined();
-  expect((await local(page)).row?.sessionReset?.previousStartedAt).toBe(remote.workspace.startedAt);
+  expect((await local(page)).row?.sessionReset?.previousStartedAt).toBe(previousStartedAt);
   // WebKit's test browser cannot complete an offline navigation; other engines cover that path.
   if (info.project.name === "webkit") await context.setOffline(false);
   await page.reload();
@@ -215,7 +215,7 @@ test("session scoring setup survives offline reload and records matching final s
   expect(resetCloud.snapshot.matches).toHaveLength(0);
   expect(resetCloud.snapshot.payments).toHaveLength(0);
   expect(resetCloud.snapshot.players.map((player) => player.id).sort()).toEqual(profileIds);
-  expect((await local(page)).meta?.dirty).toBe(false);
+  await expect.poll(async () => (await local(page)).meta?.dirty).toBe(false);
   expect((await local(page)).row?.sessionReset).toBeUndefined();
   expect(
     Object.keys((await local(page)).row!.metadata!.records).some((key) =>
@@ -258,7 +258,7 @@ async function assertPersisted(page: Page) {
     expect(state.snapshot!.queuePlayers.find((item) => item.id === row.id)).toMatchObject(row);
   }
   await settings(page);
-  await expect(page.getByText("Up to date", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Cloud confirmed", { exact: true }).first()).toBeVisible();
 }
 
 async function cachedAssets(page: Page) {
@@ -309,7 +309,10 @@ test("offline match and player work remains available in history, rankings, and 
     ({ teamA, teamB }) => window.syncTest.api.createManualMatch("workspace", { teamA, teamB }),
     setup,
   );
-  expect((await sync(page)).state).toBe("uploaded");
+  await expect
+    .poll(async () => (await cloud(page)).snapshot.matches.some((match) => match.id === queued.id))
+    .toBe(true);
+  await expect.poll(async () => (await local(page)).meta?.dirty).toBe(false);
   await page.reload();
   await expect(page.getByTestId("offline-workspace-ready")).toBeAttached();
   await bridge(page);
@@ -422,7 +425,15 @@ test("offline visible controls correct scores, cancel matches, collect payments,
   const completedMatch = await createManualMatch(setup.completedTeamA, setup.completedTeamB);
   const queuedMatch = await createManualMatch(setup.queuedCancelTeamA, setup.queuedCancelTeamB);
   const playingMatch = await createManualMatch(setup.playingCancelTeamA, setup.playingCancelTeamB);
-  expect(["clean", "uploaded"]).toContain((await sync(page)).state);
+  await expect
+    .poll(async () => {
+      const remote = await cloud(page);
+      return [completedMatch.id, queuedMatch.id, playingMatch.id].every((id) =>
+        remote.snapshot.matches.some((match) => match.id === id),
+      );
+    })
+    .toBe(true);
+  await expect.poll(async () => (await local(page)).meta?.dirty).toBe(false);
   await page.reload();
   await expect(page.getByTestId("offline-workspace-ready")).toBeAttached();
   await bridge(page);
@@ -432,7 +443,13 @@ test("offline visible controls correct scores, cancel matches, collect payments,
   const completedQueuedCard = completedCourtSelect.locator("xpath=../..");
   await completedQueuedCard.getByRole("button", { name: "Start match", exact: true }).click();
   await expect(page.getByText("Queued match started.", { exact: true })).toBeVisible();
-  expect(["clean", "uploaded"]).toContain((await sync(page)).state);
+  await expect
+    .poll(
+      async () =>
+        (await cloud(page)).snapshot.matches.find((match) => match.id === completedMatch.id)
+          ?.status,
+    )
+    .toBe("IN_PROGRESS");
 
   await context.setOffline(true);
   await page.getByRole("button", { name: "Enter final score", exact: true }).click();
@@ -475,7 +492,7 @@ test("offline visible controls correct scores, cancel matches, collect payments,
   await queuedCancelCard.getByRole("button", { name: "Discard matchup", exact: true }).click();
   const queuedCancelDialog = page.getByRole("dialog", { name: "Discard this matchup?" });
   await queuedCancelDialog.getByRole("button", { name: "Discard match", exact: true }).click();
-  await expect(page.getByText("Matchup discarded.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Matchup discarded.", { exact: true }).last()).toBeVisible();
 
   const playingCancelSelect = page.locator(`#queued-court-${playingMatch.id}`);
   const playingCancelCard = playingCancelSelect.locator("xpath=../..");
@@ -486,9 +503,53 @@ test("offline visible controls correct scores, cancel matches, collect payments,
   await page.getByRole("button", { name: "Cancel match", exact: true }).click();
   const playingCancelDialog = page.getByRole("dialog", { name: "Discard this matchup?" });
   await playingCancelDialog.getByRole("button", { name: "Discard match", exact: true }).click();
-  await expect(page.getByText("Matchup discarded.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Matchup discarded.", { exact: true }).last()).toBeVisible();
+
+  await context.setOffline(false);
+  await expect.poll(async () => (await local(page)).meta?.dirty, { timeout: 20_000 }).toBe(false);
+  await expect
+    .poll(async () => {
+      const remote = await cloud(page);
+      return (
+        remote.snapshot.matches.find((match) => match.id === queuedMatch.id)?.status ===
+          "CANCELLED" &&
+        remote.snapshot.matches.find((match) => match.id === playingMatch.id)?.status ===
+          "CANCELLED"
+      );
+    })
+    .toBe(true);
 
   await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await page.getByRole("button", { name: "Check out", exact: true }).nth(1).click();
+  await expect
+    .poll(async () =>
+      (await local(page)).snapshot!.queuePlayers.some((player) => player.status === "CHECKED_OUT"),
+    )
+    .toBe(true);
+  const onlineCheckOut = (await local(page)).snapshot!.queuePlayers.find(
+    (player) => player.status === "CHECKED_OUT",
+  )!;
+  await expect
+    .poll(
+      async () =>
+        (await cloud(page)).snapshot.queuePlayers.find((player) => player.id === onlineCheckOut.id)
+          ?.status,
+    )
+    .toBe("CHECKED_OUT");
+  await page.getByRole("button", { name: /^Not checked in/ }).click();
+  await page.getByRole("button", { name: "Check in", exact: true }).nth(1).click();
+  await expect
+    .poll(
+      async () =>
+        (await cloud(page)).snapshot.queuePlayers.find((player) => player.id === onlineCheckOut.id)
+          ?.status,
+    )
+    .toBe("WAITING");
+  await expect.poll(async () => (await local(page)).meta?.dirty).toBe(false);
+
+  await context.setOffline(true);
+  await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await page.getByRole("button", { name: /^Waiting/ }).click();
   await expect(page.getByRole("heading", { name: "Build the next matchup." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Check out", exact: true }).nth(1)).toBeEnabled();
   await page.getByRole("button", { name: "Check out", exact: true }).nth(1).click();
@@ -561,7 +622,7 @@ test("offline visible controls correct scores, cancel matches, collect payments,
   ).toHaveLength(1);
 
   await context.setOffline(false);
-  expect(["clean", "uploaded"]).toContain((await sync(page)).state);
+  await expect.poll(async () => (await local(page)).meta?.dirty, { timeout: 20_000 }).toBe(false);
   const remote = (await cloud(page)).snapshot as NonNullable<typeof offline.snapshot>;
   expect(
     remote.matches.find((match) => match.id === completedMatch.id)?.scoreRevisions.at(-1),
@@ -696,7 +757,7 @@ test("the total sync deadline includes cross-tab lock waiting and preserves pend
 
   await context.setOffline(false);
   await sync(page);
-  expect((await local(page)).meta?.dirty).toBe(false);
+  await expect.poll(async () => (await local(page)).meta?.dirty).toBe(false);
   expect(
     (await cloud(page)).snapshot.players.some(
       (player) => player.displayName === "Pending behind sync lock",
@@ -775,50 +836,59 @@ test("ten mid-session offline cycles, offline sync, reload, online sync and anot
     await assertPersisted(page);
   }
   await settings(page);
-  await expect(page.getByText("Up to date", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Cloud confirmed", { exact: true }).first()).toBeVisible();
   await page.screenshot({ path: `/artifacts/${info.project.name}-sync-clean.png`, fullPage: true });
 });
 
 test("lost response after commit replays the same durable operation after reload", async ({
   page,
+  context,
 }, info) => {
   await login(page, `browser-${info.project.name}-replay`);
-  await addPlayer(page, "Committed once");
   await fault("arm?mode=drop");
-  await expect(sync(page)).rejects.toThrow();
-  const state = await local(page);
-  expect(state.meta?.dirty).toBe(true);
+  await addPlayer(page, "Committed once");
+  await fault("observed");
+  await context.setOffline(true);
+  await expect.poll(async () => (await local(page)).meta?.lastError).toBeTruthy();
+  expect((await local(page)).meta?.dirty).toBe(true);
   await fault("release");
+  await context.setOffline(false);
   await page.reload();
   await bridge(page);
-  await sync(page);
-  const remote = await cloud(page);
-  expect(
-    (remote.snapshot as typeof state.snapshot)!.players.filter(
-      (row) => row.displayName === "Committed once",
-    ),
-  ).toHaveLength(1);
-  expect((await local(page)).meta?.dirty).toBe(false);
+  await expect
+    .poll(
+      async () =>
+        (await cloud(page)).snapshot.players.filter((row) => row.displayName === "Committed once")
+          .length,
+      { timeout: 20_000 },
+    )
+    .toBe(1);
+  await expect.poll(async () => (await local(page)).meta?.dirty).toBe(false);
   await assertPersisted(page);
 });
 
-test("editing during a paused upload preserves both the acknowledgement and newer work", async ({
-  page,
-}, info) => {
+test("automatic sync drains actions saved while an upload is paused", async ({ page }, info) => {
   await login(page, `browser-${info.project.name}-inflight`);
   await addPlayer(page, "First batch");
+  await expect
+    .poll(async () =>
+      (await cloud(page)).snapshot.players.some((row) => row.displayName === "First batch"),
+    )
+    .toBe(true);
   await fault("arm?mode=hold");
-  const pending = sync(page);
-  await fault("observed");
   await addPlayer(page, "Second batch");
+  await fault("observed");
+  await addPlayer(page, "Third batch");
   await fault("release");
-  await pending;
-  expect((await local(page)).meta?.dirty).toBe(true);
-  await page.unroute("**/api/v2/sync/snapshot");
-  await sync(page);
-  const names = (await local(page)).snapshot!.players.map((row) => row.displayName);
-  expect(names).toContain("First batch");
-  expect(names).toContain("Second batch");
+  await expect
+    .poll(
+      async () => {
+        const names = (await cloud(page)).snapshot.players.map((row) => row.displayName);
+        return ["First batch", "Second batch", "Third batch"].every((name) => names.includes(name));
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
   expect((await local(page)).meta?.dirty).toBe(false);
   await assertPersisted(page);
 });
@@ -837,7 +907,22 @@ test("two independent devices preserve independent edits and review incompatible
   try {
     await login(device, username);
     await addPlayer(page, "Device A");
+    await expect
+      .poll(async () =>
+        (await cloud(page)).snapshot.players.some((row) => row.displayName === "Device A"),
+      )
+      .toBe(true);
     await addPlayer(device, "Device B");
+    await expect
+      .poll(async () => {
+        const players = (await cloud(device)).snapshot.players;
+        return (
+          players.some((row) => row.displayName === "Device A") &&
+          players.some((row) => row.displayName === "Device B")
+        );
+      })
+      .toBe(true);
+    await expect.poll(async () => (await local(device)).meta?.dirty).toBe(false);
     await sync(page);
     await sync(device);
     await sync(page);
@@ -860,30 +945,53 @@ test("two independent devices preserve independent edits and review incompatible
         )!.id,
     );
     expect(otherConflictTargetId).toBe(conflictTargetId);
-    for (const [target, name] of [
-      [page, "Local name"],
-      [device, "Cloud name"],
-    ] as const) {
-      await target.evaluate(
-        async ({ id, displayName }) => {
-          const player = (await window.syncTest.api.players()).find((row) => row.id === id);
-          if (!player) throw new Error("The shared conflict target is missing from this device.");
-          await window.syncTest.api.updatePlayer(player, {
-            displayName,
-            gender: "MALE",
-            skillLevel: "BEGINNER",
-          });
-        },
-        { id: conflictTargetId, displayName: name },
-      );
-    }
-    await sync(device);
+    await page.context().setOffline(true);
+    await page.evaluate(
+      async ({ id, displayName }) => {
+        const player = (await window.syncTest.api.players()).find((row) => row.id === id);
+        if (!player) throw new Error("The shared conflict target is missing from this device.");
+        await window.syncTest.api.updatePlayer(player, {
+          displayName,
+          gender: "MALE",
+          skillLevel: "BEGINNER",
+        });
+      },
+      { id: conflictTargetId, displayName: "Local name" },
+    );
+    await expect.poll(async () => (await local(page)).meta?.dirty).toBe(true);
+    await device.evaluate(
+      async ({ id, displayName }) => {
+        const player = (await window.syncTest.api.players()).find((row) => row.id === id);
+        if (!player) throw new Error("The shared conflict target is missing from this device.");
+        await window.syncTest.api.updatePlayer(player, {
+          displayName,
+          gender: "MALE",
+          skillLevel: "BEGINNER",
+        });
+      },
+      { id: conflictTargetId, displayName: "Cloud name" },
+    );
+    await expect
+      .poll(
+        async () =>
+          (await cloud(device)).snapshot.players.find((row) => row.id === conflictTargetId)
+            ?.displayName,
+      )
+      .toBe("Cloud name");
+    await page.context().setOffline(false);
     await expect(sync(page)).rejects.toThrow(/review/i);
+    await expect.poll(async () => (await local(page)).meta?.review).toBeTruthy();
     await settings(page);
     const review = page.getByRole("region", { name: "Review sync conflicts" });
     await expect(review).toBeVisible();
     await addPlayer(device, "Added while reviewing");
-    await sync(device);
+    await expect
+      .poll(async () =>
+        (await cloud(device)).snapshot.players.some(
+          (row) => row.displayName === "Added while reviewing",
+        ),
+      )
+      .toBe(true);
     for (const select of await review.getByRole("combobox").all())
       await select.selectOption("local");
     await review.getByRole("button", { name: "Apply choices and sync" }).click();
@@ -898,9 +1006,17 @@ test("two independent devices preserve independent edits and review incompatible
     expect((await local(page)).meta?.dirty).toBe(false);
     await assertPersisted(page);
     await sync(device);
+    await page.context().setOffline(true);
     await addPlayer(page, "Same name");
     await addPlayer(device, "Same name");
-    await sync(device);
+    await expect
+      .poll(
+        async () =>
+          (await cloud(device)).snapshot.players.filter((row) => row.displayName === "Same name")
+            .length,
+      )
+      .toBe(1);
+    await page.context().setOffline(false);
     await expect(sync(page)).rejects.toThrow(/review/i);
     const identity = page.getByRole("region", { name: "Review sync conflicts" });
     await expect(identity).toBeVisible();
@@ -910,9 +1026,17 @@ test("two independent devices preserve independent edits and review incompatible
     await expect(identity).toHaveCount(0);
     await assertPersisted(page);
     await sync(device);
+    await page.context().setOffline(true);
     await addPlayer(page, "Reuse name");
     await addPlayer(device, "Reuse name");
-    await sync(device);
+    await expect
+      .poll(
+        async () =>
+          (await cloud(device)).snapshot.players.filter((row) => row.displayName === "Reuse name")
+            .length,
+      )
+      .toBe(1);
+    await page.context().setOffline(false);
     await expect(sync(page)).rejects.toThrow(/review/i);
     await expect(identity).toBeVisible();
     await identity.getByRole("combobox").selectOption("cloud");
@@ -937,27 +1061,23 @@ test("two independent devices preserve independent edits and review incompatible
       .poll(async () => (await local(page)).snapshot!.workspace.startedAt)
       .not.toBe(previousStartedAt);
     const resetStartedAt = (await local(page)).snapshot!.workspace.startedAt;
+    await expect
+      .poll(async () => (await cloud(page)).snapshot.workspace.startedAt)
+      .toBe(resetStartedAt);
     await addPlayer(device, "Cloud profile after reset");
-    await sync(device);
-    await expect(sync(page)).rejects.toThrow(/review/i);
-    await settings(page);
-    const resetReview = page.getByRole("region", { name: "Review sync conflicts" });
-    await expect(resetReview).toBeVisible();
-    await expect(resetReview.getByText("current session changed in the cloud")).toBeVisible();
-    await resetReview.getByRole("combobox").selectOption("local");
-    await resetReview.getByRole("button", { name: "Apply choices and sync" }).click();
-    await expect(resetReview).toHaveCount(0);
-    expect((await local(page)).snapshot!.workspace.startedAt).toBe(resetStartedAt);
-    expect((await local(page)).snapshot!.players.map((row) => row.displayName)).toContain(
+    await expect.poll(async () => (await local(device)).meta?.dirty).toBe(false);
+    expect((await local(device)).snapshot!.workspace.startedAt).toBe(resetStartedAt);
+    expect((await local(device)).snapshot!.players.map((row) => row.displayName)).toContain(
       "Cloud profile after reset",
     );
-    const resetCloud = await cloud(page);
+    const resetCloud = await cloud(device);
     expect(resetCloud.snapshot.workspace.startedAt).toBe(resetStartedAt);
     expect(resetCloud.snapshot.queuePlayers).toHaveLength(0);
     expect(resetCloud.snapshot.matches).toHaveLength(0);
     expect(resetCloud.snapshot.players.map((row) => row.displayName)).toContain(
       "Cloud profile after reset",
     );
+    await assertPersisted(device);
   } finally {
     await other.close();
   }

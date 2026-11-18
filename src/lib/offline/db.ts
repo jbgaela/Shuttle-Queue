@@ -495,6 +495,29 @@ export function notifyOfflineChange() {
     window.dispatchEvent(new Event("shuttle-queue-offline-change"));
 }
 
+export function notifyOfflineMutation(accountId: string) {
+  if (typeof window !== "undefined") {
+    notifyOfflineChange();
+    window.dispatchEvent(
+      new CustomEvent("shuttle-queue-local-mutation", { detail: { accountId } }),
+    );
+  }
+}
+
+export function notifySyncActivity(accountId: string, syncing: boolean) {
+  if (typeof window !== "undefined")
+    window.dispatchEvent(
+      new CustomEvent("shuttle-queue-sync-activity", { detail: { accountId, syncing } }),
+    );
+}
+
+export function notifySyncReviewResolved(accountId: string) {
+  if (typeof window !== "undefined")
+    window.dispatchEvent(
+      new CustomEvent("shuttle-queue-sync-review-resolved", { detail: { accountId } }),
+    );
+}
+
 export async function storageEstimate() {
   if (typeof navigator === "undefined" || !navigator.storage?.estimate) return null;
   return navigator.storage.estimate();
