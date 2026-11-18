@@ -23,7 +23,6 @@ const locationMessages = {
 type PermissionStateValue = "granted" | "denied" | "prompt" | "unsupported";
 type EnvironmentIssue = "INSECURE_CONTEXT" | "POLICY_BLOCKED" | "UNAVAILABLE";
 type LocationPhase = "idle" | "locating" | "saving";
-type LocationFailureStatus = "DENIED" | "TIMEOUT" | "UNAVAILABLE";
 
 const environmentMessages: Record<EnvironmentIssue, string> = {
   INSECURE_CONTEXT:
@@ -91,16 +90,6 @@ async function acquireBrowserLocation() {
     timeout: 15000,
     maximumAge: 60000,
   });
-}
-
-function locationFailureMessage(status: LocationFailureStatus, facebookInAppBrowser: boolean) {
-  if (facebookInAppBrowser && status === "DENIED") {
-    return 'Location permission was denied in Messenger. Open Messenger\'s menu, select "Open in browser," then allow location in Chrome or Safari.';
-  }
-  if (facebookInAppBrowser && (status === "TIMEOUT" || status === "UNAVAILABLE")) {
-    return "Messenger's in-app browser could not provide your location. Open Messenger's menu, select \"Open in browser,\" then retry in Chrome or Safari.";
-  }
-  return locationMessages[status];
 }
 
 export function RankingLocationGate({
@@ -188,7 +177,7 @@ export function RankingLocationGate({
   }, [accessUntil, loseAccess]);
 
   const shareLocation = useCallback(async () => {
-    if (locationInFlight.current || !opening.isSuccess) return;
+    if (facebookInAppBrowser || locationInFlight.current || !opening.isSuccess) return;
     locationInFlight.current = true;
     const attempt = generation.current;
     setLocationPhase("locating");
@@ -217,7 +206,7 @@ export function RankingLocationGate({
             ? environmentMessages[issue]
             : location.status === "GRANTED"
               ? "Location was not accepted. Please retry."
-              : locationFailureMessage(location.status, facebookInAppBrowser),
+              : locationMessages[location.status],
         );
       }
     } catch (error) {
@@ -235,7 +224,7 @@ export function RankingLocationGate({
   }, [facebookInAppBrowser, opening.isSuccess, token, visitKey]);
 
   useEffect(() => {
-    if (!opening.isSuccess || accessUntil) return;
+    if (!opening.isSuccess || accessUntil || facebookInAppBrowser) return;
     if (!navigator.permissions?.query) return;
     let cancelled = false;
     const attempt = generation.current;
@@ -267,7 +256,7 @@ export function RankingLocationGate({
       removePermissionListener();
       permissionStatus.current = null;
     };
-  }, [accessUntil, opening.isSuccess, shareLocation]);
+  }, [accessUntil, facebookInAppBrowser, opening.isSuccess, shareLocation]);
 
   if (accessUntil) return children(visitKey, loseAccess);
   if (opening.isPending && opening.fetchStatus !== "paused") {
@@ -305,6 +294,15 @@ export function RankingLocationGate({
         actionLabel="Retry connection"
         actionLoading={opening.isFetching}
         onAction={() => void opening.refetch()}
+      />
+    );
+  }
+
+  if (facebookInAppBrowser) {
+    return (
+      <GateScreen
+        heading="Open this link in your default browser"
+        description="To view these rankings, open this link in your phone's default browser. In Facebook or Messenger, tap the menu (⋯) and choose ‘Open in browser.’"
       />
     );
   }

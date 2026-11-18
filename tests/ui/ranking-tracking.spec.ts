@@ -18,6 +18,18 @@ const link = {
     finalizedAt: null,
   },
 };
+const inAppBrowserUserAgents = [
+  {
+    name: "Facebook",
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22A335 [FBAN/FBIOS;FBAV/500.0.0.0.0]",
+  },
+  {
+    name: "Messenger",
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22A335 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
+  },
+];
 
 async function publicFixture(
   page: Page,
@@ -464,12 +476,11 @@ test("rankings wait for saved location; refreshes reuse a visit and reload creat
   expect(state.openings.size).toBe(2);
 });
 
-test("Messenger timeout retries with a network location before blocking access", async ({
+test("location timeout retries with a network location before blocking access", async ({
   page,
 }) => {
   const state = await publicFixture(page, "TIMEOUT", "prompt", {
     fallbackOutcome: "GRANTED",
-    userAgent: "Mozilla/5.0 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
   });
   await page.goto(`/rankings/shared/${token}`);
   await page.getByRole("button", { name: "Share location and continue" }).click();
@@ -486,42 +497,33 @@ test("Messenger timeout retries with a network location before blocking access",
   ]);
 });
 
-test("Messenger explains how to recover when both location attempts time out", async ({ page }) => {
-  const state = await publicFixture(page, "TIMEOUT", "prompt", {
-    fallbackOutcome: "TIMEOUT",
-    userAgent: "Mozilla/5.0 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
-  });
-  await page.goto(`/rankings/shared/${token}`);
-  await page.getByRole("button", { name: "Share location and continue" }).click();
-  await expect(page.getByRole("main").getByRole("alert")).toContainText(
-    "Messenger's in-app browser could not provide your location",
-  );
-  expect(state.outcomes).toEqual(["TIMEOUT"]);
-  expect(state.reads()).toBe(0);
-  expect(
-    await page.evaluate(
-      () => (window as unknown as { locationTestRequests: number }).locationTestRequests,
-    ),
-  ).toBe(2);
-});
-
-test("Messenger denial directs the visitor to Open in browser", async ({ page }) => {
-  const state = await publicFixture(page, "DENIED", "prompt", {
-    userAgent: "Mozilla/5.0 [FBAN/MessengerForiOS;FBAV/500.0.0.0.0]",
-  });
-  await page.goto(`/rankings/shared/${token}`);
-  await page.getByRole("button", { name: "Share location and continue" }).click();
-  await expect(page.getByRole("main").getByRole("alert")).toContainText(
-    'select "Open in browser," then allow location in Chrome or Safari',
-  );
-  expect(state.outcomes).toEqual(["DENIED"]);
-  expect(state.reads()).toBe(0);
-  expect(
-    await page.evaluate(
-      () => (window as unknown as { locationTestRequests: number }).locationTestRequests,
-    ),
-  ).toBe(1);
-});
+for (const browser of inAppBrowserUserAgents) {
+  for (const permission of ["prompt", "granted"]) {
+    test(`${browser.name} in-app browser guides visitors to the default browser (${permission} location permission)`, async ({
+      page,
+    }) => {
+      const state = await publicFixture(page, "GRANTED", permission, {
+        userAgent: browser.userAgent,
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`/rankings/shared/${token}`);
+      await expect(
+        page.getByRole("heading", { name: "Open this link in your default browser" }),
+      ).toBeVisible();
+      await expect(page.getByRole("main")).toContainText("phone's default browser");
+      await expect(page.getByRole("main")).toContainText("Open in browser");
+      await expect(page.getByRole("heading", { name: "Location required" })).toHaveCount(0);
+      await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
+      expect(state.outcomes).toEqual([]);
+      expect(state.reads()).toBe(0);
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { locationTestRequests: number }).locationTestRequests,
+        ),
+      ).toBe(0);
+    });
+  }
+}
 
 for (const outcome of ["DENIED", "TIMEOUT", "UNAVAILABLE"]) {
   test(`${outcome.toLowerCase()} location is recorded and rankings stay hidden`, async ({
