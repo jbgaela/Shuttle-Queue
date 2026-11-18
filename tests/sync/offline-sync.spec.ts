@@ -48,6 +48,7 @@ async function local(page: Page) {
       accountId,
       snapshot: await window.syncTest.database.readSnapshot(accountId),
       meta: await window.syncTest.database.getMeta(accountId),
+      row: await window.syncTest.database.offlineDb.snapshots.get(accountId),
     };
   });
 }
@@ -160,6 +161,68 @@ test("session scoring setup survives offline reload and records matching final s
   await fresh.getByRole("button", { name: "Start fresh queue", exact: true }).click();
   await expect.poll(async () => (await local(page)).snapshot?.workspace.scoringTarget).toBe(15);
   expect((await local(page)).snapshot!.matches).toHaveLength(0);
+  const resetBaseline = (await local(page)).row?.baseline;
+  const resetMetadata = (await local(page)).row?.metadata;
+  expect(resetBaseline).toBeDefined();
+  expect(resetMetadata).toBeDefined();
+  expect(resetBaseline!.workspace.startedAt).toBe(
+    (await local(page)).snapshot!.workspace.startedAt,
+  );
+  expect(resetBaseline!.queuePlayers).toHaveLength(0);
+  expect(resetBaseline!.synergyTeams).toHaveLength(0);
+  expect(resetBaseline!.courts).toHaveLength(0);
+  expect(resetBaseline!.matches).toHaveLength(0);
+  expect(resetBaseline!.payments).toHaveLength(0);
+  expect(resetBaseline!.audits).toHaveLength(0);
+  expect(
+    Object.keys(resetMetadata!.records).some((key) =>
+      /^(queuePlayers|synergyTeams|courts|matches|payments|audits)\//.test(key),
+    ),
+  ).toBe(false);
+  const profileIds = (await local(page)).snapshot!.players.map((player) => player.id).sort();
+  await settings(page);
+  const previousStartedAt = (await local(page)).snapshot!.workspace.startedAt;
+  await context.setOffline(true);
+  await page.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+  await fresh.getByRole("radio", { name: "15", exact: true }).check();
+  await fresh.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+  await expect.poll(async () => (await local(page)).row?.sessionReset?.resetId).toBeTruthy();
+  await expect
+    .poll(async () => (await local(page)).snapshot!.workspace.startedAt)
+    .not.toBe(previousStartedAt);
+  const resetStartedAt = (await local(page)).snapshot!.workspace.startedAt;
+  expect((await local(page)).row?.pendingUpload).toBeUndefined();
+  expect((await local(page)).row?.sessionReset?.previousStartedAt).toBe(remote.workspace.startedAt);
+  // WebKit's test browser cannot complete an offline navigation; other engines cover that path.
+  if (info.project.name === "webkit") await context.setOffline(false);
+  await page.reload();
+  await expect(page.getByTestId("offline-workspace-ready")).toBeAttached();
+  await bridge(page);
+  const reloaded = await local(page);
+  expect(reloaded.snapshot!.workspace.startedAt).toBe(resetStartedAt);
+  if (info.project.name !== "webkit" || reloaded.row?.sessionReset)
+    expect(reloaded.row?.sessionReset?.resetId).toBeTruthy();
+  await context.setOffline(false);
+  await sync(page);
+  const resetCloud = await cloud(page);
+  expect(resetCloud.snapshot.workspace.startedAt).toBe(
+    (await local(page)).snapshot!.workspace.startedAt,
+  );
+  expect(resetCloud.snapshot.workspace.scoringTarget).toBe(15);
+  expect(resetCloud.snapshot.queuePlayers).toHaveLength(0);
+  expect(resetCloud.snapshot.synergyTeams).toHaveLength(0);
+  expect(resetCloud.snapshot.courts).toHaveLength(0);
+  expect(resetCloud.snapshot.matches).toHaveLength(0);
+  expect(resetCloud.snapshot.payments).toHaveLength(0);
+  expect(resetCloud.snapshot.players.map((player) => player.id).sort()).toEqual(profileIds);
+  expect((await local(page)).meta?.dirty).toBe(false);
+  expect((await local(page)).row?.sessionReset).toBeUndefined();
+  expect(
+    Object.keys((await local(page)).row!.metadata!.records).some((key) =>
+      /^(queuePlayers|synergyTeams|courts|matches|payments|audits)\//.test(key),
+    ),
+  ).toBe(false);
+  await assertPersisted(page);
 });
 async function assertPersisted(page: Page) {
   const state = await local(page);
@@ -863,6 +926,38 @@ test("two independent devices preserve independent edits and review incompatible
       path: `/artifacts/${info.project.name}-conflict-resolved.png`,
       fullPage: true,
     });
+
+    await sync(device);
+    const previousStartedAt = (await local(page)).snapshot!.workspace.startedAt;
+    await page.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+    const resetDialog = page.getByRole("dialog", { name: "Start fresh queue?" });
+    await resetDialog.getByRole("radio", { name: "15", exact: true }).check();
+    await resetDialog.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+    await expect
+      .poll(async () => (await local(page)).snapshot!.workspace.startedAt)
+      .not.toBe(previousStartedAt);
+    const resetStartedAt = (await local(page)).snapshot!.workspace.startedAt;
+    await addPlayer(device, "Cloud profile after reset");
+    await sync(device);
+    await expect(sync(page)).rejects.toThrow(/review/i);
+    await settings(page);
+    const resetReview = page.getByRole("region", { name: "Review sync conflicts" });
+    await expect(resetReview).toBeVisible();
+    await expect(resetReview.getByText("current session changed in the cloud")).toBeVisible();
+    await resetReview.getByRole("combobox").selectOption("local");
+    await resetReview.getByRole("button", { name: "Apply choices and sync" }).click();
+    await expect(resetReview).toHaveCount(0);
+    expect((await local(page)).snapshot!.workspace.startedAt).toBe(resetStartedAt);
+    expect((await local(page)).snapshot!.players.map((row) => row.displayName)).toContain(
+      "Cloud profile after reset",
+    );
+    const resetCloud = await cloud(page);
+    expect(resetCloud.snapshot.workspace.startedAt).toBe(resetStartedAt);
+    expect(resetCloud.snapshot.queuePlayers).toHaveLength(0);
+    expect(resetCloud.snapshot.matches).toHaveLength(0);
+    expect(resetCloud.snapshot.players.map((row) => row.displayName)).toContain(
+      "Cloud profile after reset",
+    );
   } finally {
     await other.close();
   }

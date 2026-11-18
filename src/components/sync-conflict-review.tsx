@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { SESSION_RESET_CONFLICT_KEY } from "@/lib/offline/domain-compat";
 import type { SyncChoices, SyncConflict } from "@/lib/offline/domain-compat";
 import { resolveSyncConflicts } from "@/lib/offline/repository";
 import { Button, Input, Select } from "./ui";
@@ -51,11 +52,13 @@ export function SyncConflictReview({
         <fieldset key={item.key} disabled={busy} className="space-y-2 rounded-xl bg-[#f7faf8] p-3">
           <legend className="text-sm font-semibold">
             {item.collection} ·{" "}
-            {item.field === "$scoring"
-              ? "different scoring target"
-              : item.field === "$record"
-                ? "record changed"
-                : item.field}
+            {item.key === SESSION_RESET_CONFLICT_KEY
+              ? "current session changed in the cloud"
+              : item.field === "$scoring"
+                ? "different scoring target"
+                : item.field === "$record"
+                  ? "record changed"
+                  : item.field}
           </legend>
           <div className="grid gap-2 text-xs sm:grid-cols-2">
             <details>
@@ -85,7 +88,12 @@ export function SyncConflictReview({
               <option value="" disabled>
                 Choose a resolution
               </option>
-              {item.field === "$scoring" ? (
+              {item.key === SESSION_RESET_CONFLICT_KEY ? (
+                <>
+                  <option value="local">Start this device’s fresh session</option>
+                  <option value="cloud">Keep the cloud session and discard this reset</option>
+                </>
+              ) : item.field === "$scoring" ? (
                 <option value="cloud">Discard this incompatible match; keep other changes</option>
               ) : item.kind === "identity" ? (
                 <>

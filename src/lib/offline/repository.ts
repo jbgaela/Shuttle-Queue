@@ -8,6 +8,7 @@ import type {
   MatchPlayer,
   MatchmakingMode,
   ScoreSettings,
+  SessionResetMarker,
   SyncMetadata,
   DomainSynergyTeam,
   GuidedAvailabilitySummary,
@@ -25,6 +26,8 @@ import {
   lowSkillLoneFemaleAdvisory,
   normalizeText,
   removeSessionPlayer,
+  seedSyncMetadata,
+  stampSnapshotChanges,
   skillWeight,
   suggestMatch,
   undefeatedChallengePlayers,
@@ -70,12 +73,14 @@ import {
   getMeta,
   hasSnapshot,
   markSyncAttention,
+  notifyOfflineChange,
   offlineDb,
   prepareSnapshotUpload,
   readSnapshot,
   replaceSnapshot,
   saveProfile,
   storageEstimate,
+  stripSessionRecordMetadata,
   updateLocalSnapshot,
   recordSyncFailure,
   type LocalAuditEvent,
@@ -2724,35 +2729,107 @@ async function endQueue(accountId: string) {
 }
 
 async function freshQueue(accountId: string, body: Record<string, unknown> = {}) {
-  return mutate(accountId, "WORKSPACE_RESET", (snapshot) => {
-    if (body.version !== undefined && body.version !== snapshot.workspace.version)
-      throw new Error("This queue changed. Refresh and try again.");
-    snapshot.workspace.scoringTarget =
-      body.pointsToWin === undefined ? null : validateScoringTarget(body.pointsToWin);
-    snapshot.queuePlayers = [];
-    snapshot.courts = [];
-    snapshot.matches = [];
-    snapshot.payments = [];
-    snapshot.audits = [];
-    snapshot.workspace.startedAt = now();
-    snapshot.workspace.endedAt = null;
-    snapshot.workspace.lateArrivalCutoffAt = null;
-    snapshot.workspace.matchmakingRevision += 1;
-    snapshot.workspace.version += 1;
-    if (snapshot.settings)
-      snapshot.feeConfig = {
-        id: snapshot.feeConfig?.id ?? id(),
-        mode: snapshot.settings.defaultFeeMode,
-        currencyCode: snapshot.settings.currencyCode,
-        fixedAmountPerPlayerMinor: snapshot.settings.defaultFixedFeeMinor ?? null,
-        expectedQueueCostMinor: 0,
-        noShowPenaltyMinor: snapshot.settings.noShowPenaltyMinor ?? 0,
-        participationRule: snapshot.feeConfig?.participationRule ?? "ALL_ACTIVE",
-        frozenAt: null,
-        version: (snapshot.feeConfig?.version ?? 0) + 1,
-      };
-    return workspaceView(snapshot);
-  });
+  const reset = async () => {
+    let workspace!: WorkspaceSummary;
+    await offlineDb.transaction(
+      "rw",
+      offlineDb.snapshots,
+      offlineDb.meta,
+      offlineDb.audits,
+      async () => {
+        const row = await offlineDb.snapshots.get(accountId);
+        const current = await offlineDb.meta.get(accountId);
+        if (!row || !current) throw new Error("Local data is missing.");
+        if (body.version !== undefined && body.version !== row.snapshot.workspace.version)
+          throw new Error("This queue changed. Refresh and try again.");
+
+        const updatedAt = now();
+        const localRevision = current.localRevision + 1;
+        const snapshot = structuredClone(row.snapshot);
+        snapshot.workspace.scoringTarget =
+          body.pointsToWin === undefined ? null : validateScoringTarget(body.pointsToWin);
+        snapshot.queuePlayers = [];
+        snapshot.synergyTeams = [];
+        snapshot.courts = [];
+        snapshot.matches = [];
+        snapshot.payments = [];
+        snapshot.audits = [];
+        snapshot.workspace.startedAt = updatedAt;
+        snapshot.workspace.endedAt = null;
+        snapshot.workspace.lateArrivalCutoffAt = null;
+        snapshot.workspace.matchmakingRevision += 1;
+        snapshot.workspace.version += 1;
+        if (snapshot.settings)
+          snapshot.feeConfig = {
+            id: snapshot.feeConfig?.id ?? id(),
+            mode: snapshot.settings.defaultFeeMode,
+            currencyCode: snapshot.settings.currencyCode,
+            fixedAmountPerPlayerMinor: snapshot.settings.defaultFixedFeeMinor ?? null,
+            expectedQueueCostMinor: 0,
+            noShowPenaltyMinor: snapshot.settings.noShowPenaltyMinor ?? 0,
+            participationRule: snapshot.feeConfig?.participationRule ?? "ALL_ACTIVE",
+            frozenAt: null,
+            version: (snapshot.feeConfig?.version ?? 0) + 1,
+          };
+
+        const sessionReset: SessionResetMarker = {
+          resetId: id(),
+          previousStartedAt:
+            row.sessionReset?.previousStartedAt ??
+            row.baseline?.workspace.startedAt ??
+            row.snapshot.workspace.startedAt,
+          baseCloudRevision: row.sessionReset?.baseCloudRevision ?? current.baseCloudRevision,
+        };
+        const baseline = structuredClone(row.baseline ?? row.snapshot);
+        baseline.workspace = structuredClone(snapshot.workspace);
+        baseline.queuePlayers = [];
+        baseline.synergyTeams = [];
+        baseline.courts = [];
+        baseline.matches = [];
+        baseline.feeConfig = structuredClone(snapshot.feeConfig);
+        baseline.payments = [];
+        baseline.audits = [];
+        const metadata = stripSessionRecordMetadata(
+          stampSnapshotChanges(
+            row.snapshot,
+            snapshot,
+            row.metadata ?? seedSyncMetadata(row.snapshot, current.deviceId, row.updatedAt),
+            current.deviceId,
+            updatedAt,
+            localRevision,
+          ),
+        );
+        await offlineDb.snapshots.put({
+          ...row,
+          snapshot,
+          baseline,
+          pendingUpload: undefined,
+          sessionReset,
+          metadata,
+          updatedAt,
+        });
+        await offlineDb.audits.where("accountId").equals(accountId).delete();
+        const { review: _review, syncAttention: _attention, ...cleanMeta } = current;
+        await offlineDb.meta.put({
+          ...cleanMeta,
+          localRevision,
+          pendingOperationId: id(),
+          pendingOperationRevision: localRevision,
+          dirty: true,
+          lastError: null,
+        });
+        workspace = workspaceView(snapshot);
+      },
+    );
+    return workspace;
+  };
+
+  const workspace =
+    typeof navigator !== "undefined" && navigator.locks
+      ? await navigator.locks.request(`shuttle-queue-sync:${accountId}`, reset)
+      : await reset();
+  notifyOfflineChange();
+  return workspace;
 }
 
 const historyViewWithChallengeLabel = (
@@ -3362,6 +3439,7 @@ export type SyncResult = {
 };
 
 const SYNC_TIMEOUT_MS = 60_000;
+const SYNC_CLOUD_CHANGE_RETRIES = 2;
 
 type RemoteSnapshot = { snapshot: CloudSnapshotV2; cloudRevision: number; metadata?: SyncMetadata };
 
@@ -3408,12 +3486,7 @@ async function uploadLocalSnapshotInternal(
   const local = await getMeta(accountId);
   if (!local) throw new Error("Local data is missing.");
   const batch = await prepareSnapshotUpload(accountId, resolutions);
-  const uploaded = await request<{
-    cloudRevision: number;
-    alreadyApplied?: boolean;
-    snapshot?: CloudSnapshotV2;
-    metadata?: SyncMetadata;
-  }>("/sync/snapshot", {
+  const uploadRequest = {
     method: "PUT",
     ...(signal ? { signal } : {}),
     body: JSON.stringify({
@@ -3424,12 +3497,32 @@ async function uploadLocalSnapshotInternal(
       force: false,
       snapshot: batch.snapshot,
       baseSnapshot: batch.baseSnapshot,
+      sessionReset: batch.sessionReset,
       resolutions: batch.resolutions,
       reviewedCloudRevision: batch.reviewedCloudRevision,
       metadata: batch.metadata,
       auditEvents: batch.auditEvents,
     }),
-  });
+  } as const;
+  let uploaded: {
+    cloudRevision: number;
+    alreadyApplied?: boolean;
+    snapshot?: CloudSnapshotV2;
+    metadata?: SyncMetadata;
+  };
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      uploaded = await request<typeof uploaded>("/sync/snapshot", uploadRequest);
+      break;
+    } catch (reason) {
+      if (
+        !(reason instanceof ApiError) ||
+        reason.code !== "SYNC_CLOUD_CHANGED" ||
+        attempt >= SYNC_CLOUD_CHANGE_RETRIES
+      )
+        throw reason;
+    }
+  }
   if (
     !uploaded ||
     !Number.isSafeInteger(uploaded.cloudRevision) ||

@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { CloudSnapshotV2, SyncMetadata } from "./domain-compat";
+import type { CloudSnapshotV2, SessionResetMarker, SyncMetadata } from "./domain-compat";
 import { reviewSyncSnapshots, seedSyncMetadata, stampSnapshotChanges } from "./domain-compat";
 import type { SyncChoices, SyncConflict } from "./domain-compat";
 import { normalizeSnapshotForSync } from "./snapshot-normalization";
@@ -37,6 +37,7 @@ type SnapshotRow = {
   snapshot: CloudSnapshotV2;
   baseline?: CloudSnapshotV2;
   pendingUpload?: SnapshotUploadBatch | undefined;
+  sessionReset?: SessionResetMarker | undefined;
   metadata?: SyncMetadata;
   updatedAt: string;
   readinessProbe?: string;
@@ -50,6 +51,7 @@ export type SnapshotUploadBatch = {
   auditEvents: LocalAuditEvent[];
   baseSnapshot?: CloudSnapshotV2;
   sentSnapshot?: CloudSnapshotV2;
+  sessionReset?: SessionResetMarker;
   resolutions?: SyncChoices;
   reviewedCloudRevision?: number | undefined;
 };
@@ -89,6 +91,14 @@ const randomId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+export function stripSessionRecordMetadata(metadata: SyncMetadata): SyncMetadata {
+  const records = { ...metadata.records };
+  for (const key of Object.keys(records))
+    if (/^(queuePlayers|synergyTeams|courts|matches|payments|audits)\//.test(key))
+      delete records[key];
+  return { ...metadata, records };
+}
 
 export function getDeviceId() {
   if (typeof window === "undefined") return "server";
@@ -273,6 +283,7 @@ export async function prepareSnapshotUpload(
         operationId: resolutions ? randomId() : operationId,
         auditEvents: await offlineDb.audits.where("accountId").equals(accountId).toArray(),
         ...(row.baseline ? { baseSnapshot: row.baseline } : {}),
+        ...(row.sessionReset ? { sessionReset: row.sessionReset } : {}),
         ...(resolutions
           ? { resolutions, reviewedCloudRevision: current.review?.cloudRevision }
           : {}),
@@ -305,6 +316,9 @@ export async function completeSnapshotUpload(
       const row = await offlineDb.snapshots.get(accountId);
       const current = await offlineDb.meta.get(accountId);
       if (!row || !current) return;
+      if (row.sessionReset && batch.sessionReset?.resetId !== row.sessionReset.resetId) return;
+      const resetAcknowledged =
+        Boolean(batch.sessionReset) && batch.sessionReset?.resetId === row.sessionReset?.resetId;
       const sameBatch =
         current.localRevision === batch.localRevision &&
         current.pendingOperationId === batch.operationId;
@@ -313,9 +327,10 @@ export async function completeSnapshotUpload(
         await offlineDb.snapshots.put({
           ...row,
           pendingUpload: undefined,
+          ...(resetAcknowledged ? { sessionReset: undefined } : {}),
           baseline: normalizeSnapshotForSync(batch.snapshot),
           snapshot: normalizeSnapshotForSync(batch.snapshot),
-          metadata: batch.metadata,
+          metadata: resetAcknowledged ? stripSessionRecordMetadata(batch.metadata) : batch.metadata,
           updatedAt: now,
         });
         const {
@@ -345,12 +360,13 @@ export async function completeSnapshotUpload(
         await offlineDb.snapshots.put({
           ...row,
           pendingUpload: undefined,
+          ...(resetAcknowledged ? { sessionReset: undefined } : {}),
           baseline: review.conflicts.length ? base : batch.snapshot,
           snapshot: normalizeSnapshotForSync(rebased),
           metadata: stampSnapshotChanges(
             batch.snapshot,
             rebased,
-            batch.metadata,
+            resetAcknowledged ? stripSessionRecordMetadata(batch.metadata) : batch.metadata,
             current.deviceId,
             now,
             current.localRevision,
