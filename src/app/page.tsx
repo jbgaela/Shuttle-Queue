@@ -1085,7 +1085,7 @@ function OfflineBootstrap({
       </div>
       <AppShell user={user} onLogout={onLogout} />
       {(updatePending || progress.persistentStorage === false) && (
-        <div className="fixed bottom-3 right-3 z-[70] max-w-xs rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-xs text-[var(--muted)] shadow-lg">
+        <div className="fixed bottom-3 right-3 z-40 max-w-xs rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-xs text-[var(--muted)] shadow-lg">
           {updatePending &&
             "A newer app version will be checked the next time you open the workspace."}
           {updatePending && progress.persistentStorage === false && <br />}
@@ -2371,6 +2371,7 @@ function CourtCardContent({
               <span className="inline-flex items-center gap-2">
                 <Clock3 size={14} aria-hidden="true" />{" "}
                 <LiveDuration startedAt={match.startedAt ?? null} /> elapsed
+                {match.scoring && <span> · Race to {match.scoring.pointsToWin}</span>}
               </span>
               {(match.matchmakingMode === "BALANCED" ||
                 match.matchmakingMode === "UNDEFEATED_CHALLENGE" ||
@@ -2457,8 +2458,9 @@ function ScoreModal({
   const [games, setGames] = useState([{ teamAScore: "", teamBScore: "" }]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const bestOf = session.scoring.bestOf;
-  const maximumScore = session.scoring.scoreCap ?? session.scoring.pointsToWin;
+  const rules = match.scoring ?? session.scoring;
+  const bestOf = rules.bestOf;
+  const maximumScore = rules.scoreCap ?? rules.pointsToWin;
   const teamA =
     match.participants
       .filter((participant) => participant.team === "A")
@@ -2523,44 +2525,12 @@ function ScoreModal({
       teamAScore: Number(game.teamAScore),
       teamBScore: Number(game.teamBScore),
     }));
-    if (
-      parsed.some(
-        (game) =>
-          !Number.isInteger(game.teamAScore) ||
-          !Number.isInteger(game.teamBScore) ||
-          game.teamAScore < 0 ||
-          game.teamBScore < 0,
-      )
-    ) {
-      setError("Enter a non-negative score for both teams.");
-      return;
-    }
-    if (parsed.some((game) => game.teamAScore === game.teamBScore)) {
-      setError("A game cannot end in a tie.");
-      return;
-    }
-    if (parsed.some((game) => game.teamAScore > maximumScore || game.teamBScore > maximumScore)) {
-      setError(`Scores cannot exceed ${maximumScore}.`);
-      return;
-    }
-    let aWins = 0;
-    let bWins = 0;
-    for (const game of parsed) game.teamAScore > game.teamBScore ? aWins++ : bWins++;
-    const requiredWins = Math.floor(bestOf / 2) + 1;
-    if (aWins < requiredWins && bWins < requiredWins) {
-      setError(`Complete the ${bestOf === 3 ? "best-of-3 series" : "match"} before saving.`);
-      return;
-    }
-    if (
-      parsed.some(
-        (game) =>
-          Math.max(game.teamAScore, game.teamBScore) < session.scoring.pointsToWin &&
-          Math.max(game.teamAScore, game.teamBScore) !== maximumScore,
-      )
-    ) {
-      setError(
-        `Scores must reach ${session.scoring.pointsToWin} and win by ${session.scoring.winBy}.`,
-      );
+    try {
+      if (games.some((game) => game.teamAScore.trim() === "" || game.teamBScore.trim() === ""))
+        throw new Error("Enter a score for both teams.");
+      validateScores(parsed, { ...rules, bestOf: rules.bestOf as 1 | 3 });
+    } catch (validation) {
+      setError(errorMessage(validation));
       return;
     }
     setPending(true);
@@ -2610,8 +2580,8 @@ function ScoreModal({
             <span className="text-right">{teamB}</span>
           </div>
           <p className="mt-2 text-xs text-[var(--muted)]">
-            Race to {session.scoring.pointsToWin}, win by {session.scoring.winBy}, maximum{" "}
-            {maximumScore}, best of {bestOf}
+            Race to {rules.pointsToWin}, win by {rules.winBy}, maximum {maximumScore}, best of{" "}
+            {bestOf}
           </p>
         </div>
         <div className="mt-5 space-y-3">
@@ -3847,6 +3817,7 @@ function LiveView({
     ["courts", "matches", "queue", "rankings", "history"].forEach((key) =>
       queryClient.invalidateQueries({ queryKey: [key, sessionId] }),
     );
+    queryClient.invalidateQueries({ queryKey: ["workspace"] });
     queryClient.invalidateQueries({ queryKey: ["playerHistory", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
   };
@@ -7669,6 +7640,10 @@ function QueueViewContent({ sessionId }: { sessionId: string }) {
               Start a fresh queue from Settings to resume operations.
             </p>
           </Card>
+        ) : workspace?.scoringSetupRequired ? (
+          <Card>
+            <p>Choose scoring before creating a match.</p>
+          </Card>
         ) : (
           <MatchmakerPanel
             key={sessionId}
@@ -9191,6 +9166,159 @@ function SessionSettingsControls({
   );
 }
 
+function ScoringSetupDialog({
+  initialTarget,
+  pending,
+  error,
+  onConfirm,
+  onClose,
+  fresh = false,
+}: {
+  initialTarget: number;
+  pending: boolean;
+  error?: unknown;
+  onConfirm: (target: number) => void;
+  onClose: () => void;
+  fresh?: boolean;
+}) {
+  const [choice, setChoice] = useState(
+    [15, 21, 31].includes(initialTarget) ? String(initialTarget) : "custom",
+  );
+  const [custom, setCustom] = useState(String(initialTarget));
+  const [validation, setValidation] = useState("");
+  const submit = () => {
+    const raw = choice === "custom" ? custom.trim() : choice;
+    const target = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isInteger(target) || target < 1 || target > 99) {
+      setValidation("Choose a whole-number target from 1 to 99.");
+      return;
+    }
+    setValidation("");
+    onConfirm(target);
+  };
+  return (
+    <HistoryDialogShell
+      title={fresh ? "Start fresh queue?" : "What score are we playing to?"}
+      eyebrow="Session scoring"
+      description="One game per match. First team to reach the target wins."
+      closeLabel="Close scoring setup"
+      pending={pending}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="quiet" disabled={pending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant={fresh ? "danger" : "primary"} disabled={pending} onClick={submit}>
+            {pending ? "Saving…" : fresh ? "Start fresh queue" : "Save scoring"}
+          </Button>
+        </div>
+      }
+    >
+      <p className="mb-4 text-sm text-[var(--muted)]">
+        One game per match. First team to reach the target wins.
+      </p>
+      {fresh && (
+        <p className="mb-4 rounded-2xl bg-[#fff0e4] p-3 text-sm text-[#8d4824]">
+          All current queue activity, including open matches, completed scores, payments, rankings,
+          and history, will be permanently deleted. Player profiles and account defaults will
+          remain.
+        </p>
+      )}
+      <fieldset disabled={pending} className="space-y-4">
+        <legend className="mb-3 font-semibold">Points to win</legend>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {["15", "21", "31", "custom"].map((value) => (
+            <label
+              key={value}
+              className="flex cursor-pointer items-center gap-2 rounded-xl border border-[var(--line)] p-3"
+            >
+              <input
+                type="radio"
+                name="scoring-target"
+                value={value}
+                checked={choice === value}
+                onChange={() => setChoice(value)}
+              />
+              {value === "custom" ? "Custom" : value}
+            </label>
+          ))}
+        </div>
+        {choice === "custom" && (
+          <label className="block font-semibold">
+            Custom target
+            <Input
+              type="number"
+              min={1}
+              max={99}
+              step={1}
+              inputMode="numeric"
+              value={custom}
+              onChange={(event) => setCustom(event.target.value)}
+            />
+          </label>
+        )}
+      </fieldset>
+      {(validation || Boolean(error)) && (
+        <p role="alert" className="mt-4 text-sm text-[#8d4824]">
+          {validation || errorMessage(error)}
+        </p>
+      )}
+    </HistoryDialogShell>
+  );
+}
+
+function SessionScoringCard({ session }: { session: SessionSummary }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const save = useMutation({
+    mutationFn: (target: number) => api.updateScoring(target, session.version),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["workspace"], updated);
+      void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+      setOpen(false);
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+    },
+  });
+  return (
+    <Card>
+      <h3 className="font-semibold">Session scoring</h3>
+      <p className="mt-2">
+        {session.scoringSetupRequired
+          ? "Choose scoring before creating matches."
+          : `Race to ${session.scoring.pointsToWin}`}
+      </p>
+      <p className="mt-2 text-sm text-[var(--muted)]">
+        {session.scoringLocked
+          ? "Scoring is locked for this session."
+          : "You can change scoring until the first match is queued or started."}
+      </p>
+      {!session.scoringLocked && session.status === "ACTIVE" && (
+        <Button
+          className="mt-3"
+          onClick={() => {
+            save.reset();
+            setOpen(true);
+          }}
+        >
+          {session.scoringSetupRequired ? "Choose scoring" : "Change scoring"}
+        </Button>
+      )}
+      {open && (
+        <ScoringSetupDialog
+          initialTarget={session.scoringTarget ?? 31}
+          pending={save.isPending}
+          error={save.isError ? save.error : undefined}
+          onConfirm={(target) => save.mutate(target)}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </Card>
+  );
+}
+
 function QueueSettingsControls({
   session,
   onReset,
@@ -9200,7 +9328,7 @@ function QueueSettingsControls({
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const reset = useMutation({
-    mutationFn: () => api.startFreshQueue(session.version),
+    mutationFn: (target: number) => api.startFreshQueue(session.version, target),
     onSuccess: (updated) => {
       setConfirmOpen(false);
       onReset(updated);
@@ -9235,12 +9363,12 @@ function QueueSettingsControls({
         </p>
       )}
       {confirmOpen && (
-        <DestructiveConfirmDialog
-          title="Start fresh queue?"
-          body="All current queue activity, including open matches, completed scores, payments, rankings, and history, will be permanently deleted. Player profiles and account defaults will remain."
-          confirmLabel="Start fresh queue"
+        <ScoringSetupDialog
+          fresh
+          initialTarget={31}
           pending={reset.isPending}
-          onConfirm={() => reset.mutate()}
+          error={reset.isError ? reset.error : undefined}
+          onConfirm={(target) => reset.mutate(target)}
           onClose={() => {
             if (!reset.isPending) setConfirmOpen(false);
           }}
@@ -9385,6 +9513,7 @@ function SettingsView(props: {
       <OfflineSyncPanel accountId={props.user.id} />
       <AccountSecuritySettings />
       {props.user.role === "SUPER_ADMIN" && <SuperAdminSettings user={props.user} />}
+      <SessionScoringCard session={props.session} />
       <MinimumRestSettingsCard />
       <LateArrivalSettingsCard session={props.session} sessionId={props.sessionId} />
       <EndSessionControl session={props.session} />
@@ -9640,6 +9769,7 @@ function HistoryDialogShell({
   children,
   footer,
   onClose,
+  closeLabel = "Close correction dialog",
   pending,
   size = "narrow",
 }: {
@@ -9649,6 +9779,7 @@ function HistoryDialogShell({
   children: ReactNode;
   footer: ReactNode;
   onClose: () => void;
+  closeLabel?: string;
   pending?: boolean;
   size?: "narrow" | "wide";
 }) {
@@ -9725,7 +9856,7 @@ function HistoryDialogShell({
           <UiButton
             variant="quiet"
             className="min-h-11 min-w-11 shrink-0 px-3"
-            aria-label="Close correction dialog"
+            aria-label={closeLabel}
             disabled={pending}
             onClick={onClose}
           >
@@ -9788,6 +9919,8 @@ function HistoryScoreCorrectionDialog({
       teamBScore: Number(game.teamBScore),
     }));
     try {
+      if (games.some((game) => game.teamAScore.trim() === "" || game.teamBScore.trim() === ""))
+        throw new Error("Enter a score for both teams.");
       validateScores(parsed, settings);
       const before =
         match.score?.games.map((game) => `${game.teamAScore}:${game.teamBScore}`).join("|") ?? "";
@@ -11566,6 +11699,19 @@ function QueueWorkspaceShellV2({ user, onLogout }: { user: AuthUser; onLogout: (
   const workspaceQuery = useQuery({ queryKey: ["workspace"], queryFn: api.workspace });
   const active = workspaceQuery.data;
   const workspaceId = "workspace";
+  const [dismissedScoringSession, setDismissedScoringSession] = useState<string | null>(null);
+  const [scoringOpen, setScoringOpen] = useState(false);
+  const scoring = useMutation({
+    mutationFn: (target: number) => api.updateScoring(target, active!.version),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["workspace"], updated);
+      setScoringOpen(false);
+      setDismissedScoringSession(updated.startedAt);
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+    },
+  });
   const previousWorkspaceKey = useRef<string | null>(null);
   useEffect(() => {
     const workspaceKey = active?.startedAt ?? null;
@@ -11600,6 +11746,28 @@ function QueueWorkspaceShellV2({ user, onLogout }: { user: AuthUser; onLogout: (
   return (
     <main className="min-h-screen">
       <h1 className="sr-only">Shuttle Queue</h1>
+      {(scoringOpen ||
+        (active.scoringSetupRequired && dismissedScoringSession !== active.startedAt)) && (
+        <ScoringSetupDialog
+          initialTarget={active.scoringTarget ?? 31}
+          pending={scoring.isPending}
+          error={scoring.isError ? scoring.error : undefined}
+          onConfirm={(target) => scoring.mutate(target)}
+          onClose={() => {
+            setScoringOpen(false);
+            setDismissedScoringSession(active.startedAt);
+          }}
+        />
+      )}
+      {active.scoringSetupRequired && (
+        <div
+          className="mx-auto flex max-w-7xl items-center justify-between gap-3 p-4"
+          role="status"
+        >
+          <p>Choose scoring before queuing or starting a match.</p>
+          <Button onClick={() => setScoringOpen(true)}>Choose scoring</Button>
+        </div>
+      )}
       <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--paper)]/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">

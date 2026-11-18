@@ -1,3 +1,4 @@
+export { sessionScoring, scoringState, validateScoringTarget } from "@shuttle-queue/domain";
 export {
   applyPlayerDeletion,
   allocateFinalFeeAmounts,

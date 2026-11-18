@@ -482,12 +482,18 @@ export const api = {
       status: value.status ?? "ENDED",
     };
   },
-  startFreshQueue: async (version: number) => {
+  updateScoring: (pointsToWin: number, version: number) =>
+    request<WorkspaceSummary>("/workspace/scoring", {
+      method: "PATCH",
+      headers: { "if-match": String(version) },
+      body: JSON.stringify({ pointsToWin }),
+    }),
+  startFreshQueue: async (version: number, pointsToWin?: number) => {
     await syncBeforePublicSessionFinalization();
     const value = await request<WorkspaceSummary>("/workspace/start-fresh", {
       method: "POST",
       headers: { "if-match": String(version) },
-      body: "{}",
+      body: JSON.stringify({ pointsToWin }),
     });
     if (publicSharingActive && typeof navigator !== "undefined" && navigator.onLine) {
       const local = await import("./offline/repository");
@@ -955,6 +961,9 @@ export type AccountDeletionPreview = {
   idempotencyRecordCount: number;
 };
 export type WorkspaceSummary = {
+  scoringTarget?: number | null;
+  scoringSetupRequired?: boolean;
+  scoringLocked?: boolean;
   id: string;
   name: string;
   sessionDate: string;

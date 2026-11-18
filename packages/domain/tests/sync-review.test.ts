@@ -32,6 +32,44 @@ const fixture = (): CloudSnapshotV2 => ({
   audits: [],
   feeConfig: null,
 });
+test("session scoring choices require review while older snapshots preserve a confirmed target", () => {
+  const base = fixture(),
+    local = fixture(),
+    cloud = fixture();
+  cloud.workspace.scoringTarget = 21;
+  local.players[0]!.displayName = "Local retained";
+  const legacy = reviewSyncSnapshots(local, cloud, base);
+  assert.equal(legacy.snapshot.workspace.scoringTarget, 21);
+  assert.equal(legacy.snapshot.players[0]!.displayName, "Local retained");
+  local.workspace.scoringTarget = 15;
+  const review = reviewSyncSnapshots(local, cloud, base);
+  assert.ok(review.conflicts.some((conflict) => conflict.collection === "workspace"));
+});
+
+test("incompatible offline matches can be discarded explicitly while preserving unrelated work", () => {
+  const base = fixture(),
+    local = fixture(),
+    cloud = fixture();
+  cloud.workspace.scoringTarget = 21;
+  local.players[0]!.displayName = "Keep this edit";
+  local.matches.push({
+    id: "offline-match",
+    pointsToWin: 31,
+    winBy: 1,
+    scoreCap: 31,
+    bestOf: 1,
+    participants: [],
+    scoreRevisions: [],
+  } as any);
+  const review = reviewSyncSnapshots(local, cloud, base);
+  const conflict = review.conflicts.find((item) => item.field === "$scoring");
+  assert.ok(conflict);
+  const resolved = reviewSyncSnapshots(local, cloud, base, { [conflict.key]: { choice: "cloud" } });
+  assert.equal(resolved.conflicts.length, 0);
+  assert.equal(resolved.snapshot.matches.length, 0);
+  assert.equal(resolved.snapshot.players[0]!.displayName, "Keep this edit");
+});
+
 test("three-way merges independent fields but requires review for the same field", () => {
   const base = fixture(),
     local = fixture(),
@@ -66,8 +104,20 @@ test("match participant ordering does not create a false review conflict", () =>
     queuedAt: "2026-01-01T00:00:00.000Z",
     version: 1,
     participants: [
-      { id: "participant-a", matchId: "match", queuePlayerId: "queue-a", team: "A", teamSlot: 1 },
-      { id: "participant-b", matchId: "match", queuePlayerId: "queue-b", team: "B", teamSlot: 1 },
+      {
+        id: "participant-a",
+        matchId: "match",
+        queuePlayerId: "queue-a",
+        team: "A",
+        teamSlot: 1,
+      },
+      {
+        id: "participant-b",
+        matchId: "match",
+        queuePlayerId: "queue-b",
+        team: "B",
+        teamSlot: 1,
+      },
     ],
     scoreRevisions: [],
   };

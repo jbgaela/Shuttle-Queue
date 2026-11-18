@@ -1,3 +1,4 @@
+import { sessionScoring, scoringState, validateScoringTarget } from "./domain-compat";
 import type {
   CloudSnapshotV2,
   DomainMatch,
@@ -232,12 +233,13 @@ const preserveCourtSnapshot = (match: DomainMatch, court: CloudSnapshotV2["court
   captureCourtSnapshot(match, court);
   match.courtId = null;
 };
-const settings = (snapshot: CloudSnapshotV2): ScoreSettings => ({
-  pointsToWin: snapshot.settings?.pointsToWin ?? 21,
-  winBy: snapshot.settings?.winBy ?? 2,
-  scoreCap: snapshot.settings?.scoreCap ?? null,
-  bestOf: (snapshot.settings?.bestOf ?? 1) as 1 | 3,
-});
+const settings = (snapshot: CloudSnapshotV2): ScoreSettings =>
+  sessionScoring(snapshot.workspace.scoringTarget, {
+    pointsToWin: snapshot.settings?.pointsToWin ?? 21,
+    winBy: snapshot.settings?.winBy ?? 2,
+    scoreCap: snapshot.settings?.scoreCap ?? null,
+    bestOf: (snapshot.settings?.bestOf ?? 1) as 1 | 3,
+  });
 const minimumRestMinutes = (snapshot: CloudSnapshotV2) =>
   snapshot.settings?.minimumRestMinutes ?? 0;
 const lateArrivalGraceMinutes = (snapshot: CloudSnapshotV2) =>
@@ -461,6 +463,11 @@ const workspaceView = (snapshot: CloudSnapshotV2): WorkspaceSummary => ({
   version: snapshot.workspace.version,
   playerCount: snapshot.queuePlayers.length,
   courtCount: snapshot.courts.length,
+  ...scoringState(
+    snapshot.workspace.scoringTarget,
+    snapshot.matches.length,
+    Boolean(snapshot.workspace.endedAt),
+  ),
   scoring: settings(snapshot),
   feeConfig: snapshot.feeConfig as any,
 });
@@ -1450,6 +1457,10 @@ async function makeSuggestion(accountId: string, body: Record<string, unknown>) 
 
 async function createMatchStacked(accountId: string, body: Record<string, unknown>) {
   return mutate(accountId, "MATCH_CREATED", (snapshot) => {
+    if (
+      scoringState(snapshot.workspace.scoringTarget, snapshot.matches.length).scoringSetupRequired
+    )
+      throw new Error("Choose scoring before creating a match.");
     const teamA = Array.isArray(body.teamA) ? body.teamA.map(String) : [];
     const teamB = Array.isArray(body.teamB) ? body.teamB.map(String) : [];
     const ids = [...teamA, ...teamB];
@@ -2712,8 +2723,12 @@ async function endQueue(accountId: string) {
   );
 }
 
-async function freshQueue(accountId: string) {
+async function freshQueue(accountId: string, body: Record<string, unknown> = {}) {
   return mutate(accountId, "WORKSPACE_RESET", (snapshot) => {
+    if (body.version !== undefined && body.version !== snapshot.workspace.version)
+      throw new Error("This queue changed. Refresh and try again.");
+    snapshot.workspace.scoringTarget =
+      body.pointsToWin === undefined ? null : validateScoringTarget(body.pointsToWin);
     snapshot.queuePlayers = [];
     snapshot.courts = [];
     snapshot.matches = [];
@@ -2858,8 +2873,21 @@ export async function handleRequest(
     if (Number.isSafeInteger(parsed)) body.version = parsed;
   }
   if (route[0] === "workspace" && route.length === 1)
-    return method === "GET" ? workspaceView(snapshot) : freshQueue(accountId);
-  if (route[0] === "workspace" && route[1] === "start-fresh") return freshQueue(accountId);
+    return method === "GET" ? workspaceView(snapshot) : freshQueue(accountId, body);
+  if (route[0] === "workspace" && route[1] === "start-fresh") return freshQueue(accountId, body);
+  if (route[0] === "workspace" && route[1] === "scoring" && method === "PATCH")
+    return mutate(accountId, "SCORING_UPDATED", (value) => {
+      if (body.version !== value.workspace.version)
+        throw new Error("This queue changed. Refresh and try again.");
+      if (value.matches.length)
+        throw new Error(
+          "Scoring is locked after the first match. Start a fresh queue to change it.",
+        );
+      value.workspace.scoringTarget = validateScoringTarget(body.pointsToWin);
+      value.workspace.version += 1;
+      value.workspace.matchmakingRevision += 1;
+      return workspaceView(value);
+    });
   if (route[0] === "workspace" && route[1] === "end") return endQueue(accountId);
   if (route[0] === "workspace" && route[1] === "late-arrival-policy")
     return mutate(accountId, "LATE_ARRIVAL_POLICY_UPDATED", (value) => {

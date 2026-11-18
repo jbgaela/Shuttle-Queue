@@ -60,6 +60,25 @@ export function reviewSyncSnapshots(
   base?: CloudSnapshotV2,
   choices: SyncChoices = {},
 ) {
+  // Older clients do not carry the session target. Preserve a confirmed target
+  // when reviewing the same session, including its older baseline.
+  if (
+    local.workspace.startedAt === cloud.workspace.startedAt &&
+    cloud.workspace.scoringTarget != null
+  ) {
+    const legacyTarget = local.workspace.scoringTarget == null;
+    local = copy(local);
+    local.workspace.scoringTarget ??= cloud.workspace.scoringTarget;
+    if (
+      base &&
+      legacyTarget &&
+      base.workspace.startedAt === cloud.workspace.startedAt &&
+      base.workspace.scoringTarget == null
+    ) {
+      base = copy(base);
+      base.workspace.scoringTarget = cloud.workspace.scoringTarget;
+    }
+  }
   const snapshot = copy(cloud);
   const conflicts: SyncConflict[] = [];
   const select = (
@@ -251,5 +270,31 @@ export function reviewSyncSnapshots(
     }
   }
   snapshot.synergyTeams = keptTeams;
+  const target = snapshot.workspace.scoringTarget;
+  if (target != null) {
+    const cloudMatchIds = new Set(cloud.matches.map((match) => match.id));
+    snapshot.matches = snapshot.matches.filter((match) => {
+      if (
+        cloudMatchIds.has(match.id) ||
+        (match.pointsToWin === target &&
+          match.winBy === 1 &&
+          (match.scoreCap ?? match.pointsToWin) === target &&
+          match.bestOf === 1)
+      )
+        return true;
+      const key = `matches/${match.id}/$scoring`;
+      if (choices[key]?.choice === "cloud") return false;
+      conflicts.push({
+        key,
+        collection: "matches",
+        id: match.id,
+        field: "$scoring",
+        local: match,
+        cloud: null,
+        kind: "session",
+      });
+      return true;
+    });
+  }
   return { snapshot, conflicts };
 }

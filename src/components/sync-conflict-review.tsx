@@ -50,7 +50,12 @@ export function SyncConflictReview({
       {conflicts.map((item, index) => (
         <fieldset key={item.key} disabled={busy} className="space-y-2 rounded-xl bg-[#f7faf8] p-3">
           <legend className="text-sm font-semibold">
-            {item.collection} · {item.field === "$record" ? "record changed" : item.field}
+            {item.collection} ·{" "}
+            {item.field === "$scoring"
+              ? "different scoring target"
+              : item.field === "$record"
+                ? "record changed"
+                : item.field}
           </legend>
           <div className="grid gap-2 text-xs sm:grid-cols-2">
             <details>
@@ -80,7 +85,9 @@ export function SyncConflictReview({
               <option value="" disabled>
                 Choose a resolution
               </option>
-              {item.kind === "identity" ? (
+              {item.field === "$scoring" ? (
+                <option value="cloud">Discard this incompatible match; keep other changes</option>
+              ) : item.kind === "identity" ? (
                 <>
                   <option value="cloud">Use the existing cloud identity</option>
                   {["players", "courts"].includes(item.collection) && (

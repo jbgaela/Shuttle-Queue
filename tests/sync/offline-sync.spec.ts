@@ -73,6 +73,94 @@ async function settings(page: Page) {
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   await expect(page.getByText("Offline workspace", { exact: true })).toBeVisible();
 }
+
+test("session scoring setup survives offline reload and records matching final scores", async ({
+  page,
+  context,
+}, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, `browser-${info.project.name}-scoring`);
+  const setup = page.getByRole("dialog", { name: "What score are we playing to?" });
+  await expect(setup).toBeVisible();
+  await expect(setup.getByRole("radio", { name: "31", exact: true })).toBeChecked();
+  await page.screenshot({ path: `/artifacts/scoring-${info.project.name}-phone.png` });
+  await setup.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await expect(page.getByText("Choose scoring before creating a match.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Matchmaker" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Choose scoring", exact: true }).click();
+  for (const target of ["15", "21", "31"]) {
+    await setup.getByRole("radio", { name: target, exact: true }).check();
+    await expect(setup.getByRole("radio", { name: target, exact: true })).toBeChecked();
+  }
+  await setup.getByRole("radio", { name: "Custom", exact: true }).check();
+  for (const value of ["", "0", "100", "2.5"]) {
+    await setup.getByLabel("Custom target").fill(value);
+    await setup.getByRole("button", { name: "Save scoring" }).click();
+    await expect(setup.getByRole("alert")).toContainText("1 to 99");
+  }
+  await context.setOffline(true);
+  await setup.getByLabel("Custom target").fill("25");
+  await setup.getByRole("button", { name: "Save scoring" }).click();
+  await expect(setup).toHaveCount(0);
+  await expect.poll(async () => (await local(page)).snapshot?.workspace.scoringTarget).toBe(25);
+  await settings(page);
+  await page.getByRole("button", { name: "Change scoring", exact: true }).click();
+  await setup.getByRole("radio", { name: "21", exact: true }).check();
+  await setup.getByRole("button", { name: "Save scoring" }).click();
+  await expect.poll(async () => (await local(page)).snapshot?.workspace.scoringTarget).toBe(21);
+  if (info.project.name === "webkit") await context.setOffline(false);
+  await page.reload();
+  await expect(page.getByTestId("offline-workspace-ready")).toBeAttached();
+  await bridge(page);
+  await expect(setup).toHaveCount(0);
+  await context.setOffline(true);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await page.getByRole("button", { name: "Suggest lineup", exact: true }).click();
+  const court = (await local(page)).snapshot!.courts[0]!;
+  await page.getByLabel("Court for immediate start").selectOption(court.id);
+  await page.getByRole("button", { name: "Start match", exact: true }).click();
+  await expect.poll(async () => (await local(page)).snapshot?.matches.length).toBe(1);
+  await page.getByRole("button", { name: "Live", exact: true }).click();
+  await expect(page.getByText("Race to 21", { exact: false }).first()).toBeVisible();
+  await page.screenshot({ path: `/artifacts/scoring-${info.project.name}-desktop.png` });
+  await page.getByRole("button", { name: "Enter final score", exact: true }).click();
+  const score = page.getByRole("dialog", { name: "Record the score" });
+  await score
+    .getByLabel(/game 1 score$/)
+    .nth(0)
+    .fill("21");
+  await score.getByRole("button", { name: "Confirm final score" }).click();
+  await expect(score.getByRole("alert")).toContainText("both teams");
+  await score
+    .getByLabel(/game 1 score$/)
+    .nth(1)
+    .fill("20");
+  await score.getByRole("button", { name: "Confirm final score" }).click();
+  await expect.poll(async () => (await local(page)).snapshot?.matches[0]?.status).toBe("COMPLETED");
+  await settings(page);
+  await expect(page.getByText("Scoring is locked for this session.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Change scoring" })).toHaveCount(0);
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await expect(page.getByText("21–20", { exact: false }).first()).toBeVisible();
+  await context.setOffline(false);
+  expect(["uploaded", "clean"]).toContain((await sync(page)).state);
+  const remote = (await cloud(page)).snapshot;
+  expect(remote.workspace.scoringTarget).toBe(21);
+  expect(remote.matches[0]?.scoreRevisions[0]?.games[0]?.teamAScore).toBe(21);
+  await settings(page);
+  await page.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+  const fresh = page.getByRole("dialog", { name: "Start fresh queue?" });
+  await fresh.getByRole("radio", { name: "15", exact: true }).check();
+  await fresh.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await local(page)).snapshot!.matches).toHaveLength(1);
+  await page.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+  await fresh.getByRole("radio", { name: "15", exact: true }).check();
+  await fresh.getByRole("button", { name: "Start fresh queue", exact: true }).click();
+  await expect.poll(async () => (await local(page)).snapshot?.workspace.scoringTarget).toBe(15);
+  expect((await local(page)).snapshot!.matches).toHaveLength(0);
+});
 async function assertPersisted(page: Page) {
   const state = await local(page);
   const remote = (await cloud(page)).snapshot as NonNullable<typeof state.snapshot>;

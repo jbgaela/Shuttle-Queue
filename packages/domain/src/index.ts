@@ -134,6 +134,7 @@ export type DomainCourt = {
   version: number;
 };
 export type DomainWorkspace = {
+  scoringTarget?: number | null;
   startedAt: string;
   endedAt?: string | null;
   lateArrivalCutoffAt?: string | null;
@@ -2174,3 +2175,5 @@ export function historyDurationSeconds(startedAt?: string | null, completedAt?: 
 
 export { reviewSyncSnapshots } from "./sync-review.js";
 export type { SyncChoice, SyncChoices, SyncConflict } from "./sync-review.js";
+
+export { sessionScoring, scoringState, validateScoringTarget } from "./session-scoring.js";
