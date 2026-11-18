@@ -137,6 +137,22 @@ test("private export keeps provisional players in the ranked table", () => {
   );
 });
 
+test("private and public exports retain shared ranks", () => {
+  const ties = [
+    ranking({ rank: 2, player: "Tied Player One" }),
+    ranking({ rank: 2, player: "Tied Player Two" }),
+    ranking({ rank: 4, player: "Next Rank" }),
+  ];
+  assert.deepEqual(
+    rankingExportRows(ties).map(({ rank }) => rank),
+    [1, 1, 2],
+  );
+  assert.deepEqual(
+    rankingExportRows(ties, { variant: "public" }).map(({ rank }) => rank),
+    [1, 1, 2],
+  );
+});
+
 test("public export omits prize labels, score, and eligibility sections", () => {
   const rows = rankingExportRows(
     [

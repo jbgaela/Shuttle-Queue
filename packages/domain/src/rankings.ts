@@ -1,7 +1,7 @@
 export const PRIZE_RANKING_MIN_MATCHES = 5;
 export const PRIZE_RANKING_PRIZE_PLACES = 3;
 export const PRIZE_RANKING_RESERVED_PLACES = 10;
-export const PRIZE_RANKING_VERSION = "wilson95-v3";
+export const PRIZE_RANKING_VERSION = "wilson95-v4";
 const WILSON_Z = 1.96;
 export type PrizeRankingInput = {
   id: string;
@@ -26,14 +26,14 @@ export type PrizeRankingMethod = {
   minimumMatches: number;
   prizePlaces: number;
   score: "WILSON_LOWER_BOUND_95";
-  tiebreaks: readonly ["RAW_WIN_RATE", "POINT_PERCENTAGE", "MATCHES_PLAYED", "SEEDED_DRAW"];
+  tiebreaks: readonly ["RAW_WIN_RATE", "POINT_DIFFERENTIAL", "POINT_PERCENTAGE", "MATCHES_PLAYED"];
 };
 export const PRIZE_RANKING_METHOD: PrizeRankingMethod = {
   version: PRIZE_RANKING_VERSION,
   minimumMatches: PRIZE_RANKING_MIN_MATCHES,
   prizePlaces: PRIZE_RANKING_PRIZE_PLACES,
   score: "WILSON_LOWER_BOUND_95",
-  tiebreaks: ["RAW_WIN_RATE", "POINT_PERCENTAGE", "MATCHES_PLAYED", "SEEDED_DRAW"],
+  tiebreaks: ["RAW_WIN_RATE", "POINT_DIFFERENTIAL", "POINT_PERCENTAGE", "MATCHES_PLAYED"],
 };
 const safeInteger = (value: number) =>
   Number.isFinite(value) && Number.isInteger(value) && value >= 0 ? value : 0;
@@ -53,13 +53,6 @@ const pointPercentage = (player: PrizeRankingInput) => {
   const total = safeInteger(player.pointsFor) + safeInteger(player.pointsAgainst);
   return total > 0 ? safeInteger(player.pointsFor) / total : 0;
 };
-function seededValue(sessionStartedAt: string, player: PrizeRankingInput) {
-  let hash = 2166136261;
-  const value = `${sessionStartedAt}|${player.displayName.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ")}`;
-  for (let index = 0; index < value.length; index += 1)
-    hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
-  return hash >>> 0;
-}
 function performanceCompare(left: PrizeRankingInput, right: PrizeRankingInput) {
   const scoreDifference =
     wilsonLowerBound(right.wins, right.matchesPlayed) -
@@ -69,6 +62,10 @@ function performanceCompare(left: PrizeRankingInput, right: PrizeRankingInput) {
     safeInteger(right.wins) * safeInteger(left.matchesPlayed) -
     safeInteger(left.wins) * safeInteger(right.matchesPlayed);
   if (rawRateDifference) return rawRateDifference;
+  const leftPointDifferential = safeInteger(left.pointsFor) - safeInteger(left.pointsAgainst);
+  const rightPointDifferential = safeInteger(right.pointsFor) - safeInteger(right.pointsAgainst);
+  const pointDifferentialDifference = rightPointDifferential - leftPointDifferential;
+  if (pointDifferentialDifference) return pointDifferentialDifference;
   const leftPoints = safeInteger(left.pointsFor) + safeInteger(left.pointsAgainst);
   const rightPoints = safeInteger(right.pointsFor) + safeInteger(right.pointsAgainst);
   const pointDifference =
@@ -76,42 +73,38 @@ function performanceCompare(left: PrizeRankingInput, right: PrizeRankingInput) {
   if (pointDifference) return pointDifference;
   return safeInteger(right.matchesPlayed) - safeInteger(left.matchesPlayed);
 }
-function sortByPerformance<T extends PrizeRankingInput>(players: T[], sessionStartedAt: string) {
+function sortByPerformance<T extends PrizeRankingInput>(players: T[]) {
   return players
     .slice()
-    .sort(
-      (left, right) =>
-        performanceCompare(left, right) ||
-        seededValue(sessionStartedAt, left) - seededValue(sessionStartedAt, right) ||
-        left.id.localeCompare(right.id),
-    );
+    .sort((left, right) => performanceCompare(left, right) || left.id.localeCompare(right.id));
 }
-function seededDrawIds(players: PrizeRankingInput[]) {
-  const seededDrawUsed = new Set<string>();
-  for (let index = 0; index < players.length - 1; index += 1)
-    if (performanceCompare(players[index]!, players[index + 1]!) === 0) {
-      seededDrawUsed.add(players[index]!.id);
-      seededDrawUsed.add(players[index + 1]!.id);
-    }
-  return seededDrawUsed;
+function rankPlayers<T extends PrizeRankingInput>(players: T[], firstRank: number) {
+  let rank = firstRank - 1;
+  let previous: PrizeRankingInput | undefined;
+  return players.map((player) => {
+    if (!previous || performanceCompare(previous, player) !== 0) rank += 1;
+    previous = player;
+    return { player, rank };
+  });
 }
 export function prizeRankingRows<T extends PrizeRankingInput>(
   players: T[],
-  sessionStartedAt: string,
+  _sessionStartedAt: string,
 ): Array<PrizeRankingRow<T>> {
   const played = players.filter((player) => safeInteger(player.matchesPlayed) > 0);
   const eligiblePlayers = sortByPerformance(
     played.filter((player) => safeInteger(player.matchesPlayed) >= PRIZE_RANKING_MIN_MATCHES),
-    sessionStartedAt,
   );
   const provisionalPlayers = sortByPerformance(
     played.filter((player) => safeInteger(player.matchesPlayed) < PRIZE_RANKING_MIN_MATCHES),
-    sessionStartedAt,
   );
-  const eligibleSeededDrawIds = seededDrawIds(eligiblePlayers);
-  const provisionalSeededDrawIds = seededDrawIds(provisionalPlayers);
-  const provisionalRankStart = Math.max(PRIZE_RANKING_RESERVED_PLACES, eligiblePlayers.length) + 1;
-  const rankingFields = (player: T, rank: number, eligible: boolean, seededDrawUsed: boolean) => ({
+  const rankedEligible = rankPlayers(eligiblePlayers, 1);
+  const lastEligibleRank = rankedEligible.length
+    ? rankedEligible[rankedEligible.length - 1]!.rank
+    : 0;
+  const provisionalRankStart = Math.max(PRIZE_RANKING_RESERVED_PLACES, lastEligibleRank) + 1;
+  const rankedProvisional = rankPlayers(provisionalPlayers, provisionalRankStart);
+  const rankingFields = (player: T, rank: number, eligible: boolean) => ({
     ...player,
     rank,
     eligible,
@@ -119,20 +112,11 @@ export function prizeRankingRows<T extends PrizeRankingInput>(
     rankingScoreBasisPoints: basisPoints(wilsonLowerBound(player.wins, player.matchesPlayed)),
     pointPercentageBasisPoints: basisPoints(pointPercentage(player)),
     isPrizePosition: eligible && rank <= PRIZE_RANKING_PRIZE_PLACES,
-    seededDrawUsed,
+    seededDrawUsed: false,
   });
   const ranked = [
-    ...eligiblePlayers.map((player, index) =>
-      rankingFields(player, index + 1, true, eligibleSeededDrawIds.has(player.id)),
-    ),
-    ...provisionalPlayers.map((player, index) =>
-      rankingFields(
-        player,
-        provisionalRankStart + index,
-        false,
-        provisionalSeededDrawIds.has(player.id),
-      ),
-    ),
+    ...rankedEligible.map(({ player, rank }) => rankingFields(player, rank, true)),
+    ...rankedProvisional.map(({ player, rank }) => rankingFields(player, rank, false)),
   ];
   const didNotPlay = players
     .filter((player) => safeInteger(player.matchesPlayed) === 0)
