@@ -1273,7 +1273,7 @@ test.describe("responsive regressions", () => {
     await expect(page.getByRole("heading", { name: "LineDrive Afternoon Queue" })).toBeVisible();
     const playerRow = page.getByTestId("ranking-row-queue-1");
     expect(await playerRow.count()).toBe(1);
-    await expect(playerRow.locator("span").first()).toHaveText("16");
+    await expect(playerRow.locator("span").first()).toHaveText("");
     await expect(playerRow).toContainText("Provisional");
     const rankingRows = page.locator("[data-testid^='ranking-row-']");
     for (let index = 0; index < 10; index += 1) {
@@ -1282,7 +1282,7 @@ test.describe("responsive regressions", () => {
       if (index < 3) await expect(rankingRows.nth(index)).toContainText("Prize");
     }
     await expect(
-      page.getByText("Ranks 1–10 are reserved for players with at least 5 completed games", {
+      page.getByText("Players receive a rank after 5 completed games", {
         exact: false,
       }),
     ).toBeVisible();
@@ -1308,9 +1308,9 @@ test.describe("responsive regressions", () => {
     await expect(earlyRow).toContainText("Early Player");
     const qualifiedRow = page.getByRole("button").filter({ hasText: "Qualified Player" });
     await expect(qualifiedRow.locator("span").first()).toHaveText("1");
-    await expect(earlyRow.locator("span").first()).toHaveText("11");
+    await expect(earlyRow.locator("span").first()).toHaveText("");
     const playedRow = page.getByRole("button").filter({ hasText: "Played Player" });
-    await expect(playedRow.locator("span").first()).toHaveText("12");
+    await expect(playedRow.locator("span").first()).toHaveText("");
     await expect(page.getByText(/Ranks 1–10 are reserved/i)).toHaveCount(0);
     await expect(page.getByText("1 games · 1W / 0L", { exact: true })).toBeVisible();
     await expect(page.getByText(/games to prize/i)).toHaveCount(0);

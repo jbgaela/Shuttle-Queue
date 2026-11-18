@@ -11370,9 +11370,9 @@ function RankingsView({ sessionId, session }: { sessionId: string; session?: Ses
       <RankingTrackingLinks />
       <Card className="overflow-hidden p-0">
         <div className="border-b border-[var(--line)] bg-[#fbfdfb] px-4 py-3 text-xs leading-5 text-[var(--muted)]">
-          Live rankings use a confidence-adjusted win score after each completed game. Ranks 1–10
-          are reserved for players with at least 5 completed games. Eligible players rank ahead of
-          provisional players; prize positions remain ranks 1–3.
+          Live rankings use a confidence-adjusted win score after each completed game. Players
+          receive a rank after 5 completed games. Eligible players rank ahead of provisional
+          players; prize positions remain ranks 1–3.
         </div>
         {rankingsQuery.isPending ? (
           <div className="p-6 text-sm text-[var(--muted)]">Loading rankings…</div>

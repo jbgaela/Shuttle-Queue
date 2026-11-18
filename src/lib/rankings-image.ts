@@ -358,15 +358,16 @@ export function createRankingExportCanvas(
       context.beginPath();
       context.arc(tableX + columns.rank / 2, rowY + rowHeight / 2, 25, 0, Math.PI * 2);
       context.fill();
-      drawCentered(
-        context,
-        String(row.rank),
-        tableX + 2,
-        rowY + rowHeight / 2,
-        columns.rank - 4,
-        "#102a2d",
-        "700 21px Arial",
-      );
+      if (row.rank !== null)
+        drawCentered(
+          context,
+          String(row.rank),
+          tableX + 2,
+          rowY + rowHeight / 2,
+          columns.rank - 4,
+          "#102a2d",
+          "700 21px Arial",
+        );
       context.font = NAME_FONT;
       context.fillStyle = "#102a2d";
       context.textBaseline = "top";

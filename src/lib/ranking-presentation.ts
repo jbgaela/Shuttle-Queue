@@ -14,7 +14,7 @@ export type PublicRankingPresentationRow = RankingPresentationRow & {
 };
 
 export type RankingPresentationGroups<T extends RankingPresentationRow> = {
-  ranked: Array<T & { rank: number }>;
+  ranked: Array<T & { rank: number | null }>;
   didNotPlay: T[];
 };
 
@@ -37,7 +37,9 @@ function isPrizeEligible<T extends RankingPresentationRow>(row: T) {
   return row.matchesPlayed >= PRIZE_RANKING_MIN_MATCHES && row.eligible !== false;
 }
 
-function rankedRows<T extends RankingPresentationRow>(rows: T[]) {
+function rankedRows<T extends RankingPresentationRow>(
+  rows: T[],
+): Array<T & { rank: number | null }> {
   const played = rows
     .filter((row) => row.matchesPlayed > 0)
     .slice()
@@ -47,11 +49,14 @@ function rankedRows<T extends RankingPresentationRow>(rows: T[]) {
   const provisionalRankStart = Math.max(PRIZE_RANKING_RESERVED_PLACES, eligible.length) + 1;
   return [
     ...eligible.map((row, index) => ({ ...row, rank: index + 1 })),
-    ...provisional.map((row, index) => ({ ...row, rank: provisionalRankStart + index })),
+    ...provisional.map((row, index) => ({
+      ...row,
+      rank: row.matchesPlayed >= PRIZE_RANKING_MIN_MATCHES ? provisionalRankStart + index : null,
+    })),
   ];
 }
 
-/** Split ranking rows into the numbered leaderboard and unranked roster sections. */
+/** Split played rows from the no-game roster and leave under-threshold ranks blank. */
 export function partitionRankingRows<T extends RankingPresentationRow>(
   rows: T[],
 ): RankingPresentationGroups<T> {

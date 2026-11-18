@@ -132,7 +132,7 @@ test("private export keeps provisional players in the ranked table", () => {
     rows.map(({ player, rank, section }) => ({ player, rank, section })),
     [
       { player: "Qualified Player", rank: 1, section: "RANKED" },
-      { player: "Provisional Player (Provisional)", rank: 11, section: "RANKED" },
+      { player: "Provisional Player (Provisional)", rank: null, section: "RANKED" },
     ],
   );
 });
@@ -164,7 +164,7 @@ test("public export omits prize labels, score, and eligibility sections", () => 
     rows.map(({ player, rank, section }) => ({ player, rank, section })),
     [
       { player: "Qualified Sample", rank: 1, section: "RANKED" },
-      { player: "Short Sample", rank: 11, section: "RANKED" },
+      { player: "Short Sample", rank: null, section: "RANKED" },
       { player: "No Games", rank: null, section: "DID_NOT_PLAY" },
     ],
   );
@@ -210,7 +210,7 @@ function canvasEnvironment() {
 }
 
 for (const variant of ["private", "public"]) {
-  test(`${variant} canvas preserves rank eleven and matches screen ranks`, () => {
+  test(`${variant} canvas leaves under-threshold ranks blank and matches screen ranks`, () => {
     const input = [
       ranking({ player: "Provisional", rank: 1, matchesPlayed: 4, wins: 4, losses: 0 }),
       ranking({ player: "Eligible", rank: 2 }),
@@ -226,8 +226,8 @@ for (const variant of ["private", "public"]) {
     globalThis.document = environment.document;
     try {
       createRankingExportCanvas(input, new Date(2026, 7, 15), options);
-      assert.ok(environment.drawnText.includes("11"));
       assert.ok(environment.drawnText.includes("1"));
+      assert.equal(environment.drawnText.includes("null"), false);
       assert.equal(
         environment.drawnText.includes("Provisional (Provisional)"),
         variant !== "public",

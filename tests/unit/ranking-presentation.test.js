@@ -16,7 +16,7 @@ const publicRow = (player, matchesPlayed, wins, playerKey = player) => ({
 
 for (const partition of [partitionRankingRows, partitionPublicRankingRows]) {
   for (const eligibleCount of [0, 1, 9, 10, 12]) {
-    test(`${partition.name} preserves top-ten gaps with ${eligibleCount} eligible players`, () => {
+    test(`${partition.name} leaves under-threshold ranks blank with ${eligibleCount} eligible players`, () => {
       const input = [
         { ...publicRow("Provisional", 4, 4), rank: 1 },
         ...Array.from({ length: eligibleCount }, (_, index) => ({
@@ -32,10 +32,7 @@ for (const partition of [partitionRankingRows, partitionPublicRankingRows]) {
       );
       assert.deepEqual(
         result.ranked.map(({ rank }) => rank),
-        [
-          ...Array.from({ length: eligibleCount }, (_, index) => index + 1),
-          eligibleCount <= 10 ? 11 : 13,
-        ],
+        [...Array.from({ length: eligibleCount }, (_, index) => index + 1), null],
       );
       assert.deepEqual(partition([...result.ranked, ...result.didNotPlay]), result);
       assert.equal(input[0].rank, 1);
@@ -71,16 +68,26 @@ test("zero-game players are sorted alphabetically and retain no ranking", () => 
   );
 });
 
-test("players below five games stay in the numbered leaderboard", () => {
+test("players below five games stay visible with blank ranks", () => {
   const result = partitionRankingRows([row("Almost", 4), row("Qualified", 5)]);
   assert.deepEqual(
     result.ranked.map(({ player, rank }) => ({ player, rank })),
     [
       { player: "Qualified", rank: 1 },
-      { player: "Almost", rank: 11 },
+      { player: "Almost", rank: null },
     ],
   );
 });
+
+for (const [partition, makeRow] of [
+  [partitionRankingRows, (matchesPlayed) => row("Player", matchesPlayed, 99)],
+  [partitionPublicRankingRows, (matchesPlayed) => publicRow("Player", matchesPlayed, 3)],
+]) {
+  test(`${partition.name} shows a rank at five games and clears it after a correction below five`, () => {
+    assert.equal(partition([makeRow(5)]).ranked[0]?.rank, 1);
+    assert.equal(partition([makeRow(4)]).ranked[0]?.rank, null);
+  });
+}
 
 test("empty rankings produce empty sections", () => {
   assert.deepEqual(partitionRankingRows([]), { ranked: [], didNotPlay: [] });
@@ -97,8 +104,8 @@ test("public ranking includes every player who has played in the server-provided
     result.ranked.map(({ player, rank }) => ({ player, rank })),
     [
       { player: "Qualified", rank: 1 },
-      { player: "Two of four", rank: 11 },
-      { player: "Perfect", rank: 12 },
+      { player: "Two of four", rank: null },
+      { player: "Perfect", rank: null },
     ],
   );
   assert.deepEqual(
@@ -116,9 +123,9 @@ test("public ranking preserves server order for equal visible records", () => {
   assert.deepEqual(
     result.ranked.map(({ player, rank }) => ({ player, rank })),
     [
-      { player: "alpha", rank: 11 },
-      { player: "Bravo", rank: 12 },
-      { player: "Alpha", rank: 13 },
+      { player: "alpha", rank: null },
+      { player: "Bravo", rank: null },
+      { player: "Alpha", rank: null },
     ],
   );
 });
@@ -132,7 +139,7 @@ test("presentation promotes eligible rows from a legacy server order and reserve
     result.ranked.map(({ player, rank }) => ({ player, rank })),
     [
       { player: "Eligible player", rank: 1 },
-      { player: "Provisional winner", rank: 11 },
+      { player: "Provisional winner", rank: null },
     ],
   );
 });
