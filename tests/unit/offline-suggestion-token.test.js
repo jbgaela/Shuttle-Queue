@@ -32,3 +32,20 @@ test("offline token decoding rejects unknown fields, stale expiry, and invalid t
   );
   assert.equal(persistedSuggestionKey(null, "encoded-token"), "encoded-token");
 });
+
+test("offline Auto Create tokens require Open mode, a priority player, and a supported skill range", () => {
+  const autoCreate = {
+    ...payload,
+    mode: "OPEN",
+    strategy: "AUTO_CREATE",
+    priorityPlayerId: "a",
+    skillRange: 3,
+  };
+  const decoded = decodeLocalSuggestion(encode(autoCreate));
+  assert.equal(decoded.strategy, "AUTO_CREATE");
+  assert.equal(decoded.priorityPlayerId, "a");
+  assert.equal(decoded.skillRange, 3);
+  assert.throws(() => decodeLocalSuggestion(encode({ ...autoCreate, mode: "BALANCED" })));
+  assert.throws(() => decodeLocalSuggestion(encode({ ...autoCreate, priorityPlayerId: "" })));
+  assert.throws(() => decodeLocalSuggestion(encode({ ...autoCreate, skillRange: 6 })));
+});

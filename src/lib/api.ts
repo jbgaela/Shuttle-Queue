@@ -647,6 +647,7 @@ export const api = {
     mode: string,
     strengthGap?: 1 | 2 | 3,
     excludeKeys: string[] = [],
+    strategy?: "AUTO_CREATE",
   ) =>
     request<{
       suggestion: Suggestion | null;
@@ -677,6 +678,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({
         mode,
+        ...(strategy ? { strategy } : {}),
         ...(mode === "BALANCED" ? { strengthGap: strengthGap ?? 1 } : {}),
         excludeKeys,
       }),
@@ -1104,6 +1106,7 @@ export type MatchupAdvisory = {
 export type Suggestion = {
   token: string;
   mode?: string;
+  strategy?: "AUTO_CREATE";
   expiresAt: number;
   key: string;
   strengthGap?: 1 | 2 | 3;
@@ -1163,6 +1166,22 @@ export type Suggestion = {
     };
     algorithmVersion?: string;
     cycleRestarted?: boolean;
+    autoCreate?: {
+      strategy: "AUTO_CREATE";
+      priorityPlayerId: string;
+      priorityPlayerName: string;
+      skillRange: number;
+      priorityGroupSize: number;
+      closeWaitWindowMilliseconds: number;
+      similarWaitPriorityApplied: boolean;
+      selectedWaitGroupIndex: number;
+      supportReason: "HIGHER_SKILLED_PARTNER" | "TEAM_TOTAL_ADVANTAGE" | "NOT_REQUIRED";
+      supportPlayerId: string | null;
+      earlierUnmatchedPlayerIds: string[];
+      earlierUnmatchedPlayerNames: string[];
+      repeatedPlayerGroup: boolean;
+      teamTotals: { teamA: number; teamB: number };
+    };
   };
 };
 export type UndefeatedChallengeNotification = {

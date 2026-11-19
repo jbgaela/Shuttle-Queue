@@ -2142,6 +2142,320 @@ export function suggestMatch(
   return selected?.suggestion ?? null;
 }
 
+export type AutoCreateStrategy = {
+  strategy: "AUTO_CREATE";
+  priorityPlayerId: string;
+  skillRange: number;
+};
+
+export function validateAutoCreateLineup(
+  teamA: MatchPlayer[],
+  teamB: MatchPlayer[],
+  priorityPlayerId: string,
+  skillRange: number,
+  synergyTeams: MatchmakingOptions["synergyTeams"] = [],
+) {
+  const group = [...teamA, ...teamB];
+  if (
+    teamA.length !== 2 ||
+    teamB.length !== 2 ||
+    new Set(group.map((player) => player.id)).size !== 4
+  )
+    return "Auto Create requires four unique players in doubles teams.";
+  const synergyError = validateSynergyLineup(teamA, teamB, synergyTeams);
+  if (synergyError) return synergyError;
+  const priorityPlayer = group.find((player) => player.id === priorityPlayerId);
+  if (!priorityPlayer) return "The Auto Create priority player must stay in the lineup.";
+  const weights = group.map(effectiveWeightFor);
+  if (Math.max(...weights) - Math.min(...weights) > skillRange)
+    return `This lineup exceeds the selected Auto Create skill range of ${skillRange}.`;
+  const teamATotal = teamA.reduce((total, player) => total + effectiveWeightFor(player), 0);
+  const teamBTotal = teamB.reduce((total, player) => total + effectiveWeightFor(player), 0);
+  const difference = teamATotal - teamBTotal;
+  if (Math.abs(difference) > 2)
+    return "Auto Create team totals may differ by at most two skill points.";
+  if (priorityPlayer.skillWeight < Math.max(...group.map((player) => player.skillWeight))) {
+    const priorityTeam = teamA.includes(priorityPlayer) ? teamA : teamB;
+    const opposingTeam = priorityTeam === teamA ? teamB : teamA;
+    const partner = priorityTeam.find((player) => player.id !== priorityPlayer.id);
+    const priorityAdvantage =
+      priorityTeam.reduce((total, player) => total + effectiveWeightFor(player), 0) -
+      opposingTeam.reduce((total, player) => total + effectiveWeightFor(player), 0);
+    if (!(partner && partner.skillWeight > priorityPlayer.skillWeight) && priorityAdvantage < 1)
+      return "The lower-skilled priority player needs a higher-skilled partner or a one-point team advantage.";
+  }
+  if (isProhibitedGeneratedNewbieMatch(teamA, teamB))
+    return "Auto Create cannot pair a Newbie with an incompatible partner.";
+  return null;
+}
+
+const AUTO_CREATE_CLOSE_WAIT_MS = 2 * 60_000;
+const AUTO_CREATE_MAX_SKILL_RANGE = 5;
+const autoCreateGroupKey = (players: MatchPlayer[]) =>
+  players
+    .map((player) => player.id)
+    .sort()
+    .join(",");
+
+export function suggestAutoCreate(
+  players: MatchPlayer[],
+  history: MatchHistory,
+  excludedKeys: string[] = [],
+  options: MatchmakingOptions = {},
+): Suggestion | null {
+  const preparedPlayers = applySynergyTeams(players, options.synergyTeams);
+  const now = options.now ? new Date(options.now).getTime() : Date.now();
+  const minimumRestMinutes = Math.max(0, options.minimumRestMinutes ?? 0);
+  const eligible = preparedPlayers.flatMap((player) => {
+    if (player.status !== "WAITING" || !player.queueEnteredAt) return [];
+    const enteredAt = new Date(player.queueEnteredAt).getTime();
+    if (!Number.isFinite(enteredAt)) return [];
+    const lastMatchEndedAt = player.lastMatchEndedAt
+      ? new Date(player.lastMatchEndedAt).getTime()
+      : null;
+    if (lastMatchEndedAt !== null && !Number.isFinite(lastMatchEndedAt)) return [];
+    const eligibleSince =
+      lastMatchEndedAt === null
+        ? enteredAt
+        : Math.max(enteredAt, lastMatchEndedAt + minimumRestMinutes * 60_000);
+    if (eligibleSince > now) return [];
+    return [{ ...player, eligibleWaitMs: Math.max(0, now - eligibleSince) }];
+  });
+  const completeEligible = eligible.filter(
+    (player) =>
+      !player.synergyTeamId ||
+      eligible.some(
+        (candidate) =>
+          candidate.id !== player.id && candidate.synergyTeamId === player.synergyTeamId,
+      ),
+  );
+  if (completeEligible.length < 4) return null;
+
+  const previousGroups = new Set<string>();
+  const appearances = new Map<string, number>();
+  for (const key of excludedKeys) {
+    const ids = key.split(/[|,]/).filter(Boolean);
+    if (ids.length !== 4) continue;
+    previousGroups.add([...ids].sort().join(","));
+    for (const id of ids) appearances.set(id, (appearances.get(id) ?? 0) + 1);
+  }
+  const excluded = new Set(excludedKeys);
+  const sortedByWait = [...completeEligible].sort(
+    (a, b) => b.eligibleWaitMs - a.eligibleWaitMs || a.id.localeCompare(b.id),
+  );
+  const waitGroups: (typeof sortedByWait)[] = [];
+  for (const player of sortedByWait) {
+    let target = waitGroups[waitGroups.length - 1];
+    if (!target || target[0]!.eligibleWaitMs - player.eligibleWaitMs > AUTO_CREATE_CLOSE_WAIT_MS) {
+      target = [];
+      waitGroups.push(target);
+    }
+    target.push(player);
+  }
+  const playerWaitGroup = new Map<string, number>();
+  waitGroups.forEach((group, index) =>
+    group.forEach((player) => playerWaitGroup.set(player.id, index)),
+  );
+  const anchorCompare = (a: (typeof sortedByWait)[number], b: (typeof sortedByWait)[number]) =>
+    a.gamesPlayed - b.gamesPlayed ||
+    (appearances.get(a.id) ?? 0) - (appearances.get(b.id) ?? 0) ||
+    b.eligibleWaitMs - a.eligibleWaitMs ||
+    a.id.localeCompare(b.id);
+  let evaluatedGroups = 0;
+
+  for (let groupIndex = 0; groupIndex < waitGroups.length; groupIndex += 1) {
+    const anchors = [...waitGroups[groupIndex]!].sort(anchorCompare);
+    for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
+      const anchor = anchors[anchorIndex]!;
+      for (let skillRange = 0; skillRange <= AUTO_CREATE_MAX_SKILL_RANGE; skillRange += 1) {
+        type AutoCreateCandidate = {
+          rank: (number[] | number | string)[];
+          teamA: MatchPlayer[];
+          teamB: MatchPlayer[];
+          group: MatchPlayer[];
+          key: string;
+          teamATotal: number;
+          teamBTotal: number;
+          supportReason: "HIGHER_SKILLED_PARTNER" | "TEAM_TOTAL_ADVANTAGE" | "NOT_REQUIRED";
+          supportPlayerId: string | null;
+        };
+        let best: AutoCreateCandidate | null = null;
+        const candidates = completeEligible.filter((player) => player.id !== anchor.id);
+        forEachCombination(candidates, 3, (companions) => {
+          const group = [anchor, ...companions];
+          evaluatedGroups += 1;
+          if (!hasCompleteSynergyTeams(group)) return;
+          const groupWeights = group.map(effectiveWeightFor);
+          if (Math.max(...groupWeights) - Math.min(...groupWeights) > skillRange) return;
+          if (!hasSynergyCompatiblePartition(group)) return;
+          const groupKey = autoCreateGroupKey(group);
+          const isRepeatedGroup = previousGroups.has(groupKey) ? 1 : 0;
+          const games = group.map((player) => player.gamesPlayed).sort((a, b) => a - b);
+          const previewCounts = group
+            .map((player) => appearances.get(player.id) ?? 0)
+            .sort((a, b) => a - b);
+          const tiers = group
+            .map((player) => playerWaitGroup.get(player.id) ?? Number.MAX_SAFE_INTEGER)
+            .sort((a, b) => a - b);
+          const waits = group.map((player) => player.eligibleWaitMs).sort((a, b) => b - a);
+          const allPairValues = group.flatMap((player, index) =>
+            group
+              .slice(index + 1)
+              .map((other) =>
+                sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, false),
+              ),
+          );
+          const recentPairValues = group.flatMap((player, index) =>
+            group
+              .slice(index + 1)
+              .map((other) =>
+                sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, true),
+              ),
+          );
+          const allQuartetRepeats = history.quartets.get(quartetKey(group)) ?? 0;
+          const recentQuartetRepeats = history.recentQuartets?.get(quartetKey(group)) ?? 0;
+          const sorted = [...group].sort((a, b) => a.id.localeCompare(b.id));
+          for (const [teamA, teamB] of partitions(sorted)) {
+            if (teamA.some((player) => teamB.some((other) => sameSynergyTeam(player, other))))
+              continue;
+            if (isProhibitedGeneratedNewbieMatch(teamA, teamB)) continue;
+            const teamATotal = teamA.reduce(
+              (total, player) => total + effectiveWeightFor(player),
+              0,
+            );
+            const teamBTotal = teamB.reduce(
+              (total, player) => total + effectiveWeightFor(player),
+              0,
+            );
+            const difference = Math.abs(teamATotal - teamBTotal);
+            if (difference > 2) continue;
+            const validationError = validateAutoCreateLineup(teamA, teamB, anchor.id, skillRange);
+            if (validationError) continue;
+            if (
+              excluded.has(
+                `${teamA
+                  .map((p) => p.id)
+                  .sort()
+                  .join(",")}|${teamB
+                  .map((p) => p.id)
+                  .sort()
+                  .join(",")}`,
+              )
+            )
+              continue;
+            const priorityTeam = teamA.includes(anchor) ? teamA : teamB;
+            const priorityPartner = priorityTeam.find((player) => player.id !== anchor.id)!;
+            const hasHigherPartner = priorityPartner.skillWeight > anchor.skillWeight;
+            const supportReason =
+              anchor.skillWeight >= Math.max(...group.map((player) => player.skillWeight))
+                ? "NOT_REQUIRED"
+                : hasHigherPartner
+                  ? "HIGHER_SKILLED_PARTNER"
+                  : "TEAM_TOTAL_ADVANTAGE";
+            const supportPlayerId = hasHigherPartner ? priorityPartner.id : null;
+            const key = `${teamA
+              .map((player) => player.id)
+              .sort()
+              .join(",")}|${teamB
+              .map((player) => player.id)
+              .sort()
+              .join(",")}`;
+            const rank: (number[] | number | string)[] = [
+              isRepeatedGroup,
+              ...games,
+              ...previewCounts,
+              ...tiers,
+              ...waits.map((wait) => -wait),
+              recentPairValues.filter(Boolean).length,
+              recentPairValues.reduce((total, value) => total + value, 0),
+              recentQuartetRepeats,
+              allPairValues.filter(Boolean).length,
+              allPairValues.reduce((total, value) => total + value, 0),
+              allQuartetRepeats,
+              difference,
+              supportReason === "HIGHER_SKILLED_PARTNER" ? 0 : 1,
+              key,
+            ];
+            if (!best || compare(rank, best.rank) < 0)
+              best = {
+                rank,
+                teamA,
+                teamB,
+                group,
+                key,
+                teamATotal,
+                teamBTotal,
+                supportReason,
+                supportPlayerId,
+              };
+          }
+        });
+        const selected = best as AutoCreateCandidate | null;
+        if (selected === null) continue;
+        const selectedRecentPairs = selected.group.flatMap((player, index) =>
+          selected.group
+            .slice(index + 1)
+            .map((other) =>
+              sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, true),
+            ),
+        );
+        const selectedAllPairs = selected.group.flatMap((player, index) =>
+          selected.group
+            .slice(index + 1)
+            .map((other) =>
+              sameSynergyTeam(player, other) ? 0 : pairCount(history, player.id, other.id, false),
+            ),
+        );
+        const earlierUnmatched = [
+          ...waitGroups.slice(0, groupIndex).flat(),
+          ...anchors.slice(0, anchorIndex),
+        ].filter((player) => !selected.group.some((member) => member.id === player.id));
+        return {
+          mode: "OPEN",
+          teamA: selected.teamA,
+          teamB: selected.teamB,
+          teamATotal: selected.teamATotal,
+          teamBTotal: selected.teamBTotal,
+          difference: Math.abs(selected.teamATotal - selected.teamBTotal),
+          key: selected.key,
+          matchupAdvisory: null,
+          explanation: {
+            algorithmVersion: MATCHMAKING_ALGORITHM,
+            mode: "OPEN",
+            searchStats: {
+              eligibleCount: eligible.length,
+              evaluatedCount: evaluatedGroups,
+              bounded: false,
+            },
+            autoCreate: {
+              strategy: "AUTO_CREATE",
+              priorityPlayerId: anchor.id,
+              priorityPlayerName: anchor.displayName,
+              skillRange,
+              priorityGroupSize: waitGroups[groupIndex]!.length,
+              closeWaitWindowMilliseconds: AUTO_CREATE_CLOSE_WAIT_MS,
+              similarWaitPriorityApplied: waitGroups[groupIndex]!.length > 1,
+              selectedWaitGroupIndex: groupIndex,
+              supportReason: selected.supportReason,
+              supportPlayerId: selected.supportPlayerId,
+              earlierUnmatchedPlayerIds: earlierUnmatched.map((player) => player.id),
+              earlierUnmatchedPlayerNames: earlierUnmatched.map((player) => player.displayName),
+              repeatedPlayerGroup: previousGroups.has(autoCreateGroupKey(selected.group)),
+              teamTotals: { teamA: selected.teamATotal, teamB: selected.teamBTotal },
+            },
+            rest: { minimumRestMinutes, eligibleAt: new Date(now).toISOString() },
+            repeatPenalties: {
+              recentPairCount: selectedRecentPairs.filter(Boolean).length,
+              allTimePairCount: selectedAllPairs.filter(Boolean).length,
+            },
+          },
+        };
+      }
+    }
+  }
+  return null;
+}
+
 export function queueBuckets(players: DomainQueuePlayer[], now = Date.now()) {
   const sorted = [...players].sort(
     (a, b) =>

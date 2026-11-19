@@ -75,6 +75,80 @@ async function settings(page: Page) {
   await expect(page.getByText("Offline workspace", { exact: true })).toBeVisible();
 }
 
+test("Auto Create rotates fair mixed-gender previews online and offline without queuing a match", async ({
+  page,
+  context,
+}, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, `browser-${info.project.name}-auto-create`);
+  await page.getByRole("button", { name: "Queue", exact: true }).click();
+  const autoCreateButton = page.getByRole("button", { name: "Auto Create", exact: true });
+  await expect(autoCreateButton).toBeEnabled();
+
+  let suggestionRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/suggestions"))
+      suggestionRequests += 1;
+  });
+  const serverResponse = await page.evaluate(async () => {
+    const csrfToken = window.sessionStorage.getItem("bq-csrf-token");
+    const response = await fetch("/api/v2/suggestions", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+      },
+      body: JSON.stringify({ mode: "OPEN", strategy: "AUTO_CREATE", excludeKeys: [] }),
+    });
+    return {
+      status: response.status,
+      payload: (await response.json()) as {
+        data?: {
+          suggestion?: {
+            strategy?: string;
+            explanation?: {
+              generatedGenderRule?: string;
+              autoCreate?: { priorityPlayerId?: string };
+            };
+          } | null;
+        };
+      },
+    };
+  });
+  expect(serverResponse.status).toBe(200);
+  expect(serverResponse.payload.data?.suggestion?.strategy).toBe("AUTO_CREATE");
+  expect(
+    serverResponse.payload.data?.suggestion?.explanation?.autoCreate?.priorityPlayerId,
+  ).toBeTruthy();
+  expect(serverResponse.payload.data?.suggestion?.explanation?.generatedGenderRule).toBeUndefined();
+  expect(suggestionRequests).toBe(1);
+
+  await autoCreateButton.click();
+  const preview = page.getByTestId("auto-create-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("Priority:");
+  await expect(preview).toContainText("Similar waiting times");
+  await expect(page.getByRole("button", { name: "Queue matchup", exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Confirm that the affected player accepts this matchup before starting."),
+  ).toHaveCount(0);
+  const readLineup = async () => {
+    const matches = (await preview.innerText()).match(/Seed \d+/g) ?? [];
+    return [...new Set(matches)].sort();
+  };
+  const firstLineup = await readLineup();
+  expect(firstLineup).toHaveLength(4);
+  expect(suggestionRequests).toBe(1);
+  expect((await cloud(page)).snapshot.matches).toHaveLength(0);
+
+  await context.setOffline(true);
+  await autoCreateButton.click();
+  await expect.poll(readLineup).not.toEqual(firstLineup);
+  expect(suggestionRequests).toBe(1);
+  expect((await local(page)).snapshot?.matches).toHaveLength(0);
+});
+
 test("session scoring setup survives offline reload and records matching final scores", async ({
   page,
   context,

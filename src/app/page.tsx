@@ -118,6 +118,7 @@ import {
   evaluateGuidedAvailability,
   lowSkillLoneFemaleAdvisory,
   validateMatchmakingConstraints,
+  validateAutoCreateLineup,
   validateScores,
   undefeatedChallengePlayers,
   UNDEFEATED_CHALLENGE_MINIMUM_MATCHES,
@@ -5582,6 +5583,7 @@ type MatchmakerPersistedState = {
   courtId: string;
   suggestionScope: string;
   suggestionCycle: { scope: string; keys: string[] };
+  autoSuggestionCycle?: { scope: string; keys: string[] };
 };
 const EMPTY_MATCHMAKER_STATE: MatchmakerPersistedState = {
   mode: "SAME_SKILL",
@@ -5592,6 +5594,7 @@ const EMPTY_MATCHMAKER_STATE: MatchmakerPersistedState = {
   courtId: "",
   suggestionScope: "",
   suggestionCycle: { scope: "", keys: [] },
+  autoSuggestionCycle: { scope: "", keys: [] },
 };
 const MatchmakerPersistenceContext = createContext<{
   state: MatchmakerPersistedState;
@@ -5837,6 +5840,9 @@ function MatchmakerPanel({
   const [suggestionCycle, setSuggestionCycle] = useState<{ scope: string; keys: string[] }>(
     persisted.suggestionCycle,
   );
+  const [autoSuggestionCycle, setAutoSuggestionCycle] = useState<{ scope: string; keys: string[] }>(
+    persisted.autoSuggestionCycle ?? { scope: "", keys: [] },
+  );
   const [noMatch, setNoMatch] = useState<{
     code: SuggestionNoMatchCode;
     message: string;
@@ -5901,6 +5907,7 @@ function MatchmakerPanel({
       setDraft(null);
       setSuggestionScope("");
       setSuggestionCycle({ scope: "", keys: [] });
+      setAutoSuggestionCycle({ scope: "", keys: [] });
       setCourtIdRaw("");
       setEditing(false);
       setPickerTarget(null);
@@ -5999,8 +6006,13 @@ function MatchmakerPanel({
     window.addEventListener("undefeated-challenge-eligible", listener);
     return () => window.removeEventListener("undefeated-challenge-eligible", listener);
   }, []);
-  const cycleScope = `${mode}|${strengthGap}|${waitingFingerprint}`;
-  const excludedSuggestionKeys = suggestionCycle.scope === cycleScope ? suggestionCycle.keys : [];
+  const normalCycleScope = `${mode}|${strengthGap}|${waitingFingerprint}`;
+  const autoCreateScope = `AUTO_CREATE|${waitingFingerprint}`;
+  const cycleScope = suggestion?.strategy === "AUTO_CREATE" ? autoCreateScope : normalCycleScope;
+  const excludedSuggestionKeys =
+    suggestionCycle.scope === normalCycleScope ? suggestionCycle.keys : [];
+  const excludedAutoSuggestionKeys =
+    autoSuggestionCycle.scope === autoCreateScope ? autoSuggestionCycle.keys : [];
   const waitingById = useMemo(
     () => new Map(queue.waiting.map((player) => [player.id, player])),
     [queue.waiting],
@@ -6051,29 +6063,43 @@ function MatchmakerPanel({
     .map(toDomainMatchmakingPlayer)
     .filter((player): player is DomainMatchPlayer => Boolean(player));
   const draftModeResult =
-    mode === "UNDEFEATED_CHALLENGE" && !lineupEdited
-      ? null
-      : mode === "UNDEFEATED_CHALLENGE"
-        ? {
-            valid: false as const,
-            message: "Edited Undefeated Challenge lineups must continue as Manual Adjusted.",
-          }
-        : draftDomainTeamA.length === draftTeamAPlayers.length &&
-            draftDomainTeamB.length === draftTeamBPlayers.length &&
-            draftTeamAPlayers.length === draftTeamBPlayers.length &&
-            draftTeamAPlayers.length > 0
-          ? validateMatchmakingConstraints(
-              suggestionApiMode(mode) as DomainMatchmakingMode,
-              draftDomainTeamA,
-              draftDomainTeamB,
-              strengthGap ?? 1,
-            )
-          : null;
+    suggestion?.strategy === "AUTO_CREATE" && suggestion.explanation.autoCreate
+      ? (() => {
+          const autoCreateError = validateAutoCreateLineup(
+            draftDomainTeamA,
+            draftDomainTeamB,
+            suggestion.explanation.autoCreate.priorityPlayerId,
+            suggestion.explanation.autoCreate.skillRange,
+            (queue.synergyTeams ?? []) as any,
+          );
+          return autoCreateError
+            ? { valid: false as const, message: autoCreateError }
+            : { valid: true as const };
+        })()
+      : mode === "UNDEFEATED_CHALLENGE" && !lineupEdited
+        ? null
+        : mode === "UNDEFEATED_CHALLENGE"
+          ? {
+              valid: false as const,
+              message: "Edited Undefeated Challenge lineups must continue as Manual Adjusted.",
+            }
+          : draftDomainTeamA.length === draftTeamAPlayers.length &&
+              draftDomainTeamB.length === draftTeamBPlayers.length &&
+              draftTeamAPlayers.length === draftTeamBPlayers.length &&
+              draftTeamAPlayers.length > 0
+            ? validateMatchmakingConstraints(
+                suggestionApiMode(mode) as DomainMatchmakingMode,
+                draftDomainTeamA,
+                draftDomainTeamB,
+                strengthGap ?? 1,
+              )
+            : null;
   const draftConstraintError =
     draftModeResult && !draftModeResult.valid ? draftModeResult.message : serverConstraintError;
-  const matchupAdvisory = draft
-    ? lowSkillLoneFemaleAdvisory(draftTeamAPlayers, draftTeamBPlayers)
-    : null;
+  const matchupAdvisory =
+    draft && !(suggestion?.strategy === "AUTO_CREATE" && !overrideToManual)
+      ? lowSkillLoneFemaleAdvisory(draftTeamAPlayers, draftTeamBPlayers)
+      : null;
   const advisoryTeamA =
     draftTeamAPlayers.map((player) => player.displayName).join(" & ") || "Team A";
   const advisoryTeamB =
@@ -6139,6 +6165,7 @@ function MatchmakerPanel({
       courtId,
       suggestionScope,
       suggestionCycle,
+      autoSuggestionCycle,
     });
   }, [
     courtId,
@@ -6149,6 +6176,7 @@ function MatchmakerPanel({
     suggestion,
     suggestionCycle,
     suggestionScope,
+    autoSuggestionCycle,
     strengthGap,
   ]);
   useEffect(() => {
@@ -6175,23 +6203,32 @@ function MatchmakerPanel({
   type SuggestMutationVariables = {
     requestedMode?: MatchmakingSelection;
     requestedExcludeKeys?: string[];
+    requestedStrategy?: "AUTO_CREATE";
     banner?: boolean;
   };
   const suggest = useMutation({
     mutationFn: ({
       requestedMode = mode,
-      requestedExcludeKeys = excludedSuggestionKeys,
+      requestedExcludeKeys,
+      requestedStrategy,
     }: SuggestMutationVariables = {}) =>
       api.suggestions(
         sessionId,
         suggestionApiMode(requestedMode),
         suggestionStrengthGap(requestedMode),
-        requestedExcludeKeys,
+        requestedExcludeKeys ??
+          (requestedStrategy === "AUTO_CREATE"
+            ? excludedAutoSuggestionKeys
+            : excludedSuggestionKeys),
+        requestedStrategy,
       ),
     onSuccess: (result, variables) => {
       const selectedMode = variables?.requestedMode ?? mode;
       const selectedGap = suggestionStrengthGap(selectedMode) ?? persisted.strengthGap;
-      const selectedScope = `${selectedMode}|${selectedGap}|${waitingFingerprint}`;
+      const selectedStrategy = variables?.requestedStrategy;
+      const selectedScope = selectedStrategy
+        ? `AUTO_CREATE|${waitingFingerprint}`
+        : `${selectedMode}|${selectedGap}|${waitingFingerprint}`;
       if (!result.suggestion) {
         setNoMatch(result.noMatch ?? null);
         if (!variables?.banner && !bannerGuidedRequestRef.current)
@@ -6207,17 +6244,27 @@ function MatchmakerPanel({
         teamB: nextSuggestion.teamB.map((player) => player.id),
       });
       setSuggestionScope(selectedScope);
-      setMode(selectedMode);
+      if (!selectedStrategy) setMode(selectedMode);
       setEditing(false);
       setPickerTarget(null);
       setCourtIdRaw(availableCourts[0]?.id ?? "");
-      setSuggestionCycle((current) => {
-        const keys = result.cycleRestarted || current.scope !== selectedScope ? [] : current.keys;
-        return {
-          scope: selectedScope,
-          keys: [...new Set([...keys, nextSuggestion.key])].slice(-50),
-        };
-      });
+      if (selectedStrategy === "AUTO_CREATE") {
+        setAutoSuggestionCycle((current) => {
+          const keys = result.cycleRestarted || current.scope !== selectedScope ? [] : current.keys;
+          return {
+            scope: selectedScope,
+            keys: [...new Set([...keys, nextSuggestion.key])].slice(-50),
+          };
+        });
+      } else {
+        setSuggestionCycle((current) => {
+          const keys = result.cycleRestarted || current.scope !== selectedScope ? [] : current.keys;
+          return {
+            scope: selectedScope,
+            keys: [...new Set([...keys, nextSuggestion.key])].slice(-50),
+          };
+        });
+      }
       bannerGuidedRequestRef.current = false;
     },
     onError: (error) => {
@@ -6256,6 +6303,7 @@ function MatchmakerPanel({
       setDraft(null);
       setSuggestionScope("");
       setSuggestionCycle({ scope: "", keys: [] });
+      setAutoSuggestionCycle({ scope: "", keys: [] });
       setEditing(false);
       setPickerTarget(null);
       setCourtId("");
@@ -6433,6 +6481,20 @@ function MatchmakerPanel({
       return;
     setOverrideToManual(false);
     suggest.mutate({});
+  };
+  const requestAutoCreate = () => {
+    if (
+      isAdjusted &&
+      !window.confirm("Discard this edited lineup and generate an Auto Create lineup?")
+    )
+      return;
+    setOverrideToManual(false);
+    setNoMatch(null);
+    suggest.mutate({
+      requestedMode: "OPEN",
+      requestedStrategy: "AUTO_CREATE",
+      requestedExcludeKeys: excludedAutoSuggestionKeys,
+    });
   };
   const requestChallengeSuggestion = () => {
     if (
@@ -6909,6 +6971,16 @@ function MatchmakerPanel({
                 ? "Try another lineup"
                 : "Suggest lineup"}
           </Button>
+          <Button
+            variant="quiet"
+            className="mt-2 w-full"
+            onClick={requestAutoCreate}
+            disabled={suggest.isPending || queue.waiting.length < 4}
+          >
+            {suggest.isPending && suggestion?.strategy === "AUTO_CREATE"
+              ? "Creating a fair lineup…"
+              : "Auto Create"}
+          </Button>
           {queue.waiting.length < 4 && (
             <p className="mt-2 text-xs text-[var(--muted)]">
               Need four waiting players. There are {mixedCounts.readyMale + mixedCounts.readyFemale}{" "}
@@ -6920,6 +6992,9 @@ function MatchmakerPanel({
               id={mode === "GUIDED" ? "guided-suggestion-result" : undefined}
               ref={mode === "GUIDED" ? suggestionResultRef : undefined}
               tabIndex={-1}
+              data-testid={
+                suggestion.strategy === "AUTO_CREATE" ? "auto-create-preview" : undefined
+              }
               role={mode === "GUIDED" ? "region" : undefined}
               aria-label={mode === "GUIDED" ? "Suggested Guided matchup" : undefined}
               className="mt-5 space-y-4 border-t border-[var(--line)] pt-5"
@@ -6927,7 +7002,11 @@ function MatchmakerPanel({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={isAdjusted ? "orange" : "teal"}>
-                    {isAdjusted ? "Queue Master adjusted" : "Suggested"}
+                    {isAdjusted
+                      ? "Queue Master adjusted"
+                      : suggestion.strategy === "AUTO_CREATE"
+                        ? "Auto Create"
+                        : "Suggested"}
                   </Badge>
                   {mode === "UNDEFEATED_CHALLENGE" && !isAdjusted && (
                     <Badge tone="orange">Challenge</Badge>
@@ -6972,6 +7051,42 @@ function MatchmakerPanel({
                   </p>
                 </div>
               </div>
+              {suggestion.strategy === "AUTO_CREATE" && suggestion.explanation.autoCreate && (
+                <div className="rounded-2xl bg-[#f3f8f7] px-3 py-2 text-xs leading-5 text-[var(--muted)]">
+                  <p>
+                    Priority: {suggestion.explanation.autoCreate.priorityPlayerName}. Skill range:{" "}
+                    {suggestion.explanation.autoCreate.skillRange === 0
+                      ? "same skill"
+                      : `up to ${suggestion.explanation.autoCreate.skillRange} levels`}
+                    . Team totals differ by {suggestion.difference}.
+                  </p>
+                  {suggestion.explanation.autoCreate.similarWaitPriorityApplied && (
+                    <p className="mt-1">
+                      Similar waiting times—prioritizing fewer games played and fair rotation.
+                    </p>
+                  )}
+                  {suggestion.explanation.autoCreate.supportReason === "HIGHER_SKILLED_PARTNER" && (
+                    <p className="mt-1">The priority player has a higher-skilled partner.</p>
+                  )}
+                  {suggestion.explanation.autoCreate.supportReason === "TEAM_TOTAL_ADVANTAGE" && (
+                    <p className="mt-1">
+                      The priority player’s team has a one- or two-point strength advantage.
+                    </p>
+                  )}
+                  {suggestion.explanation.autoCreate.earlierUnmatchedPlayerNames.length > 0 && (
+                    <p className="mt-1">
+                      Earlier waiting players skipped because no valid balanced lineup could include
+                      them:{" "}
+                      {suggestion.explanation.autoCreate.earlierUnmatchedPlayerNames.join(", ")}.
+                    </p>
+                  )}
+                  {suggestion.explanation.cycleRestarted && (
+                    <p className="mt-1">
+                      All alternatives were used; lineup previews have restarted.
+                    </p>
+                  )}
+                </div>
+              )}
               {mode.startsWith("BALANCED") &&
                 handicapAdvantageLabel(teamTotal(draft.teamA), teamTotal(draft.teamB)) && (
                   <Badge tone="orange">

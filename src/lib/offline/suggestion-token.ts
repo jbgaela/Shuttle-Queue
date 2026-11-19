@@ -12,6 +12,9 @@ type LocalSuggestionPayload = {
   algorithmVersion: string;
   revision: number;
   mode: (typeof VALID_MATCHMAKING_MODES)[number];
+  strategy?: "AUTO_CREATE";
+  priorityPlayerId?: string;
+  skillRange?: number;
   strengthGap?: 1 | 2 | 3;
   key: string;
   teamA: [string, string];
@@ -36,6 +39,9 @@ export function decodeLocalSuggestion(value: string): LocalSuggestionPayload {
       "algorithmVersion",
       "revision",
       "mode",
+      "strategy",
+      "priorityPlayerId",
+      "skillRange",
       "strengthGap",
       "key",
       "teamA",
@@ -75,6 +81,20 @@ export function decodeLocalSuggestion(value: string): LocalSuggestionPayload {
     if (payload.key !== expectedKey) throw new Error();
     if (!(VALID_MATCHMAKING_MODES as readonly string[]).includes(payload.mode)) throw new Error();
     if (
+      payload.strategy === "AUTO_CREATE"
+        ? payload.mode !== "OPEN" ||
+          typeof payload.priorityPlayerId !== "string" ||
+          payload.priorityPlayerId.length === 0 ||
+          typeof payload.skillRange !== "number" ||
+          !Number.isInteger(payload.skillRange) ||
+          payload.skillRange < 0 ||
+          payload.skillRange > 5
+        : payload.strategy !== undefined ||
+          payload.priorityPlayerId !== undefined ||
+          payload.skillRange !== undefined
+    )
+      throw new Error();
+    if (
       payload.mode === "BALANCED" &&
       !(
         typeof payload.strengthGap === "number" &&
@@ -88,6 +108,13 @@ export function decodeLocalSuggestion(value: string): LocalSuggestionPayload {
       algorithmVersion: payload.algorithmVersion,
       revision: payload.revision,
       mode: payload.mode as LocalSuggestionPayload["mode"],
+      ...(payload.strategy === "AUTO_CREATE"
+        ? {
+            strategy: "AUTO_CREATE" as const,
+            priorityPlayerId: payload.priorityPlayerId as string,
+            skillRange: payload.skillRange as number,
+          }
+        : {}),
       ...(payload.strengthGap === undefined
         ? {}
         : { strengthGap: payload.strengthGap as 1 | 2 | 3 }),
